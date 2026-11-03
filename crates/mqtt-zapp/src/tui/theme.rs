@@ -16,7 +16,10 @@ pub const MUTED: Color = Color::DarkGray;
 pub const OK: Color = Color::Green;
 pub const WARN: Color = Color::Yellow;
 pub const ERR: Color = Color::Red;
-pub const SEL_BG: Color = Color::Blue;
+/// Black on cyan, like the focused pane title: cyan is light in practically
+/// every palette, where blue (and "white" text on it) often is not.
+pub const SEL_BG: Color = ACCENT;
+pub const SEL_FG: Color = Color::Black;
 pub const SEL_BG_INACTIVE: Color = Color::DarkGray;
 
 /// A bordered pane. Focus shows without colour too: a thick border and a
@@ -109,16 +112,29 @@ pub fn apply(buf: &mut Buffer, area: Rect, theme: ThemeName) {
     }
 }
 
-/// The selected row: bright in the focused pane, grey elsewhere.
+/// The selected row: bright in the focused pane, grey elsewhere. The
+/// foreground is always set, so muted or accent text cannot vanish into the
+/// selection background.
 pub fn selection(focused: bool) -> Style {
     if focused {
         Style::new()
             .bg(SEL_BG)
-            .fg(Color::White)
+            .fg(SEL_FG)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::new().bg(SEL_BG_INACTIVE)
+        Style::new().bg(SEL_BG_INACTIVE).fg(Color::Reset)
     }
+}
+
+/// Draw `line` as the selected row. The selection colours go on every span,
+/// not just the line, since span colours win over the line's; modifiers
+/// (bold, underlined matches) are kept.
+pub fn select(mut line: Line<'_>, focused: bool) -> Line<'_> {
+    let sel = selection(focused);
+    for span in &mut line.spans {
+        span.style = span.style.patch(sel);
+    }
+    line.style(sel)
 }
 
 #[cfg(test)]
@@ -158,6 +174,27 @@ mod tests {
         assert!(r.y >= area.y && r.bottom() <= area.bottom(), "{r:?}");
         let r = centered(Rect::new(0, 0, 100, 30), 76, 22);
         assert_eq!(r, Rect::new(12, 4, 76, 22));
+    }
+
+    #[test]
+    fn select_overrides_span_colours_keeps_modifiers() {
+        let line = Line::from(vec![
+            Span::styled("a", Style::new().fg(ACCENT)),
+            Span::styled(
+                "b",
+                Style::new().fg(MUTED).add_modifier(Modifier::UNDERLINED),
+            ),
+        ]);
+        for focused in [true, false] {
+            let l = select(line.clone(), focused);
+            let want = selection(focused);
+            for s in &l.spans {
+                assert_eq!(s.style.fg, want.fg, "{focused}");
+                assert_eq!(s.style.bg, want.bg, "{focused}");
+                assert_ne!(s.style.fg, s.style.bg);
+            }
+            assert!(l.spans[1].style.add_modifier.contains(Modifier::UNDERLINED));
+        }
     }
 
     #[test]

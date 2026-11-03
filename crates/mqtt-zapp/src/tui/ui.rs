@@ -367,7 +367,7 @@ fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
             let flash = app.is_flashing(row.id, now);
             let line = Line::from(row_spans(&app.tree, row, query, width, flash));
             if Some(i) == selected {
-                line.style(theme::selection(focused))
+                theme::select(line, focused)
             } else {
                 line
             }
@@ -1084,6 +1084,22 @@ mod tests {
         assert_eq!(sel.bg, theme::SEL_BG);
         assert_ne!(other.bg, theme::SEL_BG);
         assert!(other.modifier.contains(FLASH_MODIFIER));
+    }
+
+    #[test]
+    fn selected_row_text_is_readable_on_selection_bg() {
+        // `a` is fresh (flashing), has a muted preview, count and accent marker.
+        let mut a = app_with(&[("a/x", b"1"), ("b", b"2")]);
+        a.handle_action(Action::Down);
+        let b = draw(&mut a, 80, 24);
+        let s = text(&b);
+        let y = s.lines().position(|l| l.contains("▸ a")).unwrap() as u16;
+        let cells: Vec<_> = (1..79)
+            .map(|x| &b[(x, y)])
+            .filter(|c| c.bg == theme::SEL_BG)
+            .collect();
+        assert!(cells.len() > 10, "selection spans the row");
+        assert!(cells.iter().all(|c| c.fg == theme::SEL_FG), "{s}");
     }
 
     #[test]

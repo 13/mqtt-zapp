@@ -127,11 +127,7 @@ pub fn render_picker(
                         Span::raw("  "),
                         Span::styled(server_url(p), muted),
                     ]);
-                    if sel {
-                        line.style(theme::selection(true))
-                    } else {
-                        line
-                    }
+                    if sel { theme::select(line, true) } else { line }
                 },
             ));
             v

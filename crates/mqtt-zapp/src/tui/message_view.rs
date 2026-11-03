@@ -470,7 +470,7 @@ fn render_history(f: &mut Frame, area: Rect, app: &App, s: &Shown) {
                 Span::raw(format!("  {}", preview(&m.payload, HISTORY_PREVIEW))),
             ]);
             if Some(row) == sel_row && app.history_sel.is_some() {
-                line.style(theme::selection(focused))
+                theme::select(line, focused)
             } else {
                 line
             }
