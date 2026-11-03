@@ -246,6 +246,9 @@ pub struct App {
     /// Unix second of the last redraw for the header's live age.
     pub age_second: u64,
     pub show_diff: bool,
+    /// History entry the diff compares against (`m`), by (time, size);
+    /// `None` diffs against the previous message.
+    pub diff_base: Option<(std::time::SystemTime, usize)>,
     pub payload_scroll: usize,
     /// Memoised payload-area content; see `message_view`.
     pub body_cache: super::message_view::BodyCache,
@@ -318,6 +321,7 @@ impl App {
             history_sel: None,
             age_second: 0,
             show_diff: false,
+            diff_base: None,
             payload_scroll: 0,
             body_cache: Default::default(),
             chart_cache: Default::default(),
@@ -357,6 +361,7 @@ impl App {
         self.expanded.clear();
         self.selected = None;
         self.history_sel = None;
+        self.diff_base = None;
         self.payload_scroll = 0;
         self.filter = None;
         self.search.clear();
@@ -381,6 +386,18 @@ impl App {
                     && self.selected == Some(id)
                 {
                     self.history_sel = self.history_sel.map(|i| i.saturating_sub(1));
+                }
+                // The marked entry fell out of the ring.
+                if self.selected == Some(id)
+                    && let Some(base) = self.diff_base
+                    && !self
+                        .tree
+                        .node(id)
+                        .history
+                        .iter()
+                        .any(|m| (m.received_at, m.payload.len()) == base)
+                {
+                    self.diff_base = None;
                 }
                 self.msg_rate.record(Instant::now());
                 self.tree_changed = true;
@@ -724,6 +741,7 @@ impl App {
                 self.show_diff = !self.show_diff;
                 self.payload_scroll = 0;
             }
+            Action::MarkDiffBase => self.mark_diff_base(),
             Action::ScrollDown => self.scroll_payload(true),
             Action::ScrollUp => self.scroll_payload(false),
             Action::Top => self.move_selection(|_, _| 0),
@@ -896,9 +914,28 @@ impl App {
     }
 
     /// Select a node; a different node starts with a live view at the top.
-    fn select(&mut self, id: NodeId) {
+    /// `m`: compare against the shown entry, or stop when it already is the base.
+    fn mark_diff_base(&mut self) {
+        let Some(m) = super::message_view::shown_message(self) else {
+            self.set_note(Note::info("nothing to mark"), Instant::now());
+            return;
+        };
+        let stamp = (m.received_at, m.payload.len());
+        if self.diff_base == Some(stamp) {
+            self.diff_base = None;
+            self.set_note(Note::info("diff base cleared"), Instant::now());
+        } else {
+            self.diff_base = Some(stamp);
+            self.show_diff = true;
+            self.payload_scroll = 0;
+            self.set_note(Note::info("diff base marked"), Instant::now());
+        }
+    }
+
+    pub(super) fn select(&mut self, id: NodeId) {
         if self.selected != Some(id) {
             self.chart = None;
+            self.diff_base = None;
             self.history_sel = None;
             self.payload_scroll = 0;
         }

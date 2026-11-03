@@ -706,3 +706,31 @@ fn key_with_escaped_quote_is_coloured_as_key() {
     let vx = l[y][..l[y].find(r#""c\\""#).unwrap()].chars().count() as u16;
     assert_eq!(b[(vx, y as u16)].fg, Color::Green);
 }
+
+#[test]
+fn diff_uses_marked_base() {
+    let mut a = app_with(&[br#"{"v":1}"#, br#"{"v":2}"#, br#"{"v":3}"#]);
+    a.history_sel = Some(0);
+    a.handle_action(Action::MarkDiffBase);
+    a.history_sel = None; // live: shows v3
+    let s = text(&draw(&a));
+    assert!(s.contains("~ v: 1 → 3"), "{s}");
+}
+
+#[test]
+fn title_names_base_time_and_marks_row() {
+    let mut a = app_with(&[b"one", b"two"]);
+    a.timestamp_format = "%H:%M".into();
+    a.history_sel = Some(0);
+    a.handle_action(Action::MarkDiffBase);
+    let s = text(&draw(&a));
+    assert!(s.contains("diff vs "), "{s}");
+    assert_eq!(s.matches('◆').count(), 1, "{s}");
+}
+
+#[test]
+fn diff_without_base_still_uses_previous() {
+    let mut a = app_with(&[br#"{"v":1}"#, br#"{"v":2}"#, br#"{"v":3}"#]);
+    a.show_diff = true;
+    assert!(text(&draw(&a)).contains("~ v: 2 → 3"));
+}

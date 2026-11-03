@@ -39,6 +39,7 @@ pub enum Action {
     DeleteProfile,
     MoveUp,
     MoveDown,
+    MarkDiffBase,
 }
 
 impl Action {
@@ -75,6 +76,7 @@ impl Action {
         (Action::DeleteProfile, "delete_profile", &["D"]),
         (Action::MoveUp, "move_up", &["K"]),
         (Action::MoveDown, "move_down", &["J"]),
+        (Action::MarkDiffBase, "mark_diff_base", &["m"]),
     ];
 
     /// The snake_case name used in `[keys]`.

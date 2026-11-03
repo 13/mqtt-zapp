@@ -1021,3 +1021,74 @@ fn help_opens_on_question_mark_and_any_key_closes() {
         Effect::Quit
     ));
 }
+
+// --- diff base ---
+
+fn history_app(depth: usize, payloads: &[&str]) -> App {
+    let s = Settings {
+        history_depth: depth,
+        ..Settings::default()
+    };
+    let mut a = App::new(Launch::Picker, ProfileStore::default(), s).unwrap();
+    a.mode = Mode::Browse;
+    for p in payloads {
+        a.apply_core_event(msg("t", p));
+    }
+    a.selected = a.tree.find("t");
+    a
+}
+
+#[test]
+fn m_marks_shown_entry_and_turns_diff_on() {
+    let mut a = history_app(10, &["1", "2", "3"]);
+    a.history_sel = Some(0);
+    a.handle_action(Action::MarkDiffBase);
+    let first = &a.tree.node(a.selected.unwrap()).history[0];
+    assert_eq!(a.diff_base, Some((first.received_at, first.payload.len())));
+    assert!(a.show_diff);
+}
+
+#[test]
+fn m_twice_unmarks() {
+    let mut a = history_app(10, &["1", "2"]);
+    a.handle_action(Action::MarkDiffBase);
+    a.handle_action(Action::MarkDiffBase);
+    assert_eq!(a.diff_base, None);
+}
+
+#[test]
+fn m_without_message_notes() {
+    let mut a = browse(&[]);
+    a.handle_action(Action::MarkDiffBase);
+    assert_eq!(a.diff_base, None);
+    assert!(a.note_at(Instant::now()).is_some());
+}
+
+#[test]
+fn base_cleared_on_topic_change() {
+    let mut a = history_app(10, &["1", "2"]);
+    a.apply_core_event(msg("u", "x"));
+    a.handle_action(Action::MarkDiffBase);
+    assert!(a.diff_base.is_some());
+    let u = a.tree.find("u").unwrap();
+    a.select(u);
+    assert_eq!(a.diff_base, None);
+}
+
+#[test]
+fn base_cleared_when_evicted() {
+    let mut a = history_app(3, &["1", "2", "3"]);
+    a.history_sel = Some(0);
+    a.handle_action(Action::MarkDiffBase);
+    a.history_sel = None;
+    a.apply_core_event(msg("t", "4"));
+    assert_eq!(a.diff_base, None);
+}
+
+#[test]
+fn base_kept_when_other_topics_arrive() {
+    let mut a = history_app(3, &["1", "2", "3"]);
+    a.handle_action(Action::MarkDiffBase);
+    a.apply_core_event(msg("other", "x"));
+    assert!(a.diff_base.is_some());
+}

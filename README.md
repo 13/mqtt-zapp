@@ -81,7 +81,8 @@ time.
 | `p` | `publish` | Open the publish form |
 | `tab` | `focus_next` | Switch pane |
 | `enter` | `select` | Select |
-| `d` | `toggle_diff` | Diff against the previous message |
+| `d` | `toggle_diff` | Diff against the previous message (or the marked one) |
+| `m` | `mark_diff_base` | Mark the shown history entry as the diff base (again: unmark) |
 | `?` | `help` | Show the key help |
 | `q` | `quit` | Quit |
 | `esc` | `cancel` | Clear the search / close |

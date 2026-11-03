@@ -76,6 +76,8 @@ struct Shown<'a> {
     prev: Option<&'a Message>,
     /// Index into `node.history` of `msg`, when there is a history.
     idx: Option<usize>,
+    /// Index into `node.history` of the marked diff base (`m`), if any.
+    base: Option<usize>,
 }
 
 fn shown(app: &App) -> Option<Shown<'_>> {
@@ -88,15 +90,24 @@ fn shown(app: &App) -> Option<Shown<'_>> {
             msg,
             prev: None,
             idx: None,
+            base: None,
         });
     }
     // The index may be stale; never trust it.
     let i = app.history_sel.map_or(h.len() - 1, |i| i.min(h.len() - 1));
+    let stamp = |m: &Message| (m.received_at, m.payload.len());
+    let base = app
+        .diff_base
+        .and_then(|b| h.iter().position(|m| stamp(m) == b));
     Some(Shown {
         node,
         msg: &h[i],
-        prev: i.checked_sub(1).map(|p| &h[p]),
+        prev: match base {
+            Some(b) => Some(&h[b]),
+            None => i.checked_sub(1).map(|p| &h[p]),
+        },
         idx: Some(i),
+        base,
     })
 }
 
@@ -548,7 +559,15 @@ fn render_chart(f: &mut Frame, area: Rect, app: &App, s: &Shown, path: Option<&s
 }
 
 fn render_payload(f: &mut Frame, area: Rect, app: &App) {
-    let title = if app.show_diff { "diff" } else { "payload" };
+    let base_time = shown(app)
+        .and_then(|s| s.base.map(|b| s.node.history[b].received_at))
+        .map(|t| clock(t, &app.timestamp_format));
+    let title = match (app.show_diff, base_time) {
+        (true, Some(t)) => format!("diff vs {t}"),
+        (true, None) => "diff".to_owned(),
+        (false, _) => "payload".to_owned(),
+    };
+    let title = title.as_str();
     app.hit.set(HitAreas {
         payload: area,
         ..app.hit.get()
@@ -651,12 +670,17 @@ fn render_history(f: &mut Frame, area: Rect, app: &App, s: &Shown) {
         .skip(offset)
         .take(height)
         .map(|(row, m)| {
+            let marked = s.base == Some(h.len() - 1 - row);
             let line = Line::from(vec![
                 Span::styled(
                     clock(m.received_at, "%H:%M:%S"),
                     Style::new().fg(theme::MUTED),
                 ),
-                Span::raw(format!("  {}", preview(&m.payload, HISTORY_PREVIEW))),
+                Span::styled(
+                    if marked { " ◆ " } else { "  " },
+                    Style::new().fg(theme::ACCENT),
+                ),
+                Span::raw(preview(&m.payload, HISTORY_PREVIEW)),
             ]);
             if Some(row) == sel_row && app.history_sel.is_some() {
                 theme::select(line, focused)

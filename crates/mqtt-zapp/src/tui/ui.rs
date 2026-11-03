@@ -198,6 +198,7 @@ const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
             Action::ScrollDown,
             Action::ScrollUp,
             Action::ToggleDiff,
+            Action::MarkDiffBase,
             Action::Chart,
             Action::Stats,
         ],
@@ -540,6 +541,7 @@ fn hints(app: &App) -> Vec<(String, &'static str)> {
         (Mode::Browse, Focus::History) => vec![
             (jk, "older/newer"),
             (k(Action::ToggleDiff), "diff"),
+            (k(Action::MarkDiffBase), "mark"),
             (k(Action::FocusNext), "focus"),
             (k(Action::Help), "help"),
             (k(Action::Quit), "quit"),
