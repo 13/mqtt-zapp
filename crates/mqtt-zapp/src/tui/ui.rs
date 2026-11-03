@@ -124,7 +124,14 @@ fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
         .and_then(|s| rows.iter().position(|r| r.id == s));
     app.tree_offset = scroll_offset(app.tree_offset, selected, rows.len(), height);
 
+    if rows.is_empty() {
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        render_tree_empty(f, app, inner);
+        return;
+    }
     let now = Instant::now();
+    let width = block.inner(area).width as usize;
     let query = app.filter.as_ref().map(|f| f.query.as_str());
     let lines: Vec<Line> = rows
         .iter()
@@ -132,17 +139,44 @@ fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
         .skip(app.tree_offset)
         .take(height)
         .map(|(i, row)| {
-            let mut style = Style::new();
-            if app.is_flashing(row.id, now) {
-                style = style.fg(FLASH_FG).add_modifier(FLASH_MODIFIER);
-            }
+            let flash = app.is_flashing(row.id, now);
+            let line = Line::from(row_spans(&app.tree, row, query, width, flash));
             if Some(i) == selected {
-                style = style.patch(theme::selection(focused));
+                line.style(theme::selection(focused))
+            } else {
+                line
             }
-            Line::from(row_spans(&app.tree, row, query)).style(style)
         })
         .collect();
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// The tree pane with no rows: waiting for the first message, or a filter
+/// that matches nothing.
+fn render_tree_empty(f: &mut Frame, app: &App, area: Rect) {
+    let muted = Style::new().fg(theme::MUTED);
+    let mut lines = match &app.filter {
+        Some(flt) => vec![Line::styled(
+            format!("no topics match \"{}\"", single_line(&flt.query)),
+            muted,
+        )],
+        None => vec![Line::styled("waiting for messages…", muted)],
+    };
+    if let (None, Some(server)) = (&app.filter, &app.server) {
+        lines.push(Line::styled(
+            format!(
+                "subscribed to {}",
+                single_line(&server.subscriptions.join(", "))
+            ),
+            muted,
+        ));
+    }
+    let top = area.height.saturating_sub(lines.len() as u16) / 2;
+    let [_, body] = Layout::vertical([Constraint::Length(top), Constraint::Min(0)]).areas(area);
+    f.render_widget(
+        Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center),
+        body,
+    );
 }
 
 /// Keep the selected row inside a window of `height` rows.
@@ -158,9 +192,16 @@ fn scroll_offset(offset: usize, selected: Option<usize>, len: usize, height: usi
     offset.min(len.saturating_sub(height))
 }
 
-/// `▸ name = preview (count)`, indented by depth; `query` matches in the
-/// name and the preview are highlighted.
-fn row_spans<'a>(tree: &TopicTree, row: &Row, query: Option<&str>) -> Vec<Span<'a>> {
+/// `▸ name  preview ……… count`, indented by depth, the count right-aligned
+/// to `width` (dropped when it does not fit). `query` matches in the name and
+/// the preview are highlighted; `flash` colours the name.
+fn row_spans<'a>(
+    tree: &TopicTree,
+    row: &Row,
+    query: Option<&str>,
+    width: usize,
+    flash: bool,
+) -> Vec<Span<'a>> {
     let node = tree.node(row.id);
     let marker = match (row.has_children, row.expanded) {
         (false, _) => ' ',
@@ -172,39 +213,57 @@ fn row_spans<'a>(tree: &TopicTree, row: &Row, query: Option<&str>) -> Vec<Span<'
     } else {
         single_line(&node.name)
     };
-    let mut spans = vec![Span::raw(format!(
-        "{}{marker} ",
-        "  ".repeat(row.depth as usize)
-    ))];
-    highlight(&mut spans, name, query);
-    if let Some(m) = &node.latest {
-        spans.push(Span::raw(" = "));
-        highlight(&mut spans, preview(&m.payload, PREVIEW_CHARS), query);
+    let mut spans = vec![
+        Span::raw("  ".repeat(row.depth as usize)),
+        Span::styled(format!("{marker} "), Style::new().fg(theme::ACCENT)),
+    ];
+    let mut name_style = Style::new();
+    if node.latest.is_some() {
+        name_style = name_style.add_modifier(Modifier::BOLD);
     }
-    spans.push(Span::raw(if node.topic_count > 0 {
-        format!(" ({} msgs · {} topics)", node.msg_count, node.topic_count)
+    if flash {
+        name_style = name_style.fg(FLASH_FG).add_modifier(FLASH_MODIFIER);
+    }
+    highlight(&mut spans, name, query, name_style);
+    if let Some(m) = &node.latest {
+        spans.push(Span::raw("  "));
+        highlight(
+            &mut spans,
+            preview(&m.payload, PREVIEW_CHARS),
+            query,
+            Style::new().fg(theme::MUTED),
+        );
+    }
+    let count = if node.topic_count > 0 {
+        format!("{} · {}t", node.msg_count, node.topic_count)
     } else {
-        format!(" ({})", node.msg_count)
-    }));
+        node.msg_count.to_string()
+    };
+    let used = spans_width(&spans);
+    let count_w = count.chars().count();
+    if used + 1 + count_w <= width {
+        spans.push(Span::raw(" ".repeat(width - used - count_w)));
+        spans.push(Span::styled(count, Style::new().fg(theme::MUTED)));
+    }
     spans
 }
 
 /// Push `text` as spans, styling the byte ranges where `query` matches.
-fn highlight<'a>(out: &mut Vec<Span<'a>>, text: String, query: Option<&str>) {
+fn highlight<'a>(out: &mut Vec<Span<'a>>, text: String, query: Option<&str>, base: Style) {
     let ranges = query.map(|q| match_ranges(&text, q)).unwrap_or_default();
     let mut at = 0;
     for r in ranges {
         if r.start > at {
-            out.push(Span::raw(text[at..r.start].to_owned()));
+            out.push(Span::styled(text[at..r.start].to_owned(), base));
         }
         out.push(Span::styled(
             text[r.clone()].to_owned(),
-            Style::new().add_modifier(MATCH_MODIFIER),
+            base.add_modifier(MATCH_MODIFIER),
         ));
         at = r.end;
     }
     if at < text.len() {
-        out.push(Span::raw(text[at..].to_owned()));
+        out.push(Span::styled(text[at..].to_owned(), base));
     }
 }
 
@@ -533,9 +592,18 @@ mod tests {
         a.handle_action(Action::Down);
         a.handle_action(Action::Expand);
         let s = text(&draw(&mut a, 80, 24));
-        assert!(s.contains("▾ a (3 msgs · 2 topics)"), "{s}");
-        assert!(s.contains("  ▸ ∅ (1 msgs · 1 topics)"), "{s}");
-        assert!(s.contains("b = world (2)"), "{s}");
+        let line = |needle: &str| {
+            s.lines()
+                .find(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle}: {s}"))
+                .chars()
+                .take(40) // the tree pane at 80 columns
+                .collect::<String>()
+        };
+        // Counts are right-aligned against the pane's right border.
+        assert!(line("▾ a").ends_with(" 3 · 2t┃"), "{s}");
+        assert!(line("  ▸ ∅").ends_with(" 1 · 1t┃"), "{s}");
+        assert!(line("b  world").ends_with(" 2┃"), "{s}");
         assert!(s.contains("message"), "right pane placeholder: {s}");
     }
 
@@ -546,8 +614,8 @@ mod tests {
         let b = draw(&mut a, 80, 24);
         let s = text(&b);
         let row_of = |needle: &str| s.lines().position(|l| l.contains(needle)).unwrap() as u16;
-        let sel = &b[(3, row_of("a = 1"))];
-        let other = &b[(3, row_of("b = 2"))];
+        let sel = &b[(3, row_of("a  1"))];
+        let other = &b[(3, row_of("b  2"))];
         assert_eq!(sel.bg, theme::SEL_BG);
         assert_ne!(other.bg, theme::SEL_BG);
         assert!(other.modifier.contains(FLASH_MODIFIER));
@@ -581,8 +649,8 @@ mod tests {
         let last = s.lines().last().unwrap().trim_end().to_owned();
         assert!(last.starts_with("/wzr▏"), "{last}");
         assert!(last.ends_with("enter keep  esc clear"), "{last}");
-        assert!(!s.contains("= 1"), "non-matching row hidden: {s}");
-        let row = s.lines().position(|l| l.contains("esp-WZR1 =")).unwrap();
+        assert!(!s.contains("  b  1"), "non-matching row hidden: {s}");
+        let row = s.lines().position(|l| l.contains("esp-WZR1  ")).unwrap();
         let line = s.lines().nth(row).unwrap();
         let line = &line[..line.char_indices().nth(40).unwrap().0]; // tree pane
         let col_of = |byte: usize| line[..byte].chars().count() as u16;
@@ -757,6 +825,26 @@ mod tests {
             a.on_search_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
         assert!(last_line(&draw(&mut a, 40, 10)).starts_with("/xxx"));
+    }
+
+    #[test]
+    fn tree_empty_state_lists_subscriptions() {
+        let mut a = app_with(&[]);
+        a.server = Some(home());
+        let s = text(&draw(&mut a, 100, 24));
+        assert!(s.contains("waiting for messages…"), "{s}");
+        assert!(s.contains("subscribed to #, $SYS/#"), "{s}");
+        a.server = None;
+        let s = text(&draw(&mut a, 100, 24));
+        assert!(!s.contains("subscribed to"), "{s}");
+    }
+
+    #[test]
+    fn tree_filter_no_match_message() {
+        let mut a = app_with(&[("a", b"1")]);
+        a.filter = mqtt_zapp_core::search::filter(&a.tree, "zzz");
+        let s = text(&draw(&mut a, 100, 24));
+        assert!(s.contains("no topics match \"zzz\""), "{s}");
     }
 
     #[test]
