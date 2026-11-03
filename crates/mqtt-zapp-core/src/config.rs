@@ -49,11 +49,11 @@ pub enum PasswordSource {
     Prompt,
 }
 
-fn default_ws_path() -> String {
+pub fn default_ws_path() -> String {
     "/".into()
 }
 
-fn default_subscriptions() -> Vec<String> {
+pub fn default_subscriptions() -> Vec<String> {
     vec!["#".into(), "$SYS/#".into()]
 }
 
