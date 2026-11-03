@@ -418,7 +418,7 @@ fn history_title_says_live_or_paused() {
     let mut a = app_with(&[b"1", b"2"]);
     assert!(text(&draw(&a)).contains("history · live"));
     a.history_sel = Some(0);
-    assert!(text(&draw(&a)).contains("history · paused (j to newest)"));
+    assert!(text(&draw(&a)).contains("history · paused (k to newest)"));
 }
 
 #[test]

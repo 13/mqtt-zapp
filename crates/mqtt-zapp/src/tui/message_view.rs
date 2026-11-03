@@ -689,7 +689,7 @@ fn render_history(f: &mut Frame, area: Rect, app: &App, s: &Shown) {
         None => "history · live".to_owned(),
         Some(_) => format!(
             "history · paused ({} to newest)",
-            super::ui::key_for(app, Action::Down)
+            super::ui::key_for(app, Action::Up)
         ),
     };
     let focused = app.focus == Focus::History;
