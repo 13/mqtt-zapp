@@ -763,8 +763,9 @@ impl App {
         self.dirty = true;
         match action {
             Action::Quit => return Effect::Quit,
-            Action::Up if self.focus == Focus::History => self.history_older(),
-            Action::Down if self.focus == Focus::History => self.history_newer(),
+            // The list is newest first: down the screen is older.
+            Action::Up if self.focus == Focus::History => self.history_newer(),
+            Action::Down if self.focus == Focus::History => self.history_older(),
             Action::Up if self.focus == Focus::Payload => self.scroll_payload_by(-1),
             Action::Down if self.focus == Focus::Payload => self.scroll_payload_by(1),
             Action::Top if self.focus == Focus::Payload => self.payload_scroll = 0,
@@ -902,7 +903,7 @@ impl App {
             .map_or(0, |id| self.tree.node(id).history.len())
     }
 
-    /// `k` in the history list: towards older entries.
+    /// `j` in the history list (down the screen): towards older entries.
     fn history_older(&mut self) {
         let len = self.history_len();
         let to = match self.history_sel {
@@ -915,7 +916,8 @@ impl App {
         }
     }
 
-    /// `j` in the history list: towards newer entries; the newest entry is live.
+    /// `k` in the history list (up the screen): towards newer entries; the
+    /// newest entry is live.
     fn history_newer(&mut self) {
         if let Some(i) = self.history_sel {
             self.history_sel = (i + 2 < self.history_len()).then_some(i + 1);

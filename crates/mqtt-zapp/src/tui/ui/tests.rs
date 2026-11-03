@@ -1219,3 +1219,55 @@ fn compact_header_has_copy_glyph() {
     let x = line.chars().count() as u16 - 1;
     assert_eq!(copied(click(&mut a, x, row)), ("topic", "dev/x".into()));
 }
+
+/// The screen row of the highlighted history entry (focused selection bg).
+fn history_highlight_y(b: &Buffer) -> Option<u16> {
+    let area = b.area;
+    (0..area.height).rev().find(|&y| {
+        let l: String = (0..area.width).map(|x| b[(x, y)].symbol()).collect();
+        l.contains("  p") && (0..area.width).any(|x| b[(x, y)].bg == theme::SEL_BG)
+    })
+}
+
+#[test]
+fn history_j_moves_highlight_down_the_screen() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let k = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    let mut a = app_with(&[
+        ("dev/x", b"p1"),
+        ("dev/x", b"p2"),
+        ("dev/x", b"p3"),
+        ("dev/x", b"p4"),
+    ]);
+    a.selected = a.tree.find("dev/x");
+    a.focus = Focus::History;
+    a.handle_key(k('j'));
+    let first = history_highlight_y(&draw(&mut a, 100, 30)).expect("a pinned row");
+    a.handle_key(k('j'));
+    let second = history_highlight_y(&draw(&mut a, 100, 30)).unwrap();
+    assert_eq!(second, first + 1, "j goes down the screen");
+    a.handle_key(k('k'));
+    assert_eq!(history_highlight_y(&draw(&mut a, 100, 30)), Some(first));
+}
+
+#[test]
+fn history_wheel_and_jk_agree() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
+    let items: &[(&str, &[u8])] = &[("dev/x", b"p1"), ("dev/x", b"p2"), ("dev/x", b"p3")];
+    let mut wheel = app_with(items);
+    wheel.selected = wheel.tree.find("dev/x");
+    let b = draw(&mut wheel, 100, 30);
+    let y = text(&b)
+        .lines()
+        .collect::<Vec<_>>()
+        .iter()
+        .rposition(|l| l.contains("  p1"))
+        .unwrap() as u16;
+    mouse(&mut wheel, MouseEventKind::ScrollDown, 70, y);
+    let mut keys = app_with(items);
+    keys.selected = keys.tree.find("dev/x");
+    keys.focus = Focus::History;
+    keys.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert!(wheel.history_sel.is_some());
+    assert_eq!(wheel.history_sel, keys.history_sel);
+}

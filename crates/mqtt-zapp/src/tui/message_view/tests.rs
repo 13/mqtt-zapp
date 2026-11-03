@@ -422,7 +422,7 @@ fn history_title_says_live_or_paused() {
     let mut a = app_with(&[b"1", b"2"]);
     assert!(text(&draw(&a)).contains("history · live"));
     a.history_sel = Some(0);
-    assert!(text(&draw(&a)).contains("history · paused (j to newest)"));
+    assert!(text(&draw(&a)).contains("history · paused (k to newest)"));
 }
 
 #[test]
@@ -574,27 +574,27 @@ fn payload_focus_keys_noop_without_message() {
 #[test]
 fn history_navigation_up_down() {
     let mut a = app_with(&[b"1", b"2", b"3", b"4"]);
-    hist(&mut a, &[Action::Up]);
+    hist(&mut a, &[Action::Down]);
     assert_eq!(a.history_sel, Some(2));
-    a.handle_action(Action::Up);
-    a.handle_action(Action::Up);
-    a.handle_action(Action::Up);
+    a.handle_action(Action::Down);
+    a.handle_action(Action::Down);
+    a.handle_action(Action::Down);
     assert_eq!(a.history_sel, Some(0));
-    a.handle_action(Action::Down);
+    a.handle_action(Action::Up);
     assert_eq!(a.history_sel, Some(1));
-    a.handle_action(Action::Down);
+    a.handle_action(Action::Up);
     assert_eq!(a.history_sel, Some(2));
     // The newest entry is live, never a frozen selection.
-    a.handle_action(Action::Down);
+    a.handle_action(Action::Up);
     assert_eq!(a.history_sel, None);
-    a.handle_action(Action::Down);
+    a.handle_action(Action::Up);
     assert_eq!(a.history_sel, None);
 }
 
 #[test]
-fn history_up_with_single_entry_stays_live() {
+fn history_down_with_single_entry_stays_live() {
     let mut a = app_with(&[b"1"]);
-    hist(&mut a, &[Action::Up]);
+    hist(&mut a, &[Action::Down]);
     assert_eq!(a.history_sel, None);
 }
 
@@ -609,7 +609,7 @@ fn tree_focus_jk_moves_tree_not_history() {
 fn selecting_other_node_resets_history_and_scroll() {
     let mut a = app_with(&[b"1", b"2", b"3"]);
     send(&mut a, "zzz", b"x", false);
-    hist(&mut a, &[Action::Up]);
+    hist(&mut a, &[Action::Down]);
     a.payload_scroll = 3;
     a.focus = Focus::Tree;
     a.handle_action(Action::Down);
@@ -840,4 +840,13 @@ fn clock_and_age_read_in_the_text_colour() {
     let b = t.backend().buffer();
     assert_eq!(cell_at(b, 0, &clock).fg, Color::Reset);
     assert_eq!(cell_at(b, 0, "now").fg, Color::Reset);
+}
+
+#[test]
+fn history_k_from_live_stays_live() {
+    let mut a = app_with(&[b"1", b"2", b"3", b"4"]);
+    hist(&mut a, &[Action::Up]);
+    assert_eq!(a.history_sel, None);
+    a.handle_action(Action::Down);
+    assert_eq!(a.history_sel, Some(2));
 }
