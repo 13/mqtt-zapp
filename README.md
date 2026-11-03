@@ -193,6 +193,7 @@ keys too.
 | `D` | `delete_profile` | In the picker: delete the selected profile |
 | `K` | `move_up` | In the picker: move the selected profile up (custom order) |
 | `J` | `move_down` | In the picker: move the selected profile down (custom order) |
+| `f` | `freeze` | Freeze the display: only your own keys, clicks and resizes redraw (again: live) |
 
 </details>
 
@@ -220,6 +221,8 @@ keys too.
 The wheel works on the pane under the pointer: it moves the selection in the
 tree, scrolls the payload and steps through the history. Copying uses OSC 52. Hold shift
 to select text with the mouse.
+
+To select text with the mouse in kitty and other terminals, press `f` first; live updates on the same lines clear a terminal selection.
 
 ### ✉️ Publishing
 

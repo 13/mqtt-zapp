@@ -310,6 +310,7 @@ const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
             Action::CopyTopic,
             Action::CopyPayload,
             Action::Brokers,
+            Action::Freeze,
             Action::Help,
             Action::Cancel,
             Action::Quit,
@@ -869,7 +870,11 @@ fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16, u16)>) {
             Style::new().fg(theme::WARN),
         )
     });
-    let fixed = badge.width() + 1;
+    // Frozen: never cut, the user must see why nothing moves.
+    let frozen = app
+        .frozen
+        .then(|| Span::styled(" · ❄ frozen", Style::new().fg(theme::WARN)));
+    let fixed = badge.width() + 1 + frozen.as_ref().map_or(0, Span::width);
     let pill_w = prefix.width() + reason.width() + suffix.width();
     let total = |name: &Option<Vec<Span>>,
                  url: &Option<Vec<Span>>,
@@ -908,6 +913,7 @@ fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16, u16)>) {
     );
     let state = format!("{prefix}{}{suffix}", ellipsize(&reason, room));
     let mut spans = vec![badge, Span::raw(" "), Span::styled(state, pill_style)];
+    spans.extend(frozen);
     spans.extend(warn);
     let broker = name.as_ref().map(|n| {
         let x = spans_width(&spans) + n[0].width();

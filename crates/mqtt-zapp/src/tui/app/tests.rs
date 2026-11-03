@@ -1839,3 +1839,51 @@ fn reset_tree_drops_cached_rows() {
     a.apply_core_event(msg("b", "v"));
     assert_eq!(row_names(&a), ["b"]);
 }
+
+#[test]
+fn freeze_stops_tick_redraws() {
+    let mut a = browse(&["a/live"]);
+    a.search = "live".into();
+    a.frozen = true;
+    a.dirty = false;
+    a.apply_core_event(msg("a/live", "next"));
+    a.apply_core_event(msg("b/live", "new"));
+    a.last_filter_rebuild -= Duration::from_millis(500);
+    a.on_tick();
+    assert!(!a.dirty, "a frozen display must not redraw on its own");
+    // Messages still land in the tree (and the filter) while frozen.
+    let b = a.tree.find("b/live").expect("message applied while frozen");
+    assert_eq!(a.tree.node(b).msg_count, 1);
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 2);
+}
+
+#[test]
+fn freeze_key_toggles_and_redraws() {
+    let mut a = browse(&["a"]);
+    a.dirty = false;
+    a.handle_key(key(KeyCode::Char('f')));
+    assert!(a.frozen);
+    assert!(a.dirty, "the frozen badge must be drawn");
+    assert_eq!(
+        a.note_at(Instant::now()),
+        Some(&Note::info("display frozen – f to resume"))
+    );
+    a.dirty = false;
+    // Input still redraws while frozen, through the tick.
+    a.on_tick();
+    a.handle_key(key(KeyCode::Char('j')));
+    assert!(a.dirty);
+    a.handle_key(key(KeyCode::Char('f')));
+    assert!(!a.frozen);
+    assert_eq!(a.note_at(Instant::now()), Some(&Note::info("display live")));
+}
+
+#[test]
+fn resize_redraws_while_frozen() {
+    let mut a = browse(&["a"]);
+    a.frozen = true;
+    a.dirty = false;
+    a.on_resize();
+    a.on_tick();
+    assert!(a.dirty, "a resize always redraws");
+}

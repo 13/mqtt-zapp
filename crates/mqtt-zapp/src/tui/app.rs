@@ -257,6 +257,10 @@ pub struct App {
     pub mode: Mode,
     pub conn_state: ConnState,
     pub dirty: bool,
+    /// `f`: only the user's own input redraws, so a terminal selection on
+    /// lines that live rows share survives (kitty clears it on any redraw of
+    /// one of its lines).
+    pub frozen: bool,
     /// Set when messages arrived since the last tick; gates the filter rebuild.
     tree_changed: bool,
     pub msg_rate: MsgRate,
@@ -387,6 +391,7 @@ impl App {
             mode,
             conn_state,
             dirty: true,
+            frozen: false,
             tree_changed: false,
             msg_rate: MsgRate::default(),
             dropped: 0,
@@ -465,7 +470,17 @@ impl App {
         self.dirty = true;
     }
 
+    /// Apply a broker event. While frozen the tree still changes, but only
+    /// the user's own input asks for a redraw.
     pub fn apply_core_event(&mut self, ev: CoreEvent) {
+        let dirty = self.dirty;
+        self.apply_core_event_inner(ev);
+        if self.frozen {
+            self.dirty = dirty;
+        }
+    }
+
+    fn apply_core_event_inner(&mut self, ev: CoreEvent) {
         match ev {
             CoreEvent::State(s) => self.conn_state = s,
             CoreEvent::Dropped(n) => self.dropped += n,
@@ -515,8 +530,17 @@ impl App {
     }
 
     /// Called every UI tick (100 ms): refresh the live filter so new messages
-    /// show up in it, and keep redrawing while something is flashing.
+    /// show up in it, and keep redrawing while something is flashing. While
+    /// frozen nothing here asks for a redraw; input and resizes still do.
     pub fn on_tick(&mut self) {
+        let dirty = self.dirty;
+        self.tick();
+        if self.frozen {
+            self.dirty = dirty;
+        }
+    }
+
+    fn tick(&mut self) {
         // Throttled: a busy broker changes the tree every tick, and a rebuild
         // scans every node. A skipped change stays pending in `tree_changed`.
         if self.tree_changed
@@ -552,6 +576,11 @@ impl App {
         if flashing || self.msg_rate.per_sec(now) > 0.0 {
             self.dirty = true;
         }
+    }
+
+    /// The terminal changed size: always redraw, frozen or not.
+    pub fn on_resize(&mut self) {
+        self.dirty = true;
     }
 
     pub fn set_note(&mut self, note: Note, now: Instant) {
@@ -1024,6 +1053,15 @@ impl App {
             }
             Action::Chart => self.cycle_chart(),
             Action::Stats => self.mode = Mode::Stats,
+            Action::Freeze => {
+                self.frozen = !self.frozen;
+                let note = if self.frozen {
+                    "display frozen – f to resume"
+                } else {
+                    "display live"
+                };
+                self.set_note(Note::info(note), Instant::now());
+            }
             // Picker-only.
             Action::AddProfile
             | Action::EditProfile

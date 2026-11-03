@@ -1623,3 +1623,25 @@ fn header_shows_security_warning() {
     assert!(top.contains("⚠ unverified tls"), "{top}");
     assert!(!top.contains("dropped"), "{top}");
 }
+
+#[test]
+fn header_shows_frozen_badge() {
+    let mut a = app_with(&[("a", b"1")]);
+    a.server = Some(home());
+    let top = first_line(&draw(&mut a, 120, 24));
+    assert!(!top.contains("frozen"), "{top}");
+    a.frozen = true;
+    a.dropped = 42;
+    let b = draw(&mut a, 160, 24);
+    let top = first_line(&b);
+    assert!(top.contains("❄ frozen"), "{top}");
+    let col = top[..top.find("❄ frozen").unwrap()].chars().count() as u16;
+    assert_eq!(b[(col, 0)].fg, theme::WARN);
+    // Narrow: the dropped badge goes, the frozen one stays.
+    a.apply_core_event(CoreEvent::State(
+        mqtt_zapp_core::client::ConnState::Connected,
+    ));
+    let top = first_line(&draw(&mut a, 40, 10));
+    assert!(!top.contains("dropped"), "{top}");
+    assert!(top.contains("❄ frozen"), "{top}");
+}

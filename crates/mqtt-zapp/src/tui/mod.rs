@@ -263,7 +263,7 @@ async fn event_loop(
                         return Ok(());
                     }
                 }
-                Some(Ok(Event::Resize(..))) => app.dirty = true,
+                Some(Ok(Event::Resize(..))) => app.on_resize(),
                 Some(Ok(_)) => {}
                 Some(Err(e)) => return Err(e).context("reading terminal input"),
                 None => return Ok(()),
