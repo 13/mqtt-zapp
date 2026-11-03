@@ -227,11 +227,46 @@ pub(crate) fn create_private_dir(dir: &Path) -> Result<()> {
     }
 }
 
+/// Follow symlinks at `path` (including dangling ones, up to 40 hops) to the
+/// file that should be replaced. A missing non-link path is returned as is.
+fn resolve_write_target(path: &Path) -> Result<PathBuf> {
+    let mut current = path.to_path_buf();
+    let mut followed = false;
+    for _ in 0..40 {
+        match std::fs::canonicalize(&current) {
+            Ok(p) => return Ok(p),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("resolving {}", current.display())),
+        }
+        match std::fs::symlink_metadata(&current) {
+            Ok(md) if md.file_type().is_symlink() => {
+                let target = std::fs::read_link(&current)
+                    .with_context(|| format!("reading link {}", current.display()))?;
+                current = match current.parent() {
+                    Some(p) => p.join(target),
+                    None => target,
+                };
+                followed = true;
+            }
+            Ok(_) => return Ok(current),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if followed && let Some(parent) = current.parent() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("creating {}", parent.display()))?;
+                }
+                return Ok(current);
+            }
+            Err(e) => return Err(e).with_context(|| format!("resolving {}", current.display())),
+        }
+    }
+    anyhow::bail!("too many levels of symbolic links: {}", path.display())
+}
+
 /// Write `contents` to `path` atomically (temp file in the same directory,
-/// fsync, rename), with mode 0600 on unix. A symlinked target is written
-/// through, so the link survives.
+/// fsync, rename), with mode 0600 on unix. A symlinked target, dangling or
+/// not, is written through, so the link survives.
 pub fn write_private(path: &Path, contents: &str) -> Result<()> {
-    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let resolved = resolve_write_target(path)?;
     let path = resolved.as_path();
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path.file_name().context("path has no file name")?;
@@ -623,5 +658,23 @@ mod tests {
             })
             .count();
         assert_eq!(tmps, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_private_writes_through_dangling_symlink() {
+        let d = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let real = other.path().join("real.toml");
+        let link = d.path().join("profiles.toml");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        write_private(&link, "new").unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new");
     }
 }
