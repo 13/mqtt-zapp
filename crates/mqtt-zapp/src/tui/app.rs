@@ -475,7 +475,10 @@ impl App {
                 self.search.pop();
                 self.rebuild_filter();
             }
-            KeyCode::Enter => self.mode = Mode::Browse,
+            KeyCode::Enter => {
+                self.reveal_selected();
+                self.mode = Mode::Browse;
+            }
             KeyCode::Esc => {
                 self.clear_search();
                 self.mode = Mode::Browse;
@@ -485,8 +488,19 @@ impl App {
     }
 
     fn clear_search(&mut self) {
+        self.reveal_selected();
         self.search.clear();
         self.filter = None;
+    }
+
+    /// Expand every ancestor of the selection, so it stays visible once a
+    /// filter (which shows everything expanded) goes away.
+    fn reveal_selected(&mut self) {
+        let mut cur = self.selected.and_then(|s| self.tree.node(s).parent);
+        while let Some(id) = cur.filter(|&id| id != TopicTree::ROOT) {
+            self.expanded.insert(id);
+            cur = self.tree.node(id).parent;
+        }
     }
 
     /// Recompute the filter from `search`; if the selection is not shown,
@@ -533,7 +547,7 @@ impl App {
                     self.expanded.insert(row.id);
                 }
             }
-            Action::ToggleExpand => {
+            Action::ToggleExpand | Action::Select => {
                 if let Some(row) = self.selected_row().filter(|r| r.has_children)
                     && !self.expanded.remove(&row.id)
                 {
@@ -545,7 +559,6 @@ impl App {
             Action::Cancel => self.clear_search(),
             Action::Publish => self.open_publish(),
             Action::Help => self.mode = Mode::Help,
-            Action::Select => {}
         }
         Effect::None
     }
@@ -855,6 +868,51 @@ mod tests {
         a.handle_key(key(KeyCode::Enter));
         a.handle_key(key(KeyCode::Esc));
         assert!(a.filter.is_none() && a.search.is_empty());
+    }
+
+    #[test]
+    fn clearing_filter_keeps_selected_deep_node_visible() {
+        for keep in [false, true] {
+            let mut a = search_app();
+            a.handle_key(key(KeyCode::Char('/')));
+            type_str(&mut a, "wzr");
+            let deep = a.tree.find("muh/esp/esp32-WZR1/LWT").unwrap();
+            a.selected = Some(deep);
+            if keep {
+                a.handle_key(key(KeyCode::Enter));
+                a.handle_key(key(KeyCode::Esc));
+            } else {
+                a.handle_key(key(KeyCode::Esc));
+            }
+            let rows = a.rows();
+            let i = rows.iter().position(|r| r.id == deep).expect("visible");
+            a.handle_action(Action::Down);
+            assert_eq!(a.selected, Some(rows[i + 1].id), "keep={keep}");
+            assert_eq!(sel(&a), "other");
+        }
+    }
+
+    #[test]
+    fn enter_keeping_filter_reveals_selection() {
+        let mut a = search_app();
+        a.handle_key(key(KeyCode::Char('/')));
+        type_str(&mut a, "wzr");
+        let deep = a.tree.find("muh/esp/esp32-WZR1/LWT").unwrap();
+        a.selected = Some(deep);
+        a.handle_key(key(KeyCode::Enter));
+        a.filter = None;
+        assert!(a.rows().iter().any(|r| r.id == deep));
+    }
+
+    #[test]
+    fn select_in_browse_toggles_expand() {
+        let mut a = browse(&["a/b"]);
+        a.handle_action(Action::Down);
+        let n = a.rows().len();
+        a.handle_action(Action::Select);
+        assert_eq!(a.rows().len(), n + 1);
+        a.handle_action(Action::Select);
+        assert_eq!(a.rows().len(), n);
     }
 
     #[test]

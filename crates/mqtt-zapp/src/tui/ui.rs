@@ -3,6 +3,7 @@
 //! the terminal.
 
 use super::app::{App, Focus, Mode};
+use super::keymap::Action;
 use super::rows::Row;
 use mqtt_zapp_core::TopicTree;
 use mqtt_zapp_core::client::ConnState;
@@ -186,7 +187,11 @@ fn row_spans<'a>(tree: &TopicTree, row: &Row, query: Option<&str>) -> Vec<Span<'
         spans.push(Span::raw(" = "));
         highlight(&mut spans, preview(&m.payload, PREVIEW_CHARS), query);
     }
-    spans.push(Span::raw(format!(" ({})", node.msg_count)));
+    spans.push(Span::raw(if node.topic_count > 0 {
+        format!(" ({} msgs · {} topics)", node.msg_count, node.topic_count)
+    } else {
+        format!(" ({})", node.msg_count)
+    }));
     spans
 }
 
@@ -213,28 +218,38 @@ fn single_line(s: &str) -> String {
     sanitize(s).replace('\n', "\u{23ce}")
 }
 
-fn mode_hint(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Browse => "/ search  p publish  ? help",
-        Mode::Picker => "enter connect  q quit",
-        Mode::Password => "enter connect  esc back",
-        _ => "",
+/// First key bound to `action`, or `?` when the user unbound it.
+fn key_for(app: &App, action: Action) -> String {
+    app.keymap
+        .bindings()
+        .into_iter()
+        .find(|(a, _)| *a == action)
+        .and_then(|(_, keys)| keys.first().map(ToString::to_string))
+        .unwrap_or_else(|| "?".into())
+}
+
+fn mode_hint(app: &App) -> String {
+    match app.mode {
+        Mode::Browse => format!(
+            "{} search  {} publish  {} history  {} help",
+            key_for(app, Action::Search),
+            key_for(app, Action::Publish),
+            key_for(app, Action::FocusNext),
+            key_for(app, Action::Help),
+        ),
+        Mode::Picker => "enter connect  q quit".into(),
+        Mode::Password if app.picker.profiles.is_empty() => "enter connect  esc quit".into(),
+        Mode::Password => "enter connect  esc back".into(),
+        _ => String::new(),
     }
 }
 
-/// `● name  X.X msg/s  N topics  hint`. While searching or filtering, the
-/// search text replaces it. Before a connection exists (picker, password)
+/// `● name  X.X msg/s  N topics  filter: q (N)  hint`. While typing a search,
+/// the search text replaces it. Before a connection exists (picker, password)
 /// only the hint is shown.
 fn status_line(app: &App) -> Line<'static> {
     if app.mode == Mode::SearchInput {
         return Line::raw(format!("/{}▏", single_line(&app.search)));
-    }
-    if let Some(f) = &app.filter {
-        return Line::raw(format!(
-            "filter: {} ({} matches)",
-            single_line(&f.query),
-            f.matches.len()
-        ));
     }
     let note = app.note_at(Instant::now()).map(|n| {
         single_line(n)
@@ -242,7 +257,7 @@ fn status_line(app: &App) -> Line<'static> {
             .take(NOTE_MAX_CHARS)
             .collect::<String>()
     });
-    let hint = note.as_deref().unwrap_or_else(|| mode_hint(app.mode));
+    let hint = note.unwrap_or_else(|| mode_hint(app));
     if matches!(app.mode, Mode::Picker | Mode::Password) {
         return Line::raw(hint.to_owned());
     }
@@ -266,8 +281,13 @@ fn status_line(app: &App) -> Line<'static> {
         ),
     };
     let name = app.profile_name.as_deref().map(single_line);
+    let filter = app
+        .filter
+        .as_ref()
+        .map(|f| format!("  filter: {} ({})", single_line(&f.query), f.matches.len()))
+        .unwrap_or_default();
     let rest = format!(
-        "{}  {:.1} msg/s  {} topics  {hint}",
+        "{}  {:.1} msg/s  {} topics{filter}  {hint}",
         name.map(|n| format!(" {n}")).unwrap_or_default(),
         app.msg_rate.per_sec(Instant::now()),
         app.tree.node(TopicTree::ROOT).topic_count
@@ -345,8 +365,8 @@ mod tests {
         a.handle_action(Action::Down);
         a.handle_action(Action::Expand);
         let s = text(&draw(&mut a, 80, 24));
-        assert!(s.contains("▾ a (3)"), "{s}");
-        assert!(s.contains("  ▸ ∅ (1)"), "{s}");
+        assert!(s.contains("▾ a (3 msgs · 2 topics)"), "{s}");
+        assert!(s.contains("  ▸ ∅ (1 msgs · 1 topics)"), "{s}");
         assert!(s.contains("b = world (2)"), "{s}");
         assert!(s.contains("message"), "right pane placeholder: {s}");
     }
@@ -410,13 +430,54 @@ mod tests {
         );
         a.on_search_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let s = text(&draw(&mut a, 80, 24));
+        assert!(s.lines().last().unwrap().contains("filter: wzr (1)"), "{s}");
+    }
+
+    #[test]
+    fn filter_segment_coexists_with_state_and_note() {
+        let mut a = app_with(&[("a/wzr", b"1")]);
+        a.apply_core_event(CoreEvent::State(
+            mqtt_zapp_core::client::ConnState::Connected,
+        ));
+        a.filter = mqtt_zapp_core::search::filter(&a.tree, "wzr");
+        a.set_note("published ok".into(), Instant::now());
+        let b = draw(&mut a, 100, 24);
+        let last = last_line(&b);
+        assert!(last.starts_with('●'), "{last}");
+        assert!(last.contains("msg/s"), "{last}");
+        assert!(last.contains("filter: wzr (1)"), "{last}");
+        assert!(last.contains("published ok"), "{last}");
+        assert!(!last.contains("p publish"), "note beats hint: {last}");
+    }
+
+    #[test]
+    fn browse_hint_follows_keymap_remaps() {
+        let mut a = app_with(&[("a", b"1")]);
+        let last = last_line(&draw(&mut a, 100, 24));
         assert!(
-            s.lines()
-                .last()
-                .unwrap()
-                .contains("filter: wzr (1 matches)"),
-            "{s}"
+            last.contains("/ search  p publish  tab history  ? help"),
+            "{last}"
         );
+        let mut s = Settings::default();
+        s.keys.insert("publish".into(), "P".into());
+        let mut a = App::new(Launch::Picker, ProfileStore::default(), s).unwrap();
+        a.mode = Mode::Browse;
+        let last = last_line(&draw(&mut a, 100, 24));
+        assert!(last.contains("P publish"), "{last}");
+        assert!(!last.contains("p publish"), "{last}");
+    }
+
+    #[test]
+    fn password_hint_says_quit_without_profiles() {
+        let mut a = picker_app(vec![]);
+        a.mode = Mode::Password;
+        assert!(last_line(&draw(&mut a, 100, 24)).contains("esc quit"));
+        let mut a = picker_app(vec![profile(
+            "x",
+            mqtt_zapp_core::config::PasswordSource::Prompt,
+        )]);
+        a.mode = Mode::Password;
+        assert!(last_line(&draw(&mut a, 100, 24)).contains("esc back"));
     }
 
     fn picker_app(profiles: Vec<mqtt_zapp_core::config::Profile>) -> App {
@@ -508,7 +569,7 @@ mod tests {
                 retry_in_ms: 3200,
             },
         ));
-        let b = draw(&mut a, 100, 24);
+        let b = draw(&mut a, 120, 24);
         let last = last_line(&b);
         assert!(
             last.contains("✕ connection refused – retry in 4s"),
@@ -516,7 +577,10 @@ mod tests {
         );
         assert!(last.contains("home"), "{last}");
         assert!(last.contains("0.0 msg/s  0 topics"), "{last}");
-        assert!(last.contains("/ search  p publish  ? help"), "{last}");
+        assert!(
+            last.contains("/ search  p publish  tab history  ? help"),
+            "{last}"
+        );
         let col = last.chars().position(|c| c == '✕').unwrap() as u16;
         let row = text(&b).lines().count() as u16 - 1;
         assert_eq!(b[(col, row)].fg, Color::Red);
