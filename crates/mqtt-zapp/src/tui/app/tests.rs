@@ -550,6 +550,7 @@ fn profile(name: &str, pw: PasswordSource) -> Profile {
         host: "h".into(),
         port: 1883,
         protocol: Protocol::Mqtt,
+        mqtt_version: Default::default(),
         ws_path: "/".into(),
         client_id: None,
         username: Some("u".into()),

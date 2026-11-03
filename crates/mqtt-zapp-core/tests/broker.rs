@@ -3,7 +3,7 @@
 mod support;
 
 use mqtt_zapp_core::client::{ConnState, Connection, CoreEvent};
-use mqtt_zapp_core::config::{PasswordSource, Profile, Protocol, TlsConfig};
+use mqtt_zapp_core::config::{MqttVersion, PasswordSource, Profile, Protocol, TlsConfig};
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 
@@ -13,6 +13,7 @@ fn profile(host: &str, port: u16, protocol: Protocol) -> Profile {
         host: host.into(),
         port,
         protocol,
+        mqtt_version: Default::default(),
         ws_path: "/".into(),
         client_id: None,
         username: None,
@@ -199,6 +200,132 @@ async fn reconnects_after_broker_restart() {
     let _b2 = support::start_on(false, ports).unwrap();
     // The subscription is re-sent on reconnect, so messages flow again.
     ready(&conn, &mut rx, "zapp/ready/again").await;
+}
+
+fn v5(mut p: Profile) -> Profile {
+    p.mqtt_version = MqttVersion::V5;
+    p
+}
+
+#[tokio::test]
+async fn receives_published_message_v5() {
+    let Some(b) = support::start(false) else {
+        return;
+    };
+    let p5 = v5(profile("127.0.0.1", b.port, Protocol::Mqtt));
+    let (conn_b, mut rx_b) = Connection::connect(&p5, None).unwrap();
+    ready(&conn_b, &mut rx_b, "zapp/ready/b5").await;
+
+    // A v3.1.1 publisher reaches the v5 subscriber, and the other way round.
+    let p4 = profile("127.0.0.1", b.port, Protocol::Mqtt);
+    let (conn_a, mut rx_a) = Connection::connect(&p4, None).unwrap();
+    ready(&conn_a, &mut rx_a, "zapp/ready/a4").await;
+    conn_a
+        .publish("zapp/t4", b"from v4".to_vec(), 1, false)
+        .await
+        .unwrap();
+    let CoreEvent::Message { msg, .. } = wait_for(&mut rx_b, |e| is_message(e, "zapp/t4"), 5).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(msg.payload, b"from v4");
+    conn_b
+        .publish("zapp/t5", b"from v5".to_vec(), 2, false)
+        .await
+        .unwrap();
+    let CoreEvent::Message { msg, .. } = wait_for(&mut rx_a, |e| is_message(e, "zapp/t5"), 5).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(msg.payload, b"from v5");
+}
+
+#[tokio::test]
+async fn retained_flag_v5() {
+    let Some(b) = support::start(false) else {
+        return;
+    };
+    let p5 = v5(profile("127.0.0.1", b.port, Protocol::Mqtt));
+    let (conn_a, mut rx_a) = Connection::connect(&p5, None).unwrap();
+    ready(&conn_a, &mut rx_a, "zapp/ready/r5").await;
+    conn_a
+        .publish("zapp/kept5", b"r".to_vec(), 1, true)
+        .await
+        .unwrap();
+    wait_for(&mut rx_a, |e| is_message(e, "zapp/kept5"), 5).await;
+    let (_c, mut rx) = Connection::connect(&p5, None).unwrap();
+    let CoreEvent::Message { msg, .. } =
+        wait_for(&mut rx, |e| is_message(e, "zapp/kept5"), 5).await
+    else {
+        unreachable!()
+    };
+    assert!(msg.retain);
+}
+
+/// Only MQTT 5 can keep the retain flag on a live (not on-subscribe)
+/// delivery ("retain as published"), so this tells the versions apart.
+#[tokio::test]
+async fn live_retained_publish_keeps_retain_flag_only_on_v5() {
+    let Some(b) = support::start(false) else {
+        return;
+    };
+    let p4 = profile("127.0.0.1", b.port, Protocol::Mqtt);
+    let p5 = v5(p4.clone());
+    let (c4, mut rx4) = Connection::connect(&p4, None).unwrap();
+    ready(&c4, &mut rx4, "zapp/ready/l4").await;
+    let (c5, mut rx5) = Connection::connect(&p5, None).unwrap();
+    ready(&c5, &mut rx5, "zapp/ready/l5").await;
+    c4.publish("zapp/live", b"r".to_vec(), 1, true)
+        .await
+        .unwrap();
+    let retain_of = |ev| match ev {
+        CoreEvent::Message { msg, .. } => msg.retain,
+        _ => unreachable!(),
+    };
+    assert!(retain_of(
+        wait_for(&mut rx5, |e| is_message(e, "zapp/live"), 5).await
+    ));
+    assert!(!retain_of(
+        wait_for(&mut rx4, |e| is_message(e, "zapp/live"), 5).await
+    ));
+}
+
+#[tokio::test]
+async fn websocket_v5() {
+    let Some(b) = support::start(false) else {
+        return;
+    };
+    let p = v5(profile("127.0.0.1", b.ws_port, Protocol::Ws));
+    let (conn, mut rx) = Connection::connect(&p, None).unwrap();
+    ready(&conn, &mut rx, "zapp/ready/ws5").await;
+}
+
+#[tokio::test]
+async fn reconnects_after_broker_restart_v5() {
+    let Some(b) = support::start(false) else {
+        return;
+    };
+    let ports = (b.port, b.ws_port, b.tls_port);
+    let p = v5(profile("127.0.0.1", b.port, Protocol::Mqtt));
+    let (conn, mut rx) = Connection::connect(&p, None).unwrap();
+    wait_for(&mut rx, is_connected, 5).await;
+    drop(b);
+    wait_for(&mut rx, is_disconnected, 5).await;
+    let _b2 = support::start_on(false, ports).unwrap();
+    ready(&conn, &mut rx, "zapp/ready/again5").await;
+}
+
+#[tokio::test]
+async fn auth_bad_password_v5_reports_disconnected() {
+    let Some(b) = support::start(true) else {
+        return;
+    };
+    let mut p = v5(profile("127.0.0.1", b.port, Protocol::Mqtt));
+    p.username = Some("zapp".into());
+    let (_good, mut rx_good) = Connection::connect(&p, Some("zapp-pw".into())).unwrap();
+    wait_for(&mut rx_good, is_connected, 5).await;
+    let (_c, mut rx) = Connection::connect(&p, Some("wrong".into())).unwrap();
+    wait_for(&mut rx, is_disconnected, 5).await;
 }
 
 #[tokio::test]

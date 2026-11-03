@@ -3,10 +3,11 @@
 //! and reports everything as UI-agnostic `CoreEvent`s. Broker errors never panic
 //! or end the task; it stops only on `disconnect()` or when the receiver drops.
 
-use crate::config::{Profile, Protocol, TlsConfig};
+use crate::config::{MqttVersion, Profile, Protocol, TlsConfig};
 use crate::payload::Message;
 use anyhow::{Context, Result, anyhow, bail};
 use rumqttc::tokio_rustls::rustls;
+use rumqttc::v5;
 use rumqttc::{
     AsyncClient, Event, EventLoop, MqttOptions, Outgoing, Packet, QoS, SubscribeFilter,
     TlsConfiguration, Transport,
@@ -41,8 +42,125 @@ pub enum CoreEvent {
 
 #[derive(Clone)]
 pub struct Connection {
-    client: AsyncClient,
+    client: Client,
     cancel: CancellationToken,
+}
+
+/// The request side, for either protocol version.
+#[derive(Clone)]
+enum Client {
+    V4(AsyncClient),
+    V5(v5::AsyncClient),
+}
+
+impl Client {
+    async fn publish(&self, topic: &str, qos: u8, retain: bool, payload: Vec<u8>) -> Result<()> {
+        match self {
+            Client::V4(c) => {
+                let qos = rumqttc::qos(qos).map_err(|e| anyhow!("invalid qos {qos}: {e}"))?;
+                Ok(c.publish(topic, qos, retain, payload).await?)
+            }
+            Client::V5(c) => {
+                let qos = v5::mqttbytes::qos(qos).ok_or_else(|| anyhow!("invalid qos {qos}"))?;
+                Ok(c.publish(topic, qos, retain, payload).await?)
+            }
+        }
+    }
+
+    /// Queue SUBSCRIBE without waiting; false when the request queue is full.
+    fn try_subscribe_many(&self, topics: &[String]) -> bool {
+        match self {
+            Client::V4(c) => c.try_subscribe_many(v4_filters(topics)).is_ok(),
+            Client::V5(c) => c.try_subscribe_many(v5_filters(topics)).is_ok(),
+        }
+    }
+
+    async fn subscribe_many(&self, topics: &[String]) -> Result<()> {
+        match self {
+            Client::V4(c) => Ok(c.subscribe_many(v4_filters(topics)).await?),
+            Client::V5(c) => Ok(c.subscribe_many(v5_filters(topics)).await?),
+        }
+    }
+
+    fn try_disconnect(&self) {
+        let _ = match self {
+            Client::V4(c) => c.try_disconnect().map_err(|_| ()),
+            Client::V5(c) => c.try_disconnect().map_err(|_| ()),
+        };
+    }
+}
+
+fn v4_filters(topics: &[String]) -> Vec<SubscribeFilter> {
+    topics
+        .iter()
+        .map(|t| SubscribeFilter::new(t.clone(), QoS::AtMostOnce))
+        .collect()
+}
+
+/// "Retain as published", so a live retained message keeps its flag (MQTT
+/// 5 only; 3.1.1 brokers clear it on live delivery).
+fn v5_filters(topics: &[String]) -> Vec<v5::mqttbytes::v5::Filter> {
+    topics
+        .iter()
+        .map(|t| {
+            let mut f = v5::mqttbytes::v5::Filter::new(t.clone(), v5::mqttbytes::QoS::AtMostOnce);
+            f.preserve_retain = true;
+            f
+        })
+        .collect()
+}
+
+/// The event loop for either protocol version.
+enum Loop {
+    V4(Box<EventLoop>),
+    V5(Box<v5::EventLoop>),
+}
+
+/// What `run` needs from one poll, version-independent.
+enum Polled {
+    ConnAck,
+    Publish { topic: String, msg: Message },
+    OutgoingDisconnect,
+    Other,
+    Err(String),
+}
+
+impl Loop {
+    async fn poll(&mut self) -> Polled {
+        let now = SystemTime::now;
+        match self {
+            Loop::V4(l) => match l.poll().await {
+                Ok(Event::Incoming(Packet::ConnAck(_))) => Polled::ConnAck,
+                Ok(Event::Incoming(Packet::Publish(p))) => Polled::Publish {
+                    msg: Message {
+                        payload: p.payload.to_vec(),
+                        qos: p.qos as u8,
+                        retain: p.retain,
+                        received_at: now(),
+                    },
+                    topic: p.topic,
+                },
+                Ok(Event::Outgoing(Outgoing::Disconnect)) => Polled::OutgoingDisconnect,
+                Ok(_) => Polled::Other,
+                Err(e) => Polled::Err(e.to_string()),
+            },
+            Loop::V5(l) => match l.poll().await {
+                Ok(v5::Event::Incoming(v5::Incoming::ConnAck(_))) => Polled::ConnAck,
+                Ok(v5::Event::Incoming(v5::Incoming::Publish(p))) => Polled::Publish {
+                    msg: Message {
+                        payload: p.payload.to_vec(),
+                        qos: p.qos as u8,
+                        retain: p.retain,
+                        received_at: now(),
+                    },
+                    topic: String::from_utf8_lossy(&p.topic).into_owned(),
+                },
+                Ok(v5::Event::Outgoing(Outgoing::Disconnect)) => Polled::OutgoingDisconnect,
+                Ok(_) => Polled::Other,
+                Err(e) => Polled::Err(e.to_string()),
+            },
+        }
+    }
 }
 
 impl Connection {
@@ -54,8 +172,17 @@ impl Connection {
     ) -> Result<(Connection, mpsc::Receiver<CoreEvent>)> {
         let handle = tokio::runtime::Handle::try_current()
             .context("Connection::connect needs a tokio runtime")?;
-        let opts = mqtt_options(profile, password)?;
-        let (client, eventloop) = AsyncClient::new(opts, REQUEST_CAPACITY);
+        let (client, eventloop) = match profile.mqtt_version {
+            MqttVersion::V311 => {
+                let (c, l) = AsyncClient::new(mqtt_options(profile, password)?, REQUEST_CAPACITY);
+                (Client::V4(c), Loop::V4(Box::new(l)))
+            }
+            MqttVersion::V5 => {
+                let opts = mqtt_options_v5(profile, password)?;
+                let (c, l) = v5::AsyncClient::new(opts, REQUEST_CAPACITY);
+                (Client::V5(c), Loop::V5(Box::new(l)))
+            }
+        };
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
         let cancel = CancellationToken::new();
         handle.spawn(run(
@@ -75,7 +202,6 @@ impl Connection {
         qos: u8,
         retain: bool,
     ) -> Result<()> {
-        let qos = rumqttc::qos(qos).map_err(|e| anyhow!("invalid qos {qos}: {e}"))?;
         // The request queue only drains while connected; don't hang the caller
         // for a whole outage.
         tokio::time::timeout(
@@ -89,14 +215,14 @@ impl Connection {
 
     /// Send DISCONNECT (best effort) and stop the background task.
     pub fn disconnect(&self) {
-        let _ = self.client.try_disconnect();
+        self.client.try_disconnect();
         self.cancel.cancel();
     }
 }
 
 async fn run(
-    mut eventloop: EventLoop,
-    client: AsyncClient,
+    mut eventloop: Loop,
+    client: Client,
     subscriptions: Vec<String>,
     tx: mpsc::Sender<CoreEvent>,
     cancel: CancellationToken,
@@ -120,29 +246,20 @@ async fn run(
             r = eventloop.poll() => r,
         };
         match polled {
-            Ok(Event::Incoming(Packet::ConnAck(_))) => {
+            Polled::ConnAck => {
                 connected = true;
                 backoff = BACKOFF_START_MS;
                 subscribe(&client, &subscriptions, &tx, &cancel);
                 emit!(CoreEvent::State(ConnState::Connected));
             }
-            Ok(Event::Incoming(Packet::Publish(p))) => {
-                let msg = Message {
-                    payload: p.payload.to_vec(),
-                    qos: p.qos as u8,
-                    retain: p.retain,
-                    received_at: SystemTime::now(),
-                };
-                emit!(CoreEvent::Message {
-                    topic: p.topic,
-                    msg
-                });
+            Polled::Publish { topic, msg } => {
+                emit!(CoreEvent::Message { topic, msg });
             }
-            Ok(_) => {}
-            Err(e) => {
+            Polled::OutgoingDisconnect | Polled::Other => {}
+            Polled::Err(reason) => {
                 connected = false;
                 emit!(CoreEvent::State(ConnState::Disconnected {
-                    reason: e.to_string(),
+                    reason,
                     retry_in_ms: backoff,
                 }));
                 tokio::select! {
@@ -159,9 +276,10 @@ async fn run(
     // Cancelled: give a queued DISCONNECT a moment to reach the broker.
     if connected {
         let _ = tokio::time::timeout(Duration::from_secs(1), async {
-            while let Ok(ev) = eventloop.poll().await {
-                if matches!(ev, Event::Outgoing(Outgoing::Disconnect)) {
-                    break;
+            loop {
+                match eventloop.poll().await {
+                    Polled::OutgoingDisconnect | Polled::Err(_) => break,
+                    _ => {}
                 }
             }
         })
@@ -174,29 +292,23 @@ async fn run(
 /// queued during an outage), a spawned task waits for room while the loop keeps
 /// draining; if even that fails, the reason is reported as `Disconnected`.
 fn subscribe(
-    client: &AsyncClient,
+    client: &Client,
     topics: &[String],
     tx: &mpsc::Sender<CoreEvent>,
     cancel: &CancellationToken,
 ) {
-    if topics.is_empty() {
-        return;
-    }
-    let filters: Vec<SubscribeFilter> = topics
-        .iter()
-        .map(|t| SubscribeFilter::new(t.clone(), QoS::AtMostOnce))
-        .collect();
-    if client.try_subscribe_many(filters.clone()).is_ok() {
+    if topics.is_empty() || client.try_subscribe_many(topics) {
         return;
     }
     let (client, tx, cancel) = (client.clone(), tx.clone(), cancel.clone());
+    let topics = topics.to_vec();
     tokio::spawn(async move {
-        if let Err(e) = client.subscribe_many(filters).await
+        if let Err(e) = client.subscribe_many(&topics).await
             && !cancel.is_cancelled()
         {
             let _ = tx
                 .send(CoreEvent::State(ConnState::Disconnected {
-                    reason: format!("subscribe failed: {e}"),
+                    reason: format!("subscribe failed: {e:#}"),
                     retry_in_ms: 0,
                 }))
                 .await;
@@ -204,12 +316,13 @@ fn subscribe(
     });
 }
 
-pub(crate) fn mqtt_options(profile: &Profile, password: Option<String>) -> Result<MqttOptions> {
+/// (client id, host or websocket URL, port) for either options type.
+fn endpoint(profile: &Profile) -> (String, String, u16) {
     let id = profile.effective_client_id();
     let host = &profile.host;
     let port = profile.port;
-    let mut opts = match profile.protocol {
-        Protocol::Mqtt | Protocol::Mqtts => MqttOptions::new(id, host, port),
+    let host = match profile.protocol {
+        Protocol::Mqtt | Protocol::Mqtts => host.clone(),
         Protocol::Ws | Protocol::Wss => {
             let scheme = if profile.protocol.is_tls() {
                 "wss"
@@ -223,20 +336,41 @@ pub(crate) fn mqtt_options(profile: &Profile, password: Option<String>) -> Resul
             };
             let path = &profile.ws_path;
             let slash = if path.starts_with('/') { "" } else { "/" };
-            MqttOptions::new(id, format!("{scheme}://{host}:{port}{slash}{path}"), port)
+            format!("{scheme}://{host}:{port}{slash}{path}")
         }
     };
-    opts.set_max_packet_size(MAX_PACKET, MAX_PACKET);
-    if let Some(user) = &profile.username {
-        opts.set_credentials(user, password.unwrap_or_default());
-    }
-    let transport = match profile.protocol {
+    (id, host, port)
+}
+
+fn transport(profile: &Profile) -> Result<Transport> {
+    Ok(match profile.protocol {
         Protocol::Mqtt => Transport::Tcp,
         Protocol::Ws => Transport::Ws,
         Protocol::Mqtts => Transport::Tls(TlsConfiguration::Rustls(tls_config(&profile.tls)?)),
         Protocol::Wss => Transport::Wss(TlsConfiguration::Rustls(tls_config(&profile.tls)?)),
-    };
-    opts.set_transport(transport);
+    })
+}
+
+pub(crate) fn mqtt_options(profile: &Profile, password: Option<String>) -> Result<MqttOptions> {
+    let (id, host, port) = endpoint(profile);
+    let mut opts = MqttOptions::new(id, host, port);
+    opts.set_max_packet_size(MAX_PACKET, MAX_PACKET);
+    if let Some(user) = &profile.username {
+        opts.set_credentials(user, password.unwrap_or_default());
+    }
+    opts.set_transport(transport(profile)?);
+    Ok(opts)
+}
+
+fn mqtt_options_v5(profile: &Profile, password: Option<String>) -> Result<v5::MqttOptions> {
+    let (id, host, port) = endpoint(profile);
+    let mut opts = v5::MqttOptions::new(id, host, port);
+    // Incoming limit, announced to the broker in CONNECT.
+    opts.set_max_packet_size(Some(MAX_PACKET as u32));
+    if let Some(user) = &profile.username {
+        opts.set_credentials(user, password.unwrap_or_default());
+    }
+    opts.set_transport(transport(profile)?);
     Ok(opts)
 }
 
@@ -356,6 +490,7 @@ mod tests {
             host: host.into(),
             port: 9001,
             protocol,
+            mqtt_version: Default::default(),
             ws_path: ws_path.into(),
             client_id: Some("id".into()),
             username: None,

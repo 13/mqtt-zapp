@@ -57,12 +57,39 @@ pub fn default_subscriptions() -> Vec<String> {
     vec!["#".into(), "$SYS/#".into()]
 }
 
+/// The MQTT protocol version spoken to the broker.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MqttVersion {
+    #[default]
+    #[serde(rename = "3.1.1")]
+    V311,
+    #[serde(rename = "5")]
+    V5,
+}
+
+impl MqttVersion {
+    pub fn is_default(&self) -> bool {
+        *self == MqttVersion::V311
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MqttVersion::V311 => "3.1.1",
+            MqttVersion::V5 => "5",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Profile {
     pub name: String,
     pub host: String,
     pub port: u16,
     pub protocol: Protocol,
+    /// Left out of the file while it is the default, so existing
+    /// `profiles.toml` files round-trip unchanged.
+    #[serde(default, skip_serializing_if = "MqttVersion::is_default")]
+    pub mqtt_version: MqttVersion,
     #[serde(default = "default_ws_path")]
     pub ws_path: String,
     #[serde(default)]
@@ -284,6 +311,7 @@ mod tests {
             host: "192.168.22.5".into(),
             port: 1883,
             protocol: Protocol::Mqtt,
+            mqtt_version: Default::default(),
             ws_path: "/".into(),
             client_id: None,
             username: Some("u".into()),
@@ -364,6 +392,23 @@ mod tests {
         let s = Settings::load().unwrap();
         assert_eq!(s.history_depth, 100);
         assert!(s.keys.is_empty());
+    }
+
+    #[test]
+    fn mqtt_version_defaults_and_round_trips() {
+        let base = "name=\"h\"\nhost=\"x\"\nport=1883\nprotocol=\"mqtt\"";
+        let p: Profile = toml::from_str(base).unwrap();
+        assert_eq!(p.mqtt_version, MqttVersion::V311);
+        let text = toml::to_string(&p).unwrap();
+        assert!(!text.contains("mqtt_version"), "{text}");
+        let p: Profile = toml::from_str(&format!("{base}\nmqtt_version=\"5\"")).unwrap();
+        assert_eq!(p.mqtt_version, MqttVersion::V5);
+        assert!(
+            toml::to_string(&p)
+                .unwrap()
+                .contains("mqtt_version = \"5\"")
+        );
+        assert!(toml::from_str::<Profile>(&format!("{base}\nmqtt_version=\"4\"")).is_err());
     }
 
     #[test]

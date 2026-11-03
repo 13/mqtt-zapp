@@ -160,7 +160,15 @@ pub fn server_url(p: &Profile) -> String {
         Protocol::Ws | Protocol::Wss if p.ws_path != "/" => p.ws_path.as_str(),
         _ => "",
     };
-    sanitize(&format!("{proto}://{user}{}:{}{path}", p.host, p.port)).replace('\n', " ")
+    let version = match p.mqtt_version {
+        mqtt_zapp_core::config::MqttVersion::V5 => " (v5)",
+        mqtt_zapp_core::config::MqttVersion::V311 => "",
+    };
+    sanitize(&format!(
+        "{proto}://{user}{}:{}{path}{version}",
+        p.host, p.port
+    ))
+    .replace('\n', " ")
 }
 
 /// The broker list as a centred card: `▶ name  url`, names padded to line up.
@@ -261,6 +269,7 @@ mod tests {
             host: "broker.lan".into(),
             port: 8883,
             protocol: Protocol::Mqtts,
+            mqtt_version: Default::default(),
             ws_path: "/".into(),
             client_id: None,
             username: Some("alice".into()),
@@ -289,6 +298,7 @@ mod tests {
             host: "h".into(),
             port: 1883,
             protocol: Protocol::Mqtt,
+            mqtt_version: Default::default(),
             ws_path: "/".into(),
             client_id: None,
             username: None,
@@ -418,6 +428,13 @@ mod tests {
             input: "pä".into(),
         };
         assert_eq!(st.masked(), "••");
+    }
+
+    #[test]
+    fn server_url_marks_v5() {
+        let mut p = profile("a");
+        p.mqtt_version = mqtt_zapp_core::config::MqttVersion::V5;
+        assert_eq!(server_url(&p), "mqtt://h:1883 (v5)");
     }
 
     #[test]

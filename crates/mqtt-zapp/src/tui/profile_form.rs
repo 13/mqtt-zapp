@@ -4,7 +4,8 @@
 use super::theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mqtt_zapp_core::config::{
-    PasswordSource, Profile, Protocol, TlsConfig, default_subscriptions, default_ws_path,
+    MqttVersion, PasswordSource, Profile, Protocol, TlsConfig, default_subscriptions,
+    default_ws_path,
 };
 use mqtt_zapp_core::payload::sanitize;
 use ratatui::Frame;
@@ -87,6 +88,8 @@ pub enum PField {
     Host,
     Port,
     Protocol,
+    /// MQTT 3.1.1 or 5.
+    Version,
     WsPath,
     Username,
     PasswordSource,
@@ -100,11 +103,12 @@ pub enum PField {
 }
 
 impl PField {
-    pub const ALL: [PField; 14] = [
+    pub const ALL: [PField; 15] = [
         PField::Name,
         PField::Host,
         PField::Port,
         PField::Protocol,
+        PField::Version,
         PField::WsPath,
         PField::Username,
         PField::PasswordSource,
@@ -123,6 +127,7 @@ impl PField {
             PField::Host => "host",
             PField::Port => "port",
             PField::Protocol => "protocol",
+            PField::Version => "mqtt version",
             PField::WsPath => "ws path",
             PField::Username => "username",
             PField::PasswordSource => "password",
@@ -175,6 +180,7 @@ pub struct ProfileForm {
     /// Names of the other profiles.
     taken: Vec<String>,
     pub protocol: Protocol,
+    pub version: MqttVersion,
     pub source: PasswordSource,
     pub insecure: bool,
     name: LineInput,
@@ -229,6 +235,7 @@ fn cycle<T: Copy + PartialEq>(all: &[T], cur: T, forward: bool) -> T {
     }]
 }
 
+const VERSIONS: [MqttVersion; 2] = [MqttVersion::V311, MqttVersion::V5];
 const PROTOCOLS: [Protocol; 4] = [Protocol::Mqtt, Protocol::Mqtts, Protocol::Ws, Protocol::Wss];
 #[cfg(feature = "keyring")]
 const SOURCES: &[PasswordSource] = &[
@@ -253,6 +260,7 @@ impl ProfileForm {
                     host: String::new(),
                     port: Protocol::Mqtt.default_port(),
                     protocol: Protocol::Mqtt,
+                    mqtt_version: Default::default(),
                     ws_path: default_ws_path(),
                     client_id: None,
                     username: None,
@@ -271,6 +279,7 @@ impl ProfileForm {
             had_keyring: existing.is_some_and(|p| p.password == PasswordSource::Keyring),
             taken,
             protocol: p.protocol,
+            version: p.mqtt_version,
             source: p.password,
             insecure: p.tls.insecure,
             name: LineInput::new(&p.name),
@@ -316,7 +325,9 @@ impl ProfileForm {
             PField::CaFile => &self.ca_file,
             PField::ClientCert => &self.client_cert,
             PField::ClientKey => &self.client_key,
-            PField::Protocol | PField::PasswordSource | PField::Insecure => return None,
+            PField::Protocol | PField::Version | PField::PasswordSource | PField::Insecure => {
+                return None;
+            }
         })
     }
 
@@ -333,7 +344,9 @@ impl ProfileForm {
             PField::CaFile => &mut self.ca_file,
             PField::ClientCert => &mut self.client_cert,
             PField::ClientKey => &mut self.client_key,
-            PField::Protocol | PField::PasswordSource | PField::Insecure => return None,
+            PField::Protocol | PField::Version | PField::PasswordSource | PField::Insecure => {
+                return None;
+            }
         })
     }
 
@@ -369,6 +382,9 @@ impl ProfileForm {
                 match (self.field, change) {
                     (PField::Protocol, Some(fwd)) => {
                         self.set_protocol(cycle(&PROTOCOLS, self.protocol, fwd))
+                    }
+                    (PField::Version, Some(fwd)) => {
+                        self.version = cycle(&VERSIONS, self.version, fwd)
                     }
                     (PField::PasswordSource, Some(fwd)) => {
                         self.source = cycle(SOURCES, self.source, fwd)
@@ -434,6 +450,7 @@ impl ProfileForm {
                 host: host.to_owned(),
                 port,
                 protocol: self.protocol,
+                mqtt_version: self.version,
                 ws_path: if ws_path.is_empty() {
                     default_ws_path()
                 } else {
@@ -504,6 +521,7 @@ fn value_spans(form: &ProfileForm, field: PField, width: usize) -> Vec<Span<'sta
     let focused = form.field == field;
     match field {
         PField::Protocol => choice(&format!("{:?}", form.protocol).to_lowercase()),
+        PField::Version => choice(form.version.label()),
         PField::PasswordSource => choice(&format!("{:?}", form.source).to_lowercase()),
         PField::Insecure => vec![Span::raw(if form.insecure {
             "[x] skip certificate checks"
@@ -589,7 +607,7 @@ pub fn render(f: &mut Frame, area: Rect, form: &ProfileForm) {
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use mqtt_zapp_core::config::{PasswordSource, Profile, Protocol, TlsConfig};
+    use mqtt_zapp_core::config::{MqttVersion, PasswordSource, Profile, Protocol, TlsConfig};
 
     fn key(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
@@ -621,6 +639,7 @@ mod tests {
             host: "h".into(),
             port: 8883,
             protocol: Protocol::Mqtts,
+            mqtt_version: Default::default(),
             ws_path: "/".into(),
             client_id: Some("cid".into()),
             username: Some("u".into()),
@@ -691,6 +710,7 @@ mod tests {
                 Host,
                 Port,
                 Protocol,
+                Version,
                 Username,
                 PasswordSource,
                 ClientId,
@@ -726,6 +746,20 @@ mod tests {
         assert!(!f.visible_fields().contains(&PField::CaFile));
         f.on_key(key(KeyCode::Left));
         assert_eq!(f.protocol, Protocol::Mqtts);
+    }
+
+    #[test]
+    fn version_field_cycles_and_saves() {
+        let mut f = filled();
+        goto(&mut f, PField::Version);
+        f.on_key(key(KeyCode::Char(' ')));
+        assert_eq!(f.version, MqttVersion::V5);
+        assert_eq!(save(&mut f).unwrap().profile.mqtt_version, MqttVersion::V5);
+        f.on_key(key(KeyCode::Left));
+        assert_eq!(
+            save(&mut f).unwrap().profile.mqtt_version,
+            MqttVersion::V311
+        );
     }
 
     #[test]

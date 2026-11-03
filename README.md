@@ -49,6 +49,9 @@ mqtt-zapp profile add --name home --host 192.168.1.10
 mqtt-zapp profile add --name secure --host broker.lan --protocol mqtts \
     --ca-file ~/ca.pem
 
+# MQTT 5 (default is 3.1.1)
+mqtt-zapp profile add --name five --host broker.lan --mqtt-version 5
+
 # wss (websockets over TLS)
 mqtt-zapp profile add --name cloud --host broker.example.com --protocol wss
 
@@ -150,4 +153,3 @@ session.
 Planned for Phase 1.x:
 
 - Sparkplug B decoding
-- MQTT 5

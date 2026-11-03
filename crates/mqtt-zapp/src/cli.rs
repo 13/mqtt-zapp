@@ -3,7 +3,7 @@
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use mqtt_zapp_core::config::{
-    PasswordSource, Profile, ProfileStore, Protocol, TlsConfig, default_subscriptions,
+    MqttVersion, PasswordSource, Profile, ProfileStore, Protocol, TlsConfig, default_subscriptions,
     default_ws_path,
 };
 use mqtt_zapp_core::secrets::store_password;
@@ -15,6 +15,23 @@ pub enum ProtocolArg {
     Mqtts,
     Ws,
     Wss,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub enum VersionArg {
+    #[value(name = "3.1.1")]
+    V311,
+    #[value(name = "5")]
+    V5,
+}
+
+impl From<VersionArg> for MqttVersion {
+    fn from(v: VersionArg) -> Self {
+        match v {
+            VersionArg::V311 => MqttVersion::V311,
+            VersionArg::V5 => MqttVersion::V5,
+        }
+    }
 }
 
 impl From<ProtocolArg> for Protocol {
@@ -56,6 +73,9 @@ pub struct ConnArgs {
     /// Transport protocol
     #[arg(long, value_enum, default_value = "mqtt")]
     pub protocol: ProtocolArg,
+    /// MQTT protocol version
+    #[arg(long, value_enum, default_value = "3.1.1")]
+    pub mqtt_version: VersionArg,
     /// Username
     #[arg(long = "user")]
     pub user: Option<String>,
@@ -122,6 +142,7 @@ fn build_profile(name: &str, conn: &ConnArgs, host: &str, password: PasswordSour
         host: host.into(),
         port: conn.port.unwrap_or_else(|| protocol.default_port()),
         protocol,
+        mqtt_version: conn.mqtt_version.into(),
         ws_path: default_ws_path(),
         client_id: None,
         username: conn.user.clone(),
@@ -248,6 +269,7 @@ mod tests {
             host: "192.168.22.5".into(),
             port: 1883,
             protocol: Protocol::Mqtt,
+            mqtt_version: Default::default(),
             ws_path: "/".into(),
             client_id: None,
             username: None,
@@ -296,6 +318,21 @@ mod tests {
             panic!()
         };
         assert_eq!(p.host, "192.168.22.5");
+    }
+
+    #[test]
+    fn mqtt_version_flag_parses() {
+        let Launch::Connect(p) =
+            launch(&["mqtt-zapp", "--host", "b", "--mqtt-version", "5"]).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(p.mqtt_version, MqttVersion::V5);
+        let Launch::Connect(p) = launch(&["mqtt-zapp", "--host", "b"]).unwrap() else {
+            panic!()
+        };
+        assert_eq!(p.mqtt_version, MqttVersion::V311);
+        assert!(Args::try_parse_from(["mqtt-zapp", "--host", "b", "--mqtt-version", "4"]).is_err());
     }
 
     #[test]

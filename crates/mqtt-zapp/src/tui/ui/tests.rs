@@ -533,6 +533,7 @@ fn profile(
         host: "broker.lan".into(),
         port: 8883,
         protocol: Protocol::Mqtts,
+        mqtt_version: Default::default(),
         ws_path: "/".into(),
         client_id: None,
         username: Some("alice".into()),
