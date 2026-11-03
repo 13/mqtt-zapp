@@ -172,7 +172,7 @@ fn render_confirm(f: &mut Frame, area: Rect, c: &super::app::Confirm) {
     );
 }
 
-/// The help overlay's groups and the column (0 or 1) each goes in; every
+/// The help overlay's groups and the column (0–2) each goes in; every
 /// action is in exactly one group.
 const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
     (
@@ -226,11 +226,13 @@ const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
     ),
     (
         "picker",
-        0,
+        2,
         &[
             Action::AddProfile,
             Action::EditProfile,
             Action::DeleteProfile,
+            Action::MoveUp,
+            Action::MoveDown,
         ],
     ),
 ];
@@ -547,6 +549,11 @@ fn hints(app: &App) -> Vec<(String, &'static str)> {
             (k(Action::EditProfile), "edit"),
             (k(Action::DeleteProfile), "delete"),
             (jk, "move"),
+            (
+                format!("{}/{}", k(Action::MoveDown), k(Action::MoveUp)),
+                "reorder",
+            ),
+            (k(Action::CycleSort), "sort"),
             (k(Action::Quit), "quit"),
         ],
         (Mode::Password, _) if app.picker.profiles.is_empty() => {
@@ -1622,7 +1629,9 @@ mod tests {
         let other = s.lines().position(|l| l.contains("  home ")).unwrap() as u16;
         assert_ne!(b[(col, other)].bg, theme::SEL_BG);
         assert!(
-            last_line(&b).contains("enter connect  a add  e edit  D delete  j/k move  q quit"),
+            last_line(&b).contains(
+                "enter connect  a add  e edit  D delete  j/k move  J/K reorder  s sort  q quit"
+            ),
             "{s}"
         );
     }

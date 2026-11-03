@@ -37,6 +37,8 @@ pub enum Action {
     AddProfile,
     EditProfile,
     DeleteProfile,
+    MoveUp,
+    MoveDown,
 }
 
 impl Action {
@@ -71,6 +73,8 @@ impl Action {
         (Action::AddProfile, "add_profile", &["a"]),
         (Action::EditProfile, "edit_profile", &["e"]),
         (Action::DeleteProfile, "delete_profile", &["D"]),
+        (Action::MoveUp, "move_up", &["K"]),
+        (Action::MoveDown, "move_down", &["J"]),
     ];
 
     /// The snake_case name used in `[keys]`.
@@ -243,6 +247,15 @@ mod tests {
         assert_eq!(k.lookup(ev('e')), Some(Action::EditProfile));
         assert_eq!(k.lookup(ev('D')), Some(Action::DeleteProfile));
         assert_eq!(Action::DeleteProfile.name(), "delete_profile");
+    }
+
+    #[test]
+    fn move_defaults() {
+        let k = Keymap::from_settings(&BTreeMap::new()).unwrap();
+        let ev = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
+        assert_eq!(k.lookup(ev('J')), Some(Action::MoveDown));
+        assert_eq!(k.lookup(ev('K')), Some(Action::MoveUp));
+        assert_eq!(Action::MoveUp.name(), "move_up");
     }
 
     fn key(c: char) -> KeyEvent {

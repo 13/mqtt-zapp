@@ -34,7 +34,10 @@ mqtt-zapp --host 192.168.1.10              # ad-hoc, plain mqtt on 1883
 ### Profiles
 
 In the picker, `a` adds a profile, `e` edits the selected one and `D` deletes
-it (after a yes/no). The form covers every field; `space` or `←`/`→` change the
+it (after a yes/no). `J`/`K` move the selected profile down/up; the order is
+saved to `profiles.toml`. `s` sorts the picker by that custom order, by name or
+by last used, and the choice is remembered in `state.toml` (in
+`~/.local/state/mqtt-zapp/`, next to the last-used times). The form covers every field; `space` or `←`/`→` change the
 protocol and password source, and `ctrl-s` saves to `profiles.toml`. A keyring
 password typed there goes to the keyring, never the file. From the shell:
 
@@ -87,7 +90,7 @@ time.
 | `Y` | `copy_payload` | Copy the shown payload to the clipboard (OSC 52) |
 | `x` | `delete_retained` | Delete the retained message of the selected topic (asks first) |
 | `X` | `clear_retained` | Clear every retained message in the subtree (asks first) |
-| `s` | `sort` | Cycle the tree order: name (natural), message count, most recent |
+| `s` | `sort` | Cycle the tree order: name (natural), message count, most recent; in the picker: custom, name, last used |
 | `L` | `expand_all` | Expand the selected node and everything below it |
 | `H` | `collapse_all` | Collapse the selected node and everything below it |
 | `c` | `chart` | Chart the payload, or cycle through its numeric JSON fields |
@@ -95,6 +98,8 @@ time.
 | `a` | `add_profile` | In the picker: add a profile |
 | `e` | `edit_profile` | In the picker: edit the selected profile |
 | `D` | `delete_profile` | In the picker: delete the selected profile |
+| `K` | `move_up` | In the picker: move the selected profile up (custom order) |
+| `J` | `move_down` | In the picker: move the selected profile down (custom order) |
 
 `?` shows the effective keys, including your remaps. The publish form and
 search input take typed text and do not use the keymap; the help lists their

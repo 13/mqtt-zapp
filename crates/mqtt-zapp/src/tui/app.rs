@@ -16,6 +16,7 @@ use mqtt_zapp_core::config::{
 };
 use mqtt_zapp_core::search::{self, Filter};
 use mqtt_zapp_core::secrets::load_password;
+use mqtt_zapp_core::state::AppState;
 use mqtt_zapp_core::{NodeId, TopicTree};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -80,6 +81,10 @@ pub enum Effect {
     SaveProfile(ProfileEdit),
     /// Delete the named profile, reported back like `SaveProfile`.
     DeleteProfile(String),
+    /// Save the picker's custom order (profile names) to `profiles.toml`.
+    SaveOrder(Vec<String>),
+    /// Write `state.toml`; a failure comes back through `state_save_failed`.
+    SaveState(AppState),
 }
 
 // Hand-written so a connect password can never reach a debug log.
@@ -115,6 +120,8 @@ impl fmt::Debug for Effect {
             }
             Effect::SaveProfile(edit) => write!(f, "SaveProfile({edit:?})"),
             Effect::DeleteProfile(name) => write!(f, "DeleteProfile({name})"),
+            Effect::SaveOrder(names) => write!(f, "SaveOrder({names:?})"),
+            Effect::SaveState(st) => write!(f, "SaveState({st:?})"),
         }
     }
 }
@@ -377,6 +384,13 @@ impl App {
     }
 
     fn connect_effect(&mut self, p: Profile, password: Option<String>) -> Effect {
+        // Only saved profiles; an ad-hoc `--host` connect has no picker entry.
+        if self.picker.profiles.iter().any(|o| o.name == p.name) {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs() as i64);
+            self.picker.last_used.insert(p.name.clone(), now);
+        }
         self.server = Some(ServerInfo {
             name: p.name.clone(),
             url: super::picker::server_url(&p),
@@ -394,6 +408,18 @@ impl App {
             Action::Quit => return Effect::Quit,
             Action::Up => self.picker.up(),
             Action::Down => self.picker.down(),
+            Action::CycleSort => {
+                self.picker.cycle_sort();
+                return Effect::SaveState(self.app_state());
+            }
+            Action::MoveUp | Action::MoveDown if self.store_error.is_some() => {
+                self.set_note(Note::error(STORE_BROKEN), Instant::now());
+            }
+            Action::MoveUp | Action::MoveDown => {
+                if self.picker.move_selected(action == Action::MoveDown) {
+                    return Effect::SaveOrder(self.picker.order());
+                }
+            }
             Action::Select => {
                 if let Some(p) = self.picker.selected().cloned() {
                     return self.begin_connect(p);
@@ -470,6 +496,40 @@ impl App {
     }
 
     /// A profile save or delete failed: show why in the form, if open.
+    /// Apply what `state.toml` remembered (picker sort, last-used times).
+    pub fn set_app_state(&mut self, state: AppState) {
+        self.picker.sort = state.picker_sort;
+        self.picker.last_used = state.last_used;
+        self.picker.sel = 0;
+    }
+
+    /// What `state.toml` should hold now.
+    pub fn app_state(&self) -> AppState {
+        AppState {
+            picker_sort: self.picker.sort,
+            last_used: self.picker.last_used.clone(),
+        }
+    }
+
+    pub fn state_save_failed(&mut self, err: &str) {
+        self.set_note(
+            Note::error(format!("could not save state: {err}")),
+            Instant::now(),
+        );
+        self.dirty = true;
+    }
+
+    /// A saved profile edit renamed `old` to `new`: its last-used time follows.
+    pub fn profile_renamed(&mut self, old: &str, new: &str) {
+        if let Some(t) = self.picker.last_used.remove(old) {
+            self.picker.last_used.insert(new.to_owned(), t);
+        }
+    }
+
+    pub fn profile_deleted(&mut self, name: &str) {
+        self.picker.last_used.remove(name);
+    }
+
     pub fn profile_save_failed(&mut self, err: String) {
         match self.profile_form.as_mut() {
             Some(form) => form.error = Some(err),
@@ -907,7 +967,11 @@ impl App {
             Action::Chart => self.cycle_chart(),
             Action::Stats => self.mode = Mode::Stats,
             // Picker-only.
-            Action::AddProfile | Action::EditProfile | Action::DeleteProfile => {}
+            Action::AddProfile
+            | Action::EditProfile
+            | Action::DeleteProfile
+            | Action::MoveUp
+            | Action::MoveDown => {}
             Action::ExpandAll => self.expand_subtree(true),
             Action::CollapseAll => self.expand_subtree(false),
             Action::DeleteRetained => self.ask_clear_retained(false),
@@ -1078,6 +1142,7 @@ mod tests {
     use mqtt_zapp_core::config::{
         PasswordSource, Profile, ProfileStore, Protocol, Settings, TlsConfig,
     };
+    use mqtt_zapp_core::state::{AppState, PickerSort};
     use std::time::{Duration, Instant, SystemTime};
 
     fn msg(topic: &str, p: &str) -> CoreEvent {
@@ -1708,6 +1773,87 @@ mod tests {
         // A delete leaves the selection clamped to the shorter list.
         a.profile_saved(vec![profile("a", PasswordSource::None)], None, "deleted n");
         assert_eq!(a.picker.sel, 0);
+    }
+
+    fn names(v: &[String]) -> Vec<&str> {
+        v.iter().map(String::as_str).collect()
+    }
+
+    #[test]
+    fn picker_j_returns_save_order() {
+        let mut a = picker_app(vec![
+            profile("a", PasswordSource::None),
+            profile("b", PasswordSource::None),
+        ]);
+        match press(&mut a, 'J') {
+            Effect::SaveOrder(order) => assert_eq!(names(&order), ["b", "a"]),
+            e => panic!("{e:?}"),
+        }
+        assert_eq!(a.picker.selected().unwrap().name, "a");
+        assert!(matches!(press(&mut a, 'K'), Effect::SaveOrder(_)));
+        assert_eq!(names(&a.picker.order()), ["a", "b"]);
+    }
+
+    #[test]
+    fn picker_j_at_bottom_returns_none() {
+        let mut a = picker_app(vec![
+            profile("a", PasswordSource::None),
+            profile("b", PasswordSource::None),
+        ]);
+        press(&mut a, 'j');
+        assert!(matches!(press(&mut a, 'J'), Effect::None));
+    }
+
+    #[test]
+    fn picker_s_cycles_and_saves_state() {
+        let mut a = picker_app(vec![profile("a", PasswordSource::None)]);
+        match press(&mut a, 's') {
+            Effect::SaveState(st) => assert_eq!(st.picker_sort, PickerSort::Name),
+            e => panic!("{e:?}"),
+        }
+    }
+
+    #[test]
+    fn set_app_state_applies_sort_and_last_used() {
+        let mut a = picker_app(vec![
+            profile("a", PasswordSource::None),
+            profile("b", PasswordSource::None),
+        ]);
+        let mut st = AppState {
+            picker_sort: PickerSort::LastUsed,
+            ..Default::default()
+        };
+        st.touch("b", 5);
+        a.set_app_state(st.clone());
+        assert_eq!(a.picker.selected().unwrap().name, "b");
+        assert_eq!(a.app_state(), st);
+    }
+
+    #[test]
+    fn connect_from_picker_records_last_used() {
+        let mut a = picker_app(vec![profile("a", PasswordSource::None)]);
+        a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.app_state().last_used.get("a").is_some_and(|&t| t > 0));
+    }
+
+    #[test]
+    fn save_state_failure_is_a_note() {
+        let mut a = picker_app(vec![]);
+        a.state_save_failed("x");
+        let n = a.note_at(Instant::now()).unwrap();
+        assert!(n.text.contains("could not save state: x"), "{}", n.text);
+    }
+
+    #[test]
+    fn last_used_follows_rename_and_delete() {
+        let mut a = picker_app(vec![profile("a", PasswordSource::None)]);
+        let mut st = AppState::default();
+        st.touch("a", 5);
+        a.set_app_state(st);
+        a.profile_renamed("a", "b");
+        assert_eq!(a.app_state().last_used, [("b".to_string(), 5)].into());
+        a.profile_deleted("b");
+        assert!(a.app_state().last_used.is_empty());
     }
 
     #[test]

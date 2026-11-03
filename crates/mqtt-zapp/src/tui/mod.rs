@@ -26,6 +26,7 @@ use futures::StreamExt;
 use mqtt_zapp_core::client::{ConnState, Connection, CoreEvent};
 use mqtt_zapp_core::config::{ProfileStore, Settings};
 use mqtt_zapp_core::payload::base64;
+use mqtt_zapp_core::state::AppState;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io::{Stdout, Write, stdout};
@@ -40,6 +41,7 @@ const MAX_DRAIN: usize = 2000;
 pub async fn run(launch: Launch, store: ProfileStore, store_error: Option<String>) -> Result<()> {
     let mut app = App::new(launch, store, Settings::load()?)?;
     app.store_error = store_error;
+    app.set_app_state(AppState::load());
     app.theme = theme::effective(app.theme, std::env::var("NO_COLOR").ok().as_deref());
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
@@ -116,9 +118,14 @@ impl Session {
             }
             Effect::SaveProfile(edit) => {
                 let name = edit.profile.name.clone();
+                let original = edit.original.clone();
                 match profiles::persist_edit(edit, &profiles::RealSecrets) {
                     Ok(store) => {
-                        app.profile_saved(store.profiles, Some(&name), &format!("saved {name}"))
+                        app.profile_saved(store.profiles, Some(&name), &format!("saved {name}"));
+                        if let Some(old) = original.filter(|o| *o != name) {
+                            app.profile_renamed(&old, &name);
+                            save_state(app);
+                        }
                     }
                     Err(e) => app.profile_save_failed(format!("{e:#}")),
                 }
@@ -126,12 +133,32 @@ impl Session {
             Effect::DeleteProfile(name) => {
                 match profiles::persist_delete(&name, &profiles::RealSecrets) {
                     Ok(store) => {
-                        app.profile_saved(store.profiles, None, &format!("deleted {name}"))
+                        app.profile_saved(store.profiles, None, &format!("deleted {name}"));
+                        app.profile_deleted(&name);
+                        save_state(app);
                     }
                     Err(e) => app.profile_save_failed(format!("{e:#}")),
                 }
             }
+            Effect::SaveOrder(names) => {
+                let selected = app.picker.selected().map(|p| p.name.clone());
+                match profiles::persist_order(&names) {
+                    Ok(store) => {
+                        app.profile_saved(store.profiles, selected.as_deref(), "order saved");
+                        // J/K may have switched the sort back to custom.
+                        save_state(app);
+                    }
+                    Err(e) => app.profile_save_failed(format!("{e:#}")),
+                }
+            }
+            Effect::SaveState(state) => {
+                if let Err(e) = state.save() {
+                    app.state_save_failed(&format!("{e:#}"));
+                }
+            }
             Effect::Connect(profile, password) => {
+                // connect_effect stamped the last-used time; best effort.
+                save_state(app);
                 self.disconnect();
                 app.reset_tree();
                 match Connection::connect(&profile, password) {
@@ -181,6 +208,13 @@ impl Session {
             conn.disconnect();
         }
         self.rx = None;
+    }
+}
+
+/// Write `state.toml` from the app; a failure is only a note.
+fn save_state(app: &mut App) {
+    if let Err(e) = app.app_state().save() {
+        app.state_save_failed(&format!("{e:#}"));
     }
 }
 
