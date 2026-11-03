@@ -55,6 +55,18 @@ impl App {
         self.mode = Mode::Picker;
     }
 
+    /// The selected profile is the one the session runs on, unedited, and
+    /// the connection has not given up (a hard failure never retries).
+    fn is_live_session_selected(&self) -> bool {
+        let gave_up = matches!(
+            self.conn_state,
+            ConnState::Disconnected { retry_in_ms: 0, .. }
+        );
+        self.connected.is_some()
+            && !gave_up
+            && self.picker.selected() == self.session_profile.as_ref()
+    }
+
     fn connect_effect(&mut self, p: Profile, password: Option<String>) -> Effect {
         // Only saved profiles; an ad-hoc `--host` connect has no picker entry.
         if self.picker.profiles.iter().any(|o| o.name == p.name) {
@@ -64,6 +76,8 @@ impl App {
             self.picker.last_used.insert(p.name.clone(), now);
         }
         self.connected = self.picker.profiles.contains(&p).then(|| p.name.clone());
+        self.session_profile = Some(p.clone());
+        self.conn_state = ConnState::Connecting;
         self.server = Some(ServerInfo {
             name: p.name.clone(),
             url: crate::tui::picker::server_url(&p),
@@ -80,10 +94,7 @@ impl App {
         match action {
             Action::Quit => return Effect::Quit,
             Action::Cancel | Action::Brokers if self.in_session() => self.mode = Mode::Browse,
-            Action::Select
-                if self.connected.is_some()
-                    && self.picker.selected().map(|p| &p.name) == self.connected.as_ref() =>
-            {
+            Action::Select if self.is_live_session_selected() => {
                 self.mode = Mode::Browse;
                 let note = format!(
                     "already connected to {}",

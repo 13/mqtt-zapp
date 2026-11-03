@@ -1410,3 +1410,25 @@ fn adhoc_session_marks_nothing() {
         Effect::Connect(..)
     ));
 }
+
+#[test]
+fn enter_on_edited_connected_profile_reconnects() {
+    let mut a = session_on_lab();
+    press(&mut a, 'b');
+    let mut profiles = a.picker.profiles.clone();
+    profiles[1].port = 1884;
+    a.profile_edit_saved(profiles, Some("lab"), "lab");
+    assert_eq!(a.connected.as_deref(), Some("lab"), "still marked");
+    assert!(matches!(a.handle_key(key(KeyCode::Enter)), Effect::Connect(p, _) if p.port == 1884));
+}
+
+#[test]
+fn enter_on_connected_profile_after_hard_failure_reconnects() {
+    let mut a = session_on_lab();
+    a.apply_core_event(CoreEvent::State(ConnState::Disconnected {
+        reason: "bad ca".into(),
+        retry_in_ms: 0,
+    }));
+    press(&mut a, 'b');
+    assert!(matches!(a.handle_key(key(KeyCode::Enter)), Effect::Connect(p, _) if p.name == "lab"));
+}

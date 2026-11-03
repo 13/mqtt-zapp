@@ -274,6 +274,9 @@ pub struct App {
     /// The saved profile the session is on, marked in the picker; `None`
     /// for an ad-hoc `--host` session. Follows renames, cleared on delete.
     pub connected: Option<String>,
+    /// The profile exactly as the session connected with it: enter on the
+    /// connected row only skips the reconnect while it is unchanged.
+    session_profile: Option<Profile>,
     /// Why `profiles.toml` could not be loaded; shown in the empty picker.
     pub store_error: Option<String>,
     /// Open while in `Mode::Publish`.
@@ -350,6 +353,7 @@ impl App {
             password: None,
             server: None,
             connected: None,
+            session_profile: None,
             store_error: None,
             publish: None,
             status_note: None,
