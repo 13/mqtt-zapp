@@ -150,9 +150,13 @@ or edit `ws_path` in `profiles.toml`, for example `ws_path = "/mqtt"`.
 
 ## ⌨️ Keys
 
-`?` shows the keys in effect, including your remaps. The publish form and the
-search input take typed text and do not use the keymap; the help lists their
-keys too.
+`?` shows the keys in effect, including your remaps. Type while it is open to
+search it; matching rows are highlighted (`esc` clears the search). The publish
+form and the search input take typed text and do not use the keymap; the help
+lists their keys too.
+
+Destructive actions (`x`, `X`, `delete`, `D`) ask first: only `y` confirms, and
+any other key, `enter` included, cancels.
 
 <details open>
 <summary><b>All keys</b></summary>
@@ -171,7 +175,7 @@ keys too.
 | `d` | `toggle_diff` | Diff against the previous message (or the marked one) |
 | `b` | `brokers` | Switch broker: open the picker (esc returns) |
 | `m` | `mark_diff_base` | Mark the shown history entry as the diff base (again: unmark) |
-| `?` | `help` | Show the key help |
+| `?` | `help` | Show the key help; type to search it, matches are highlighted |
 | `q` | `quit` | Quit |
 | `esc` | `cancel` | Clear the search / close |
 | `g` | `top` | Jump to the top |
@@ -203,6 +207,16 @@ keys too.
 - Every space-separated word must appear, case-insensitively, in the topic path or the latest payload. Each word may be in either.
 - `"quoted words"` match as one phrase.
 - `ctrl-r` switches the input to a case-insensitive regular expression. An invalid one shows its error and keeps the last valid filter.
+- Only the first 64 KiB of a payload is searched.
+
+### ⚠️ Header warnings
+
+The top bar flags what you should know about:
+- `⚠ N dropped`: the UI fell behind a busy broker and skipped N messages.
+- `⚠ N topics refused`: N messages on new topics were refused because the tree is at `max_topics`.
+- `⚠ unverified tls`: the profile skips TLS certificate checks.
+- `⚠ password in cleartext`: a password is sent over plain `mqtt`/`ws`.
+- `❄ frozen`: `f` froze the display; press `f` again to go live.
 
 ### 🖱️ Mouse
 
