@@ -22,6 +22,8 @@ pub const SELECTED_BG: Color = Color::DarkGray;
 pub const FLASH_MODIFIER: Modifier = Modifier::BOLD;
 const FLASH_FG: Color = Color::Yellow;
 const PREVIEW_CHARS: usize = 60;
+/// Longest status-bar note; broker error text can be long.
+const NOTE_MAX_CHARS: usize = 120;
 /// Search matches in tree rows.
 const MATCH_MODIFIER: Modifier = Modifier::BOLD.union(Modifier::UNDERLINED);
 
@@ -62,6 +64,9 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(main);
     render_tree(f, app, tree);
     super::message_view::render_message(f, message, app);
+    if let (Mode::Publish, Some(form)) = (app.mode, &app.publish) {
+        super::publish::render(f, main, form);
+    }
     f.render_widget(Paragraph::new(status_line(app)), status);
 }
 
@@ -183,9 +188,15 @@ fn status_line(app: &App) -> Line<'static> {
             f.matches.len()
         ));
     }
-    let hint = mode_hint(app.mode);
+    let note = app.note_at(Instant::now()).map(|n| {
+        single_line(n)
+            .chars()
+            .take(NOTE_MAX_CHARS)
+            .collect::<String>()
+    });
+    let hint = note.as_deref().unwrap_or_else(|| mode_hint(app.mode));
     if matches!(app.mode, Mode::Picker | Mode::Password) {
-        return Line::raw(hint);
+        return Line::raw(hint.to_owned());
     }
     let (state, color) = match &app.conn_state {
         ConnState::Connected => ("●".to_owned(), Color::Green),
@@ -481,5 +492,40 @@ mod tests {
         let b = draw(&mut a, 100, 24);
         assert!(last_line(&b).starts_with("◌ home"));
         assert_eq!(b[(0, 23)].fg, Color::Yellow);
+    }
+
+    #[test]
+    fn publish_overlay_renders_fields_and_error_title() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut a = app_with(&[("a/b", b"1")]);
+        a.handle_action(Action::Publish);
+        let s = text(&draw(&mut a, 80, 24));
+        for want in [
+            "publish",
+            "topic: ",
+            "payload",
+            "QoS: [0] 1 2   Retain: [ ]",
+            "ctrl-s send  ctrl-f format json  tab next  esc close",
+            "topics",
+        ] {
+            assert!(s.contains(want), "{want}: {s}");
+        }
+        a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        let s = text(&draw(&mut a, 80, 24));
+        assert!(s.contains("publish - invalid topic"), "{s}");
+    }
+
+    #[test]
+    fn status_note_is_sanitized_and_expires() {
+        let mut a = app_with(&[]);
+        a.set_note("publish failed: \x1b[2Jboom".into(), Instant::now());
+        let b = draw(&mut a, 100, 24);
+        assert!(b.content.iter().all(|c| !c.symbol().contains('\x1b')));
+        assert!(last_line(&b).contains("publish failed: \u{fffd}[2Jboom"));
+        a.status_note = Some((
+            "old".into(),
+            Instant::now() - std::time::Duration::from_secs(6),
+        ));
+        assert!(!last_line(&draw(&mut a, 100, 24)).contains("old"));
     }
 }

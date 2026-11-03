@@ -4,6 +4,7 @@
 
 use super::keymap::{Action, Keymap};
 use super::picker::{PasswordState, PickerState};
+use super::publish::{FormOutcome, PublishForm};
 use super::rows::{Row, visible_rows};
 use crate::cli::Launch;
 use anyhow::Result;
@@ -15,6 +16,7 @@ use mqtt_zapp_core::secrets::load_password;
 use mqtt_zapp_core::{NodeId, TopicTree};
 use std::cell::Cell;
 use std::collections::{HashSet, VecDeque};
+use std::fmt;
 use std::time::{Duration, Instant};
 
 /// How long a node stays highlighted after it (or its subtree) got a message.
@@ -28,7 +30,6 @@ pub enum Mode {
     Password,
     Browse,
     SearchInput,
-    #[allow(dead_code)] // TODO(task 12): publish form
     Publish,
     #[allow(dead_code)] // TODO(task 11): help overlay
     Help,
@@ -41,12 +42,10 @@ pub enum Focus {
     History,
 }
 
-#[derive(Debug)]
 #[allow(clippy::large_enum_variant)] // short-lived, consumed right away
 pub enum Effect {
     None,
     Quit,
-    #[allow(dead_code)] // TODO(task 12): built by the publish form
     Publish {
         topic: String,
         payload: Vec<u8>,
@@ -55,6 +54,39 @@ pub enum Effect {
     },
     Connect(Profile, Option<String>),
 }
+
+// Hand-written so a connect password can never reach a debug log.
+impl fmt::Debug for Effect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Effect::None => f.write_str("None"),
+            Effect::Quit => f.write_str("Quit"),
+            Effect::Publish {
+                topic,
+                payload,
+                qos,
+                retain,
+            } => f
+                .debug_struct("Publish")
+                .field("topic", topic)
+                .field("payload", &format_args!("<{} bytes>", payload.len()))
+                .field("qos", qos)
+                .field("retain", retain)
+                .finish(),
+            Effect::Connect(profile, password) => {
+                let pw = if password.is_some() {
+                    "<redacted>"
+                } else {
+                    "None"
+                };
+                write!(f, "Connect({}, {pw})", profile.name)
+            }
+        }
+    }
+}
+
+/// How long a status-bar note (publish result) stays visible.
+pub const NOTE_TTL: Duration = Duration::from_secs(5);
 
 /// Messages per second over a sliding 10 s window, counted in 1 s buckets so
 /// bursts cost O(1) memory.
@@ -123,6 +155,10 @@ pub struct App {
     pub profile_name: Option<String>,
     /// Why `profiles.toml` could not be loaded; shown in the empty picker.
     pub store_error: Option<String>,
+    /// Open while in `Mode::Publish`.
+    pub publish: Option<PublishForm>,
+    /// A transient status-bar message (publish result) and when it was set.
+    pub status_note: Option<(String, Instant)>,
 }
 
 impl App {
@@ -163,6 +199,8 @@ impl App {
             password: None,
             profile_name: None,
             store_error: None,
+            publish: None,
+            status_note: None,
         })
     }
 
@@ -314,12 +352,32 @@ impl App {
             self.rebuild_filter();
         }
         let now = Instant::now();
+        if self.status_note.is_some() {
+            // Redraw to show the note, and once more to drop it.
+            self.dirty = true;
+            if self.note_at(now).is_none() {
+                self.status_note = None;
+            }
+        }
         // ROOT is touched by every insert, so it tells whether any row flashes.
         let flashing = self.is_flashing(TopicTree::ROOT, now);
         // The msg/s figure in the status bar decays without new messages.
         if flashing || self.msg_rate.per_sec(now) > 0.0 {
             self.dirty = true;
         }
+    }
+
+    pub fn set_note(&mut self, text: String, now: Instant) {
+        self.status_note = Some((text, now));
+        self.dirty = true;
+    }
+
+    /// The note, unless it is older than `NOTE_TTL` at `now`.
+    pub fn note_at(&self, now: Instant) -> Option<&str> {
+        self.status_note
+            .as_ref()
+            .filter(|(_, t)| now.saturating_duration_since(*t) < NOTE_TTL)
+            .map(|(s, _)| s.as_str())
     }
 
     pub fn is_flashing(&self, id: NodeId, now: Instant) -> bool {
@@ -354,8 +412,47 @@ impl App {
                 self.on_search_key(key);
                 Effect::None
             }
+            Mode::Publish => self.on_publish_key(key),
             _ => Effect::None,
         }
+    }
+
+    /// Keys in the publish form; they bypass the keymap. A send leaves the
+    /// form open so the user can test repeatedly.
+    fn on_publish_key(&mut self, key: KeyEvent) -> Effect {
+        self.dirty = true;
+        let Some(form) = self.publish.as_mut() else {
+            self.mode = Mode::Browse;
+            return Effect::None;
+        };
+        match form.on_key(key) {
+            FormOutcome::Continue => Effect::None,
+            FormOutcome::Cancel => {
+                self.publish = None;
+                self.mode = Mode::Browse;
+                Effect::None
+            }
+            FormOutcome::Send {
+                topic,
+                payload,
+                qos,
+                retain,
+            } => Effect::Publish {
+                topic,
+                payload,
+                qos,
+                retain,
+            },
+        }
+    }
+
+    fn open_publish(&mut self) {
+        let topic = self
+            .selected
+            .map(|id| self.tree.full_topic(id))
+            .unwrap_or_default();
+        self.publish = Some(PublishForm::new(&topic));
+        self.mode = Mode::Publish;
     }
 
     /// Keys while typing a search. They bypass the keymap, so `q` and `j`
@@ -443,8 +540,9 @@ impl App {
             Action::Collapse => self.collapse(),
             Action::Search => self.mode = Mode::SearchInput,
             Action::Cancel => self.clear_search(),
-            // TODO(tasks 11-12): publish, help.
-            Action::Publish | Action::Select | Action::Help => {}
+            Action::Publish => self.open_publish(),
+            // TODO(task 11): help.
+            Action::Select | Action::Help => {}
         }
         Effect::None
     }
@@ -948,5 +1046,92 @@ mod tests {
         assert_eq!(r.per_sec(t0), 5.0);
         assert_eq!(r.per_sec(t0 + Duration::from_secs(9)), 5.0);
         assert_eq!(r.per_sec(t0 + Duration::from_secs(11)), 0.0);
+    }
+
+    #[test]
+    fn effect_debug_redacts_password() {
+        let e = Effect::Connect(
+            profile("home", PasswordSource::Prompt),
+            Some("hunter2".into()),
+        );
+        let s = format!("{e:?}");
+        assert!(!s.contains("hunter2"), "{s}");
+        assert_eq!(s, "Connect(home, <redacted>)");
+        let e = Effect::Connect(profile("home", PasswordSource::None), None);
+        assert!(format!("{e:?}").contains("home"));
+    }
+
+    #[test]
+    fn p_opens_prefilled_form_and_ctrl_s_publishes_keeping_it_open() {
+        let mut a = browse(&["dev/cmnd/POWER"]);
+        for _ in 0..2 {
+            a.handle_action(Action::Down);
+            a.handle_action(Action::Expand);
+        }
+        a.handle_action(Action::Down);
+        assert_eq!(sel(&a), "dev/cmnd/POWER");
+        let k = |c, m| KeyEvent::new(c, m);
+        assert!(matches!(
+            a.handle_key(k(KeyCode::Char('p'), KeyModifiers::NONE)),
+            Effect::None
+        ));
+        assert_eq!(a.mode, Mode::Publish);
+        assert_eq!(
+            a.publish.as_ref().unwrap().topic.lines()[0],
+            "dev/cmnd/POWER"
+        );
+        // keys go to the form, not the keymap: 'q' is not quit
+        a.handle_key(k(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(matches!(
+            a.handle_key(k(KeyCode::Char('q'), KeyModifiers::NONE)),
+            Effect::None
+        ));
+        match a.handle_key(k(KeyCode::Char('s'), KeyModifiers::CONTROL)) {
+            Effect::Publish {
+                topic,
+                payload,
+                qos,
+                retain,
+            } => {
+                assert_eq!(topic, "dev/cmnd/POWER");
+                assert_eq!(payload, b"q");
+                assert_eq!((qos, retain), (0, false));
+            }
+            e => panic!("{e:?}"),
+        }
+        assert_eq!(a.mode, Mode::Publish);
+        assert!(a.publish.is_some());
+        assert!(matches!(
+            a.handle_key(k(KeyCode::Esc, KeyModifiers::NONE)),
+            Effect::None
+        ));
+        assert_eq!(a.mode, Mode::Browse);
+        assert!(a.publish.is_none());
+        // ctrl-c still quits from the form
+        a.handle_action(Action::Publish);
+        assert!(matches!(
+            a.handle_key(k(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Effect::Quit
+        ));
+    }
+
+    #[test]
+    fn p_without_selection_opens_empty_form() {
+        let mut a = browse(&[]);
+        a.handle_action(Action::Publish);
+        assert_eq!(a.mode, Mode::Publish);
+        assert_eq!(a.publish.as_ref().unwrap().topic.lines(), [""]);
+    }
+
+    #[test]
+    fn status_note_is_set_and_expires() {
+        let mut a = browse(&[]);
+        let t0 = Instant::now();
+        a.set_note("published a/b".into(), t0);
+        assert_eq!(
+            a.note_at(t0 + Duration::from_secs(4)),
+            Some("published a/b")
+        );
+        assert_eq!(a.note_at(t0 + Duration::from_secs(6)), None);
     }
 }

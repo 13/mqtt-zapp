@@ -6,6 +6,7 @@ mod app;
 mod keymap;
 mod message_view;
 mod picker;
+mod publish;
 mod rows;
 mod ui;
 
@@ -24,8 +25,8 @@ use mqtt_zapp_core::config::{ProfileStore, Settings};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io::{Stdout, stdout};
-use std::time::Duration;
-use tokio::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 const TICK: Duration = Duration::from_millis(100);
 /// Most core events applied per loop iteration, so input stays responsive
@@ -38,19 +39,32 @@ pub async fn run(launch: Launch, store: ProfileStore, store_error: Option<String
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
-    let mut session = Session::default();
+    let (mut session, mut notes) = Session::new();
     let first = app.startup_effect();
     session.apply(first, &mut app);
-    let result = event_loop(&mut terminal, &mut app, &mut session).await;
+    let result = event_loop(&mut terminal, &mut app, &mut session, &mut notes).await;
     session.disconnect();
     result
 }
 
 /// The live broker connection, if any, and its event receiver.
-#[derive(Default)]
 struct Session {
     conn: Option<Connection>,
     rx: Option<Receiver<CoreEvent>>,
+    /// Publish outcomes, sent by the spawned publish tasks.
+    notes_tx: UnboundedSender<String>,
+}
+
+impl Session {
+    fn new() -> (Session, UnboundedReceiver<String>) {
+        let (notes_tx, notes_rx) = unbounded_channel();
+        let session = Session {
+            conn: None,
+            rx: None,
+            notes_tx,
+        };
+        (session, notes_rx)
+    }
 }
 
 impl Session {
@@ -84,11 +98,18 @@ impl Session {
                 retain,
             } => {
                 // Never await on the UI loop: publish can wait up to 5 s.
-                // TODO(task 12): report the outcome back to the UI.
-                if let Some(conn) = self.conn.clone() {
-                    tokio::spawn(async move {
-                        let _ = conn.publish(&topic, payload, qos, retain).await;
-                    });
+                match self.conn.clone() {
+                    Some(conn) => {
+                        let notes = self.notes_tx.clone();
+                        tokio::spawn(async move {
+                            let note = match conn.publish(&topic, payload, qos, retain).await {
+                                Ok(()) => format!("published {topic}"),
+                                Err(e) => format!("publish failed: {e:#}"),
+                            };
+                            let _ = notes.send(note);
+                        });
+                    }
+                    None => app.set_note("publish failed: not connected".into(), Instant::now()),
                 }
             }
         }
@@ -107,6 +128,7 @@ async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
     session: &mut Session,
+    notes: &mut UnboundedReceiver<String>,
 ) -> Result<()> {
     let mut input = EventStream::new();
     let mut tick = tokio::time::interval(TICK);
@@ -139,6 +161,7 @@ async fn event_loop(
                 // The connection task ended.
                 None => session.rx = None,
             },
+            Some(note) = notes.recv() => app.set_note(note, Instant::now()),
             _ = tick.tick() => {
                 app.on_tick();
                 if app.dirty {
