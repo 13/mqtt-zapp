@@ -106,7 +106,9 @@ pub struct App {
     /// the latest message.
     pub history_sel: Option<usize>,
     pub show_diff: bool,
-    pub payload_scroll: u16,
+    pub payload_scroll: usize,
+    /// Memoised payload-area content; see `message_view`.
+    pub body_cache: super::message_view::BodyCache,
     /// Rows the payload area had in the last frame; sizes half-page scrolls.
     pub payload_height: Cell<u16>,
     keymap: Keymap,
@@ -144,6 +146,7 @@ impl App {
             history_sel: None,
             show_diff: false,
             payload_scroll: 0,
+            body_cache: Default::default(),
             payload_height: Cell::new(0),
             keymap: Keymap::from_settings(&settings.keys)?,
             history_depth: settings.history_depth,
@@ -302,10 +305,10 @@ impl App {
         }
     }
 
-    /// `j` in the history list: towards newer entries; past the newest is live.
+    /// `j` in the history list: towards newer entries; the newest entry is live.
     fn history_newer(&mut self) {
         if let Some(i) = self.history_sel {
-            self.history_sel = (i + 1 < self.history_len()).then_some(i + 1);
+            self.history_sel = (i + 2 < self.history_len()).then_some(i + 1);
             self.payload_scroll = 0;
         }
     }
@@ -313,9 +316,8 @@ impl App {
     /// Half a page up or down, never past the end of the shown content.
     fn scroll_payload(&mut self, down: bool) {
         let height = self.payload_height.get();
-        let half = (height / 2).max(1);
+        let half = usize::from((height / 2).max(1));
         let max = super::message_view::content_len(self).saturating_sub(height as usize);
-        let max = u16::try_from(max).unwrap_or(u16::MAX);
         self.payload_scroll = if down {
             self.payload_scroll.saturating_add(half).min(max)
         } else {

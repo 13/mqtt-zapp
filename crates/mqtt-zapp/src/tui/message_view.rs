@@ -13,18 +13,35 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::SystemTime;
+
+/// Payloads above this are not diffed (the diff is quadratic-ish in lines).
+const MAX_DIFF_BYTES: usize = 256 * 1024;
 
 const HINT: &str = "select a topic with a message";
 const HISTORY_PREVIEW: usize = 40;
 const HISTORY_ROWS: usize = 6;
+
+type Stamp = (SystemTime, usize);
+type CacheKey = (usize, Stamp, Option<Stamp>, bool);
+
+/// The last computed `Body`, reused until the shown message(s) or the diff
+/// toggle change, so a frame costs nothing for big payloads.
+#[derive(Default)]
+pub struct BodyCache {
+    slot: RefCell<Option<(CacheKey, Rc<Body>)>>,
+    #[cfg(test)]
+    builds: std::cell::Cell<u32>,
+}
 
 /// What the payload area shows.
 enum Body {
     Json(Vec<String>),
     Plain(Vec<String>),
     Diff(Vec<(Color, String)>),
-    Note(&'static str),
+    Note(String),
 }
 
 impl Body {
@@ -68,23 +85,47 @@ fn shown(app: &App) -> Option<Shown<'_>> {
     })
 }
 
-fn body(app: &App) -> Option<Body> {
+fn body(app: &App) -> Option<Rc<Body>> {
     let s = shown(app)?;
-    if !app.show_diff {
+    let stamp = |m: &Message| (m.received_at, m.payload.len());
+    let key = (
+        app.selected?,
+        stamp(s.msg),
+        s.prev.map(stamp),
+        app.show_diff,
+    );
+    if let Some((k, b)) = &*app.body_cache.slot.borrow()
+        && *k == key
+    {
+        return Some(Rc::clone(b));
+    }
+    #[cfg(test)]
+    app.body_cache.builds.set(app.body_cache.builds.get() + 1);
+    let b = Rc::new(build_body(&s, app.show_diff));
+    *app.body_cache.slot.borrow_mut() = Some((key, Rc::clone(&b)));
+    Some(b)
+}
+
+fn build_body(s: &Shown, show_diff: bool) -> Body {
+    if !show_diff {
         let kind = detect(&s.msg.payload);
         let lines = pretty_lines(&kind, &s.msg.payload);
-        return Some(match kind {
+        return match kind {
             mqtt_zapp_core::payload::PayloadKind::Json(_) => Body::Json(lines),
             _ => Body::Plain(lines),
-        });
+        };
     }
     let Some(prev) = s.prev else {
-        return Some(Body::Note("no previous message"));
+        return Body::Note("no previous message".into());
     };
-    Some(match diff(&prev.payload, &s.msg.payload) {
-        Diff::Binary { equal: true } => Body::Note("binary payloads are identical"),
-        Diff::Binary { equal: false } => Body::Note("binary payloads differ"),
-        Diff::Json(changes) if changes.is_empty() => Body::Note("no changes"),
+    let size = prev.payload.len().max(s.msg.payload.len());
+    if size > MAX_DIFF_BYTES {
+        return Body::Note(format!("payload too large to diff ({size} bytes)"));
+    }
+    match diff(&prev.payload, &s.msg.payload) {
+        Diff::Binary { equal: true } => Body::Note("binary payloads are identical".into()),
+        Diff::Binary { equal: false } => Body::Note("binary payloads differ".into()),
+        Diff::Json(changes) if changes.is_empty() => Body::Note("no changes".into()),
         Diff::Json(changes) => Body::Diff(
             changes
                 .iter()
@@ -114,7 +155,7 @@ fn body(app: &App) -> Option<Body> {
                 })
                 .collect(),
         ),
-    })
+    }
 }
 
 /// Number of lines the payload area scrolls over (for clamping).
@@ -171,11 +212,12 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
     let height = block.inner(area).height;
     app.payload_height.set(height);
     let Some(body) = body(app) else { return };
+    let body = &*body;
     // The stored scroll may predate a resize or a new message.
     let max = body.len().saturating_sub(height as usize);
-    let skip = (app.payload_scroll as usize).min(max);
+    let skip = app.payload_scroll.min(max);
     let take = height as usize;
-    let lines: Vec<Line> = match &body {
+    let lines: Vec<Line> = match body {
         Body::Json(l) => l
             .iter()
             .skip(skip)
@@ -194,7 +236,10 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
             .take(take)
             .map(|(c, t)| Line::styled(t.as_str(), Style::new().fg(*c)))
             .collect(),
-        Body::Note(n) => vec![Line::styled(*n, Style::new().add_modifier(Modifier::DIM))],
+        Body::Note(n) => vec![Line::styled(
+            n.as_str(),
+            Style::new().add_modifier(Modifier::DIM),
+        )],
     };
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
@@ -550,8 +595,8 @@ mod tests {
         a.handle_action(Action::Down);
         assert_eq!(a.history_sel, Some(1));
         a.handle_action(Action::Down);
-        a.handle_action(Action::Down);
-        assert_eq!(a.history_sel, Some(3));
+        assert_eq!(a.history_sel, Some(2));
+        // The newest entry is live, never a frozen selection.
         a.handle_action(Action::Down);
         assert_eq!(a.history_sel, None);
         a.handle_action(Action::Down);
@@ -612,7 +657,7 @@ mod tests {
         let _ = draw(&a); // learn the payload height
         a.handle_action(Action::ScrollUp);
         assert_eq!(a.payload_scroll, 0);
-        let h = a.payload_height.get();
+        let h = usize::from(a.payload_height.get());
         assert!(h > 2);
         a.handle_action(Action::ScrollDown);
         assert_eq!(a.payload_scroll, h / 2);
@@ -632,5 +677,49 @@ mod tests {
         a.focus = Focus::History;
         a.handle_action(Action::ScrollDown);
         assert!(a.payload_scroll > 0);
+    }
+
+    #[test]
+    fn big_binary_renders_and_body_is_cached() {
+        let big: Vec<u8> = (0..1_000_000u32).map(|i| (i % 251) as u8).collect();
+        let mut a = app_with(&[&big]);
+        let first = text(&draw(&a));
+        assert!(first.contains("00000000"));
+        assert_eq!(a.body_cache.builds.get(), 1);
+        let _ = draw(&a);
+        a.handle_action(Action::ScrollDown); // content_len shares the cache
+        assert_eq!(a.body_cache.builds.get(), 1);
+        send(&mut a, T, b"new", false); // a new message invalidates it
+        let _ = draw(&a);
+        assert_eq!(a.body_cache.builds.get(), 2);
+        a.show_diff = true;
+        let _ = draw(&a);
+        assert_eq!(a.body_cache.builds.get(), 3);
+    }
+
+    #[test]
+    fn oversized_text_diff_is_refused() {
+        let big = "x\n".repeat(150_000); // 300 kB
+        let mut a = app_with(&[big.as_bytes(), big.as_bytes()]);
+        a.show_diff = true;
+        let s = text(&draw(&a));
+        assert!(
+            s.contains("payload too large to diff (300000 bytes)"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn key_with_escaped_quote_is_coloured_as_key() {
+        let a = app_with(&[br#"{"a\"b": "c\\"}"#]);
+        let b = draw(&a);
+        let l = lines(&b);
+        let y = l.iter().position(|r| r.contains(r#""a\"b": "#)).unwrap();
+        let byte = l[y].find(r#""a\"b""#).unwrap();
+        let x = l[y][..byte].chars().count() as u16;
+        assert_eq!(b[(x, y as u16)].fg, Color::Cyan);
+        assert_eq!(b[(x + 4, y as u16)].fg, Color::Cyan); // the b after the escape
+        let vx = l[y][..l[y].find(r#""c\\""#).unwrap()].chars().count() as u16;
+        assert_eq!(b[(vx, y as u16)].fg, Color::Green);
     }
 }

@@ -2,6 +2,7 @@ use crate::payload::{PayloadKind, detect, pretty_lines};
 use serde::Serialize;
 use serde_json::Value;
 use similar::{ChangeTag, TextDiff};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum Diff {
@@ -51,7 +52,9 @@ pub fn diff(prev: &[u8], cur: &[u8]) -> Diff {
         _ => {
             let a = joined(&pk, prev);
             let b = joined(&ck, cur);
-            let lines = TextDiff::from_lines(&a, &b)
+            let lines = TextDiff::configure()
+                .timeout(Duration::from_millis(200))
+                .diff_lines(&a, &b)
                 .iter_all_changes()
                 .map(|ch| LineChange {
                     tag: match ch.tag() {
