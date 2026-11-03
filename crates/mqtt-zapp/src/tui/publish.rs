@@ -53,11 +53,11 @@ pub struct PublishForm {
 }
 
 impl PublishForm {
-    /// `prefill_topic` may come from the broker, so control characters are
-    /// replaced before they can reach the terminal.
+    /// `prefill_topic` is used verbatim so the form publishes to exactly the
+    /// selected topic. Rendering is terminal-safe: ratatui's `Buffer`
+    /// drops graphemes containing control characters.
     pub fn new(prefill_topic: &str) -> PublishForm {
-        let clean = sanitize(prefill_topic).replace('\n', "\u{fffd}");
-        let mut topic = TextArea::new(vec![clean]);
+        let mut topic = TextArea::new(vec![prefill_topic.to_owned()]);
         topic.move_cursor(tui_textarea::CursorMove::End);
         let mut form = PublishForm {
             topic,
@@ -136,8 +136,9 @@ impl PublishForm {
     }
 
     fn send(&mut self) -> FormOutcome {
+        // More than one line (e.g. a paste) is refused, not concatenated.
         let topic = self.topic.lines().join("");
-        if topic.is_empty() || topic.contains(['+', '#']) {
+        if self.topic.lines().len() > 1 || topic.is_empty() || topic.contains(['+', '#']) {
             self.error = Some(INVALID_TOPIC.into());
             return FormOutcome::Continue;
         }
@@ -197,7 +198,7 @@ pub fn render(f: &mut Frame, area: Rect, form: &PublishForm) {
         Paragraph::new("topic: ").style(label_style(form, Field::Topic)),
         label,
     );
-    f.render_widget(&form.topic, topic);
+    f.render_widget(Paragraph::new(topic_line(form)), topic);
     let block = Block::new()
         .borders(Borders::TOP)
         .title("payload")
@@ -210,6 +211,32 @@ pub fn render(f: &mut Frame, area: Rect, form: &PublishForm) {
         Paragraph::new(HINT).style(Style::new().fg(Color::DarkGray)),
         hint,
     );
+}
+
+/// The topic line, drawn by hand rather than by the text area: the text area
+/// hands control characters (a broker topic may contain ESC) to the buffer
+/// unfiltered, so each char is sanitized here, one for one, keeping the
+/// cursor position. The text itself stays raw, so a send is exact.
+fn topic_line(form: &PublishForm) -> Line<'static> {
+    let lines = form.topic.lines();
+    let cursor = (form.field == Field::Topic).then(|| form.topic.cursor().1);
+    let mut spans = Vec::new();
+    for (i, c) in lines.join("\u{23ce}").chars().enumerate() {
+        let text = sanitize(&c.to_string());
+        let style = if lines.len() == 1 && cursor == Some(i) {
+            Style::new().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::new()
+        };
+        spans.push(Span::styled(text, style));
+    }
+    if lines.len() == 1 && cursor.is_some_and(|c| c >= lines[0].chars().count()) {
+        spans.push(Span::styled(
+            " ",
+            Style::new().add_modifier(Modifier::REVERSED),
+        ));
+    }
+    Line::from(spans)
 }
 
 fn label_style(form: &PublishForm, field: Field) -> Style {
@@ -353,6 +380,37 @@ mod tests {
         assert!(f.error.is_some());
         f.on_key(ctrl('s'));
         assert_eq!(f.error, None);
+    }
+
+    #[test]
+    fn control_char_topic_round_trips_exactly() {
+        for t in ["a/\tb", "a/\x1b[31mb"] {
+            let mut f = PublishForm::new(t);
+            match f.on_key(ctrl('s')) {
+                FormOutcome::Send { topic, .. } => assert_eq!(topic, t),
+                o => panic!("{o:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn control_char_topic_renders_without_escape() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let f = PublishForm::new("a/\x1b[2Jb\tc");
+        let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        t.draw(|fr| render(fr, fr.area(), &f)).unwrap();
+        let b = t.backend().buffer().clone();
+        assert!(b.content.iter().all(|c| !c.symbol().contains('\x1b')));
+    }
+
+    #[test]
+    fn multi_line_topic_is_invalid() {
+        let mut f = PublishForm::new("a");
+        f.topic.insert_newline();
+        f.topic.insert_str("b");
+        assert_eq!(f.on_key(ctrl('s')), FormOutcome::Continue);
+        assert_eq!(f.error.as_deref(), Some("invalid topic"));
     }
 
     #[test]
