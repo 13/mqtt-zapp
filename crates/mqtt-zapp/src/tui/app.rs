@@ -121,6 +121,15 @@ impl MsgRate {
     }
 }
 
+/// What the header shows about the broker. Raw profile values; the
+/// renderer sanitizes them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerInfo {
+    pub name: String,
+    pub url: String,
+    pub subscriptions: Vec<String>,
+}
+
 pub struct App {
     pub tree: TopicTree,
     pub expanded: HashSet<NodeId>,
@@ -151,8 +160,8 @@ pub struct App {
     pub picker: PickerState,
     /// Set while in `Mode::Password`.
     pub password: Option<PasswordState>,
-    /// Name of the profile last connected to, shown in the status bar.
-    pub profile_name: Option<String>,
+    /// The broker last connected to, shown in the header.
+    pub server: Option<ServerInfo>,
     /// Why `profiles.toml` could not be loaded; shown in the empty picker.
     pub store_error: Option<String>,
     /// Open while in `Mode::Publish`.
@@ -197,7 +206,7 @@ impl App {
             pending_connect,
             picker: PickerState::new(store.profiles),
             password: None,
-            profile_name: None,
+            server: None,
             store_error: None,
             publish: None,
             status_note: None,
@@ -249,7 +258,11 @@ impl App {
     }
 
     fn connect_effect(&mut self, p: Profile, password: Option<String>) -> Effect {
-        self.profile_name = Some(p.name.clone());
+        self.server = Some(ServerInfo {
+            name: p.name.clone(),
+            url: super::picker::server_url(&p),
+            subscriptions: p.subscriptions.clone(),
+        });
         self.mode = Mode::Browse;
         self.dirty = true;
         Effect::Connect(p, password)
@@ -990,7 +1003,7 @@ mod tests {
             e => panic!("expected connect, got {e:?}"),
         }
         assert_eq!(a.mode, Mode::Browse);
-        assert_eq!(a.profile_name.as_deref(), Some("a"));
+        assert_eq!(a.server.as_ref().map(|s| s.name.as_str()), Some("a"));
     }
 
     #[test]
@@ -1032,7 +1045,7 @@ mod tests {
         }
         assert_eq!(a.mode, Mode::Browse);
         assert!(a.password.is_none(), "input cleared");
-        assert_eq!(a.profile_name.as_deref(), Some("a"));
+        assert_eq!(a.server.as_ref().map(|s| s.name.as_str()), Some("a"));
     }
 
     #[test]

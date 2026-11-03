@@ -1,7 +1,7 @@
 //! The connection picker and the password prompt: their state and drawing.
 
 use super::theme;
-use mqtt_zapp_core::config::Profile;
+use mqtt_zapp_core::config::{Profile, Protocol};
 use mqtt_zapp_core::payload::sanitize;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -60,6 +60,22 @@ impl PasswordState {
     pub fn masked(&self) -> String {
         "•".repeat(self.input.chars().count())
     }
+}
+
+/// `proto://[user@]host:port[/path]`, sanitized onto one line. The path is
+/// only shown for websocket profiles that set one.
+pub fn server_url(p: &Profile) -> String {
+    let proto = format!("{:?}", p.protocol).to_lowercase();
+    let user = p
+        .username
+        .as_deref()
+        .map(|u| format!("{u}@"))
+        .unwrap_or_default();
+    let path = match p.protocol {
+        Protocol::Ws | Protocol::Wss if p.ws_path != "/" => p.ws_path.as_str(),
+        _ => "",
+    };
+    sanitize(&format!("{proto}://{user}{}:{}{path}", p.host, p.port)).replace('\n', " ")
 }
 
 /// `name  protocol://host:port  user`, as in `profile list`.
@@ -122,6 +138,32 @@ pub fn render_password(f: &mut Frame, area: Rect, st: &PasswordState) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn server_url_formats() {
+        use mqtt_zapp_core::config::{PasswordSource, Profile, Protocol, TlsConfig};
+        let mut p = Profile {
+            name: "x".into(),
+            host: "broker.lan".into(),
+            port: 8883,
+            protocol: Protocol::Mqtts,
+            ws_path: "/".into(),
+            client_id: None,
+            username: Some("alice".into()),
+            password: PasswordSource::None,
+            tls: TlsConfig::default(),
+            subscriptions: vec![],
+        };
+        assert_eq!(super::server_url(&p), "mqtts://alice@broker.lan:8883");
+        p.protocol = Protocol::Wss;
+        p.host = "h".into();
+        p.port = 443;
+        p.ws_path = "/mqtt".into();
+        p.username = None;
+        assert_eq!(super::server_url(&p), "wss://h:443/mqtt");
+        p.protocol = Protocol::Mqtt;
+        assert_eq!(super::server_url(&p), "mqtt://h:443", "path only for ws");
+    }
+
     use super::*;
     use mqtt_zapp_core::config::{PasswordSource, Protocol, TlsConfig};
 

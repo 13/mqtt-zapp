@@ -51,7 +51,13 @@ fn render_front(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
-    let [main, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    let [header, main, status] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    f.render_widget(Paragraph::new(header_line(app, area.width)), header);
     let [tree, message] =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(main);
     render_tree(f, app, tree);
@@ -249,9 +255,46 @@ fn status_line(app: &App) -> Line<'static> {
     if matches!(app.mode, Mode::Picker | Mode::Password) {
         return Line::raw(hint.to_owned());
     }
+    let filter = app
+        .filter
+        .as_ref()
+        .map(|f| format!("filter: {} ({})  ", single_line(&f.query), f.matches.len()))
+        .unwrap_or_default();
+    Line::raw(format!("{filter}{hint}"))
+}
+
+/// Width of `spans` in terminal columns.
+fn spans_width(spans: &[Span]) -> usize {
+    spans.iter().map(Span::width).sum()
+}
+
+/// Cut `s` to at most `max` columns, ending in `…` when it was cut.
+fn ellipsize(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    if max > 0 {
+        out.push('…');
+    }
+    out
+}
+
+/// ` mqtt-zapp  ● connected  name  url ……… rate · topics`. When the line is
+/// too wide the url goes first, then the stats, then the name; the state
+/// pill is cut last.
+fn header_line(app: &App, width: u16) -> Line<'static> {
+    let width = usize::from(width);
+    let badge = Span::styled(
+        " mqtt-zapp ",
+        Style::new()
+            .fg(Color::Black)
+            .bg(theme::ACCENT)
+            .add_modifier(Modifier::BOLD),
+    );
     let (state, color) = match &app.conn_state {
-        ConnState::Connected => ("●".to_owned(), theme::OK),
-        ConnState::Connecting => ("◌".to_owned(), theme::WARN),
+        ConnState::Connected => ("● connected".to_owned(), theme::OK),
+        ConnState::Connecting => ("◌ connecting".to_owned(), theme::WARN),
         ConnState::Disconnected {
             reason,
             retry_in_ms: 0,
@@ -261,36 +304,71 @@ fn status_line(app: &App) -> Line<'static> {
             retry_in_ms,
         } => (
             format!(
-                "✕ {} – retry in {}s",
+                "✕ {} · retry {}s",
                 single_line(reason),
                 retry_in_ms.div_ceil(1000)
             ),
             theme::ERR,
         ),
     };
-    let name = app.profile_name.as_deref().map(single_line);
-    let filter = app
-        .filter
+    let pill_style = Style::new().fg(color).add_modifier(Modifier::BOLD);
+    let muted = Style::new().fg(theme::MUTED);
+    let mut name = app.server.as_ref().map(|s| {
+        vec![
+            Span::raw("  "),
+            Span::styled(
+                single_line(&s.name),
+                Style::new().add_modifier(Modifier::BOLD),
+            ),
+        ]
+    });
+    let mut url = app
+        .server
         .as_ref()
-        .map(|f| format!("  filter: {} ({})", single_line(&f.query), f.matches.len()))
-        .unwrap_or_default();
-    let rest = format!(
-        "{}  {:.1} msg/s  {} topics{filter}  {hint}",
-        name.map(|n| format!(" {n}")).unwrap_or_default(),
-        app.msg_rate.per_sec(Instant::now()),
-        app.tree.node(TopicTree::ROOT).topic_count
-    );
-    Line::from(vec![
-        Span::styled(state, Style::new().fg(color)),
-        Span::raw(rest),
-    ])
+        .map(|s| vec![Span::raw("  "), Span::styled(single_line(&s.url), muted)]);
+    let mut stats = Some(Span::styled(
+        format!(
+            "{:.1} msg/s · {} topics ",
+            app.msg_rate.per_sec(Instant::now()),
+            app.tree.node(TopicTree::ROOT).topic_count
+        ),
+        muted,
+    ));
+    let fixed = badge.width() + 1;
+    let pill_w = state.chars().count();
+    let total = |name: &Option<Vec<Span>>, url: &Option<Vec<Span>>, stats: &Option<Span>| {
+        fixed
+            + pill_w
+            + name.as_deref().map_or(0, spans_width)
+            + url.as_deref().map_or(0, spans_width)
+            + stats.as_ref().map_or(0, |s| s.width() + 2)
+    };
+    if total(&name, &url, &stats) > width {
+        url = None;
+    }
+    if total(&name, &url, &stats) > width {
+        stats = None;
+    }
+    if total(&name, &url, &stats) > width {
+        name = None;
+    }
+    let state = ellipsize(&state, width.saturating_sub(fixed));
+    let mut spans = vec![badge, Span::raw(" "), Span::styled(state, pill_style)];
+    spans.extend(name.into_iter().flatten());
+    spans.extend(url.into_iter().flatten());
+    if let Some(stats) = stats {
+        let pad = width.saturating_sub(spans_width(&spans) + stats.width());
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(stats);
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cli::Launch;
-    use crate::tui::app::{App, Mode};
+    use crate::tui::app::{App, Mode, ServerInfo};
     use crate::tui::keymap::Action;
     use mqtt_zapp_core::Message;
     use mqtt_zapp_core::client::CoreEvent;
@@ -410,9 +488,9 @@ mod tests {
             },
         ));
         let s = text(&draw(&mut a, 80, 24));
-        let last = s.lines().last().unwrap();
-        assert!(last.contains("✕ refused – retry in 4s"), "{last}");
-        assert!(last.contains("msg/s"), "{last}");
+        let top = s.lines().next().unwrap();
+        assert!(top.contains("✕ refused · retry 4s"), "{top}");
+        assert!(top.contains("msg/s"), "{top}");
     }
 
     #[test]
@@ -458,8 +536,9 @@ mod tests {
         a.set_note("published ok".into(), Instant::now());
         let b = draw(&mut a, 100, 24);
         let last = last_line(&b);
-        assert!(last.starts_with('●'), "{last}");
-        assert!(last.contains("msg/s"), "{last}");
+        let top = first_line(&b);
+        assert!(top.contains("● connected"), "{top}");
+        assert!(top.contains("msg/s"), "{top}");
         assert!(last.contains("filter: wzr (1)"), "{last}");
         assert!(last.contains("published ok"), "{last}");
         assert!(!last.contains("p publish"), "note beats hint: {last}");
@@ -517,6 +596,79 @@ mod tests {
             tls: TlsConfig::default(),
             subscriptions: vec!["#".into()],
         }
+    }
+
+    fn first_line(b: &Buffer) -> String {
+        text(b).lines().next().unwrap().trim_end().to_owned()
+    }
+
+    fn home() -> ServerInfo {
+        ServerInfo {
+            name: "home".into(),
+            url: "mqtts://alice@broker.lan:8883".into(),
+            subscriptions: vec!["#".into(), "$SYS/#".into()],
+        }
+    }
+
+    #[test]
+    fn header_shows_broker_and_state() {
+        let mut a = app_with(&[("a", b"1")]);
+        a.server = Some(home());
+        a.apply_core_event(CoreEvent::State(
+            mqtt_zapp_core::client::ConnState::Connected,
+        ));
+        let b = draw(&mut a, 120, 24);
+        let top = first_line(&b);
+        for want in [
+            "mqtt-zapp",
+            "● connected",
+            "home",
+            "mqtts://alice@broker.lan:8883",
+        ] {
+            assert!(top.contains(want), "{want}: {top}");
+        }
+        assert!(top.ends_with("topics"), "{top}");
+    }
+
+    #[test]
+    fn header_fits_40_cols() {
+        let mut a = app_with(&[("a", b"1")]);
+        a.server = Some(home());
+        a.apply_core_event(CoreEvent::State(
+            mqtt_zapp_core::client::ConnState::Disconnected {
+                reason: "a very long reason that does not fit anywhere at all".into(),
+                retry_in_ms: 1000,
+            },
+        ));
+        let b = draw(&mut a, 40, 10);
+        let top = first_line(&b);
+        assert!(top.starts_with(" mqtt-zapp "), "{top}");
+        assert!(top.contains('✕'), "{top}");
+        assert!(top.ends_with('…'), "{top}");
+        let second = text(&b).lines().nth(1).unwrap().to_owned();
+        assert!(
+            second.starts_with('┏') || second.starts_with('╭'),
+            "{second}"
+        );
+    }
+
+    #[test]
+    fn header_sanitizes_profile_and_reason() {
+        let mut a = app_with(&[("a", b"1")]);
+        a.server = Some(ServerInfo {
+            name: "h\x1b[31m".into(),
+            url: "mqtt://\x1b]0;x\x07:1".into(),
+            subscriptions: vec![],
+        });
+        a.apply_core_event(CoreEvent::State(
+            mqtt_zapp_core::client::ConnState::Disconnected {
+                reason: "\x1b[2J".into(),
+                retry_in_ms: 0,
+            },
+        ));
+        let b = draw(&mut a, 120, 24);
+        assert!(b.content.iter().all(|c| !c.symbol().contains('\x1b')));
+        assert!(b.content.iter().all(|c| !c.symbol().contains('\x07')));
     }
 
     fn last_line(b: &Buffer) -> String {
@@ -577,7 +729,7 @@ mod tests {
     #[test]
     fn disconnected_state_in_status_bar() {
         let mut a = app_with(&[]);
-        a.profile_name = Some("home".into());
+        a.server = Some(home());
         a.apply_core_event(CoreEvent::State(
             mqtt_zapp_core::client::ConnState::Disconnected {
                 reason: "connection refused".into(),
@@ -585,40 +737,36 @@ mod tests {
             },
         ));
         let b = draw(&mut a, 120, 24);
-        let last = last_line(&b);
-        assert!(
-            last.contains("✕ connection refused – retry in 4s"),
-            "{last}"
-        );
-        assert!(last.contains("home"), "{last}");
-        assert!(last.contains("0.0 msg/s  0 topics"), "{last}");
-        assert!(
-            last.contains("/ search  p publish  tab history  ? help"),
-            "{last}"
-        );
-        let col = last.chars().position(|c| c == '✕').unwrap() as u16;
-        let row = text(&b).lines().count() as u16 - 1;
-        assert_eq!(b[(col, row)].fg, Color::Red);
+        let top = first_line(&b);
+        assert!(top.contains("✕ connection refused · retry 4s"), "{top}");
+        assert!(top.contains("home"), "{top}");
+        assert!(top.ends_with("0.0 msg/s · 0 topics"), "{top}");
+        let col = top.chars().position(|c| c == '✕').unwrap() as u16;
+        assert_eq!(b[(col, 0)].fg, theme::ERR);
     }
 
     #[test]
     fn connected_and_connecting_markers() {
         let mut a = app_with(&[("a", b"1")]);
-        a.profile_name = Some("home".into());
+        a.server = Some(home());
         a.apply_core_event(CoreEvent::State(
             mqtt_zapp_core::client::ConnState::Connected,
         ));
         let b = draw(&mut a, 100, 24);
-        let last = last_line(&b);
-        assert!(last.starts_with("● home"), "{last}");
-        assert!(last.contains("1 topics"), "{last}");
-        assert_eq!(b[(0, 23)].fg, Color::Green);
+        let top = first_line(&b);
+        assert!(top.contains("● connected"), "{top}");
+        assert!(top.contains("home"), "{top}");
+        assert!(top.contains("1 topics"), "{top}");
+        let col = top.chars().position(|c| c == '●').unwrap() as u16;
+        assert_eq!(b[(col, 0)].fg, theme::OK);
         a.apply_core_event(CoreEvent::State(
             mqtt_zapp_core::client::ConnState::Connecting,
         ));
         let b = draw(&mut a, 100, 24);
-        assert!(last_line(&b).starts_with("◌ home"));
-        assert_eq!(b[(0, 23)].fg, Color::Yellow);
+        let top = first_line(&b);
+        assert!(top.contains("◌ connecting"), "{top}");
+        let col = top.chars().position(|c| c == '◌').unwrap() as u16;
+        assert_eq!(b[(col, 0)].fg, theme::WARN);
     }
 
     #[test]
