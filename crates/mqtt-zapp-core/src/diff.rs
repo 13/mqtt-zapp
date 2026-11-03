@@ -102,11 +102,7 @@ fn walk(path: &str, prev: &Value, cur: &Value, out: &mut Vec<JsonChange>) {
     match (prev, cur) {
         (Value::Object(p), Value::Object(c)) => {
             for (k, cv) in c {
-                let sub = if path.is_empty() {
-                    k.clone()
-                } else {
-                    format!("{path}.{k}")
-                };
+                let sub = child(path, k);
                 match p.get(k) {
                     Some(pv) => walk(&sub, pv, cv, out),
                     None => push(out, &sub, ChangeKind::Added, None, Some(cv)),
@@ -114,11 +110,7 @@ fn walk(path: &str, prev: &Value, cur: &Value, out: &mut Vec<JsonChange>) {
             }
             for (k, pv) in p {
                 if !c.contains_key(k) {
-                    let sub = if path.is_empty() {
-                        k.clone()
-                    } else {
-                        format!("{path}.{k}")
-                    };
+                    let sub = child(path, k);
                     push(out, &sub, ChangeKind::Removed, Some(pv), None);
                 }
             }
