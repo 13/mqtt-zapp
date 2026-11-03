@@ -1,2 +1,10 @@
 /target
 /.superpowers/
+
+# makepkg output
+packaging/arch/*.tar.gz
+packaging/arch/*.pkg.tar.zst
+packaging/arch/src/
+packaging/arch/pkg/
+# AppImage build output
+dist/

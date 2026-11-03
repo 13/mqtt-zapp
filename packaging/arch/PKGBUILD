@@ -1,0 +1,41 @@
+# Maintainer: 13 <13@users.noreply.github.com>
+# Built in CI from `git archive --prefix=mqtt-zapp-$pkgver/` of the tagged
+# commit, placed next to this file as mqtt-zapp-$pkgver.tar.gz.
+pkgname=mqtt-zapp
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Terminal MQTT explorer: browse topics, watch, diff, chart and publish'
+arch=(x86_64)
+url='https://github.com/13/mqtt-zapp'
+license=(MIT)
+depends=(dbus gcc-libs glibc)
+makedepends=(cargo)
+# makepkg's LTO turns ring's C code into GCC bitcode rust-lld cannot link.
+options=(!lto)
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=(SKIP)
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+    cargo build --frozen --release -p mqtt-zapp
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+    cargo test --frozen -p mqtt-zapp
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 target/release/mqtt-zapp -t "$pkgdir/usr/bin/"
+    install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+    install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname/"
+}

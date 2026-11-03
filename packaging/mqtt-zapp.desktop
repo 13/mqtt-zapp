@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=mqtt-zapp
+Comment=Terminal MQTT explorer
+Exec=mqtt-zapp
+Icon=mqtt-zapp
+Terminal=true
+Categories=Network;Utility;

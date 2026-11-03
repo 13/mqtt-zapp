@@ -2,6 +2,10 @@
 name = "mqtt-zapp"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+description = "Terminal MQTT explorer: browse topics, watch, diff, chart and publish"
+repository = "https://github.com/13/mqtt-zapp"
+readme = "../../README.md"
 
 [dependencies]
 mqtt-zapp-core = { path = "../mqtt-zapp-core", default-features = false }
@@ -20,3 +24,18 @@ serde_json = { version = "1", features = ["preserve_order"] }
 [features]
 default = ["keyring"]
 keyring = ["mqtt-zapp-core/keyring"]
+
+[package.metadata.deb]
+maintainer = "13 <13@users.noreply.github.com>"
+copyright = "2026, mqtt-zapp contributors"
+license-file = ["../../LICENSE", "0"]
+section = "net"
+priority = "optional"
+depends = "$auto"
+extended-description = """\
+A terminal MQTT explorer: browse a broker's topic tree, watch payloads update
+live, diff against the previous message, chart numeric fields and publish."""
+assets = [
+    ["target/release/mqtt-zapp", "usr/bin/", "755"],
+    ["../../README.md", "usr/share/doc/mqtt-zapp/README.md", "644"],
+]
