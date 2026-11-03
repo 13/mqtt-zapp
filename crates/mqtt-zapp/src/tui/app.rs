@@ -913,16 +913,11 @@ impl App {
     /// off → plain number (if the shown payload is one) → each numeric JSON
     /// field → off.
     fn cycle_chart(&mut self) {
-        use mqtt_zapp_core::payload::{numeric_at, numeric_paths};
-        let Some(m) = super::message_view::shown_message(self) else {
+        if super::message_view::shown_message(self).is_none() {
             self.set_note(Note::info("nothing to chart"), Instant::now());
             return;
-        };
-        let mut series: Vec<Option<String>> = Vec::new();
-        if numeric_at(&m.payload, None).is_some() {
-            series.push(None);
         }
-        series.extend(numeric_paths(&m.payload).into_iter().map(Some));
+        let series = self.chart_series();
         let next = match &self.chart {
             None => series.first().cloned(),
             Some(cur) => series
@@ -937,6 +932,70 @@ impl App {
             (Some(s), _) => format!("chart: {}", s.as_deref().unwrap_or("value")),
         };
         self.set_note(Note::info(note), Instant::now());
+        self.scroll_to_chart_line();
+    }
+
+    /// What `c` cycles through for the shown payload, in order: the plain
+    /// value (`None`) if it is a number, then each numeric JSON field.
+    pub fn chart_series(&self) -> Vec<Option<String>> {
+        use mqtt_zapp_core::payload::{numeric_at, numeric_paths};
+        let Some(m) = super::message_view::shown_message(self) else {
+            return Vec::new();
+        };
+        let mut series: Vec<Option<String>> = Vec::new();
+        if numeric_at(&m.payload, None).is_some() {
+            series.push(None);
+        }
+        series.extend(numeric_paths(&m.payload).into_iter().map(Some));
+        series
+    }
+
+    /// The payload line of the charted value in the shown payload; `None`
+    /// with the chart off, in the diff view, or when the field is not there.
+    pub fn chart_line(&self) -> Option<usize> {
+        let cur = self.chart.as_ref().filter(|_| !self.show_diff)?;
+        let m = super::message_view::shown_message(self)?;
+        mqtt_zapp_core::payload::numeric_lines(&m.payload)
+            .into_iter()
+            .find(|(_, p)| p == cur)
+            .map(|(l, _)| l)
+    }
+
+    /// A click on payload line `line`: chart the value there, or turn the
+    /// chart off if it is the charted one. Lines without a number do nothing.
+    pub(super) fn chart_click(&mut self, line: usize) {
+        if self.show_diff {
+            return;
+        }
+        let Some(m) = super::message_view::shown_message(self) else {
+            return;
+        };
+        let Some((_, path)) = mqtt_zapp_core::payload::numeric_lines(&m.payload)
+            .into_iter()
+            .find(|(l, _)| *l == line)
+        else {
+            return;
+        };
+        let note = if self.chart.as_ref() == Some(&path) {
+            self.chart = None;
+            "chart off".to_owned()
+        } else {
+            let note = format!("chart: {}", path.as_deref().unwrap_or("value"));
+            self.chart = Some(path);
+            note
+        };
+        self.set_note(Note::info(note), Instant::now());
+    }
+
+    /// Scroll the payload so the charted line shows. Opening the chart takes
+    /// up to half the pane, so a line is only left alone in the top half;
+    /// otherwise it goes near the top.
+    fn scroll_to_chart_line(&mut self) {
+        let Some(l) = self.chart_line() else { return };
+        let half = (usize::from(self.payload_height.get()) / 2).max(1);
+        if l < self.payload_scroll || l >= self.payload_scroll + half {
+            self.payload_scroll = l.saturating_sub(1);
+        }
     }
 
     /// Expand (or collapse) the selected node and every node below it.

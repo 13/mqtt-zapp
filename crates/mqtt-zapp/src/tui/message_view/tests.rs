@@ -965,3 +965,83 @@ fn history_preview_of_wide_chars_never_overflows() {
         assert!(r.ends_with('│') && r.contains('…'), "{w}: {r:?}");
     }
 }
+
+/// The row of `b` containing `needle` (the last one, below the chart).
+fn row_with(b: &Buffer, needle: &str) -> u16 {
+    lines(b)
+        .iter()
+        .rposition(|r| r.contains(needle))
+        .unwrap_or_else(|| panic!("{needle}")) as u16
+}
+
+fn highlighted(b: &Buffer, y: u16) -> bool {
+    (0..b.area.width).any(|x| b[(x, y)].bg == theme::SEL_BG_INACTIVE)
+}
+
+#[test]
+fn chart_highlights_active_line() {
+    let mut a = app_with(&[br#"{"t":21.5,"h":40}"#, br#"{"t":22,"h":41}"#]);
+    a.handle_action(Action::Chart);
+    let b = draw(&a);
+    assert!(highlighted(&b, row_with(&b, "\"t\": 22")));
+    assert!(!highlighted(&b, row_with(&b, "\"h\": 41")));
+    a.handle_action(Action::Chart);
+    let b = draw(&a);
+    assert!(highlighted(&b, row_with(&b, "\"h\": 41")));
+    assert!(!highlighted(&b, row_with(&b, "\"t\": 22")));
+    a.handle_action(Action::Chart);
+    let b = draw(&a);
+    assert!(!highlighted(&b, row_with(&b, "\"h\": 41")), "chart off");
+}
+
+#[test]
+fn chart_title_shows_position() {
+    let mut a = app_with(&[br#"{"t":21.5,"h":40}"#, br#"{"t":22,"h":41}"#]);
+    a.handle_action(Action::Chart);
+    assert!(text(&draw(&a)).contains("chart · t · 1/2"));
+    a.handle_action(Action::Chart);
+    assert!(text(&draw(&a)).contains("chart · h · 2/2"));
+}
+
+#[test]
+fn cycle_scrolls_highlight_into_view() {
+    let body: String = (0..60)
+        .map(|i| format!("\"k{i}\":{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let p = format!("{{{body}}}");
+    let mut a = app_with(&[p.as_bytes(), p.as_bytes()]);
+    for _ in 0..30 {
+        let _ = draw(&a);
+        a.handle_action(Action::Chart);
+        let l = a.chart_line().unwrap();
+        let (s, h) = (a.payload_scroll, usize::from(a.payload_height.get()));
+        assert!(l >= s && l < s + h, "line {l} outside {s}..{}", s + h);
+    }
+}
+
+#[test]
+fn highlight_follows_path_across_messages() {
+    let mut a = app_with(&[br#"{"t":1,"h":2}"#, br#"{"t":1,"h":3}"#]);
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::Chart);
+    assert_eq!(a.chart_line(), Some(2));
+    send(&mut a, T, br#"{"x":1,"y":5,"h":2}"#, false);
+    assert_eq!(a.chart_line(), Some(3));
+    let b = draw(&a);
+    assert!(highlighted(&b, row_with(&b, "\"h\": 2")));
+    send(&mut a, T, br#"{"x":1}"#, false);
+    assert_eq!(a.chart_line(), None);
+    let b = draw(&a);
+    assert!(!highlighted(&b, row_with(&b, "\"x\": 1")));
+}
+
+#[test]
+fn diff_view_has_no_highlight() {
+    let mut a = app_with(&[br#"{"t":1}"#, br#"{"t":2}"#]);
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::ToggleDiff);
+    assert_eq!(a.chart_line(), None);
+    let b = draw(&a);
+    assert!(!(0..b.area.height).any(|y| highlighted(&b, y)));
+}

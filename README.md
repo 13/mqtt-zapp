@@ -103,7 +103,7 @@ time.
 | `s` | `sort` | Cycle the tree order: name (natural), message count, most recent; in the picker: custom, name, last used |
 | `L` | `expand_all` | Expand the selected node and everything below it |
 | `H` | `collapse_all` | Collapse the selected node and everything below it |
-| `c` | `chart` | Chart the payload, or cycle through its numeric JSON fields |
+| `c` | `chart` | Chart the payload, or cycle through its numeric JSON fields (the charted line is highlighted) |
 | `S` | `stats` | Show broker statistics from `$SYS` |
 | `a` | `add_profile` | In the picker: add a profile |
 | `e` | `edit_profile` | In the picker: edit the selected profile |
@@ -158,7 +158,8 @@ the picker to select it (click again to connect). The wheel scrolls the pane
 under the pointer. Click `⧉ copy` (or the topic path) on the message header to
 copy the topic, `⧉ copy` on the payload pane to copy the shown payload, or
 right-click a tree row to copy its topic (all via OSC 52). Click the broker name
-in the top bar to switch brokers. Hold shift to select text with the mouse.
+in the top bar to switch brokers. Click a number in the payload to chart it
+(click it again to turn the chart off). Hold shift to select text with the mouse.
 
 ### Publishing
 

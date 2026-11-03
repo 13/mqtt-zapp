@@ -1294,3 +1294,70 @@ fn click_payload_title_copies_payload() {
     let (x, y) = find_at(&b, "● payload ");
     assert_eq!(copied(click(&mut a, x + 8, y)), ("payload", "hello".into()));
 }
+
+/// Click the payload row containing `needle` (the last one on screen).
+fn click_payload_row(a: &mut App, b: &Buffer, needle: &str) -> Effect {
+    let l: Vec<String> = text(b).lines().map(str::to_owned).collect();
+    let y = l
+        .iter()
+        .rposition(|r| r.contains(needle))
+        .unwrap_or_else(|| panic!("{needle}"));
+    click(a, 70, y as u16)
+}
+
+#[test]
+fn click_numeric_line_charts_it() {
+    let mut a = app_with(&[
+        ("dev/x", br#"{"t":21.5,"h":40}"#),
+        ("dev/x", br#"{"t":22,"h":41}"#),
+    ]);
+    a.selected = a.tree.find("dev/x");
+    let b = draw(&mut a, 100, 30);
+    assert!(matches!(
+        click_payload_row(&mut a, &b, "\"h\": 41"),
+        Effect::None
+    ));
+    assert_eq!(a.chart, Some(Some("h".into())));
+    assert_eq!(a.focus, crate::tui::app::Focus::Payload);
+    let b = draw(&mut a, 100, 30);
+    click_payload_row(&mut a, &b, "\"h\": 41");
+    assert_eq!(a.chart, None, "clicking the charted line turns it off");
+    let b = draw(&mut a, 100, 30);
+    click_payload_row(&mut a, &b, "\"t\": 22");
+    let b = draw(&mut a, 100, 30);
+    // A line without a number leaves the chart alone.
+    let y = text(&b)
+        .lines()
+        .collect::<Vec<_>>()
+        .iter()
+        .rposition(|r| r.contains("┃}"))
+        .unwrap_or_else(|| panic!("{}", text(&b)));
+    click(&mut a, 70, y as u16);
+    assert_eq!(a.chart, Some(Some("t".into())));
+}
+
+#[test]
+fn click_numeric_line_when_scrolled() {
+    let body: String = (0..60)
+        .map(|i| format!("\"k{i}\":{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let p = format!("{{{body}}}");
+    let mut a = app_with(&[("dev/x", p.as_bytes())]);
+    a.selected = a.tree.find("dev/x");
+    let _ = draw(&mut a, 100, 30);
+    a.payload_scroll = 20;
+    let b = draw(&mut a, 100, 30);
+    click_payload_row(&mut a, &b, "\"k22\": 22");
+    assert_eq!(a.chart, Some(Some("k22".into())));
+}
+
+#[test]
+fn click_uses_pinned_payload() {
+    let mut a = app_with(&[("dev/x", br#"{"a":1}"#), ("dev/x", br#"{"b":1,"a":2}"#)]);
+    a.selected = a.tree.find("dev/x");
+    a.history_sel = Some(0);
+    let b = draw(&mut a, 100, 30);
+    click_payload_row(&mut a, &b, "\"a\": 1");
+    assert_eq!(a.chart, Some(Some("a".into())));
+}
