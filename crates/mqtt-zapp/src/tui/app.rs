@@ -184,6 +184,8 @@ pub struct ServerInfo {
     pub name: String,
     pub url: String,
     pub subscriptions: Vec<String>,
+    /// Shown in the header after the URL; see `front::security_warning`.
+    pub warning: Option<&'static str>,
 }
 
 /// A transient footer message, e.g. a publish result.

@@ -12,6 +12,9 @@ async fn main() -> anyhow::Result<()> {
         Some(Cmd::Tui) | None => {
             let (store, store_error) =
                 cli::store_or_empty(&args, mqtt_zapp_core::config::ProfileStore::load())?;
+            if let Some(w) = cli::insecure_warning(&args) {
+                eprintln!("{w}");
+            }
             let launch = cli::resolve_launch(&args, &store)?;
             tui::run(launch, store, store_error).await
         }

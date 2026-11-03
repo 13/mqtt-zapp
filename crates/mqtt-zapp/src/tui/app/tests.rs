@@ -1617,3 +1617,40 @@ fn retained_arriving_during_the_confirm_is_cleared_too() {
         e => panic!("{e:?}"),
     }
 }
+
+fn warn_profile(protocol: Protocol, insecure: bool, user: bool, pw: PasswordSource) -> Profile {
+    let mut p = profile("w", pw);
+    p.protocol = protocol;
+    p.tls.insecure = insecure;
+    p.username = user.then(|| "alice".to_string());
+    p
+}
+
+#[test]
+fn security_warning_unverified_tls() {
+    use super::front::security_warning as w;
+    for proto in [Protocol::Mqtts, Protocol::Wss] {
+        let p = warn_profile(proto, true, false, PasswordSource::None);
+        assert_eq!(w(&p), Some("unverified tls"));
+    }
+    // Insecure on a plain transport has no certificate to skip.
+    let p = warn_profile(Protocol::Mqtt, true, false, PasswordSource::None);
+    assert_eq!(w(&p), None);
+}
+
+#[test]
+fn security_warning_cleartext_password() {
+    use super::front::security_warning as w;
+    for proto in [Protocol::Mqtt, Protocol::Ws] {
+        for pw in [PasswordSource::Keyring, PasswordSource::Prompt] {
+            let p = warn_profile(proto, false, true, pw);
+            assert_eq!(w(&p), Some("password in cleartext"));
+        }
+        let p = warn_profile(proto, false, true, PasswordSource::None);
+        assert_eq!(w(&p), None, "no password source");
+        let p = warn_profile(proto, false, false, PasswordSource::Prompt);
+        assert_eq!(w(&p), None, "no username");
+    }
+    let p = warn_profile(Protocol::Mqtts, false, true, PasswordSource::Prompt);
+    assert_eq!(w(&p), None, "verified tls is fine");
+}

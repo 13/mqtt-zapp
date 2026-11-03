@@ -839,6 +839,12 @@ fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16, u16)>) {
         .server
         .as_ref()
         .map(|s| vec![Span::raw("  "), Span::styled(single_line(&s.url), muted)]);
+    // Security warning: right after the URL, cut only after everything else.
+    let mut security = app
+        .server
+        .as_ref()
+        .and_then(|s| s.warning)
+        .map(|w| Span::styled(format!("  ⚠ {w}"), Style::new().fg(theme::ERR)));
     let mut stats = Some(Span::styled(
         format!(
             "{:.1} msg/s · {} topics ",
@@ -863,28 +869,37 @@ fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16, u16)>) {
     let total = |name: &Option<Vec<Span>>,
                  url: &Option<Vec<Span>>,
                  stats: &Option<Span>,
-                 warn: &Option<Span>| {
+                 warn: &Option<Span>,
+                 security: &Option<Span>| {
         fixed
             + pill_w
+            + security.as_ref().map_or(0, Span::width)
             + warn.as_ref().map_or(0, Span::width)
             + name.as_deref().map_or(0, spans_width)
             + url.as_deref().map_or(0, spans_width)
             + stats.as_ref().map_or(0, |s| s.width() + 2)
     };
-    if total(&name, &url, &stats, &warn) > width {
+    if total(&name, &url, &stats, &warn, &security) > width {
         warn = None;
     }
-    if total(&name, &url, &stats, &warn) > width {
+    if total(&name, &url, &stats, &warn, &security) > width {
         url = None;
     }
-    if total(&name, &url, &stats, &warn) > width {
+    if total(&name, &url, &stats, &warn, &security) > width {
         stats = None;
     }
-    if total(&name, &url, &stats, &warn) > width {
+    if total(&name, &url, &stats, &warn, &security) > width {
         name = None;
     }
+    if total(&name, &url, &stats, &warn, &security) > width {
+        security = None;
+    }
     let room = width.saturating_sub(
-        fixed + prefix.width() + suffix.width() + warn.as_ref().map_or(0, Span::width),
+        fixed
+            + prefix.width()
+            + suffix.width()
+            + warn.as_ref().map_or(0, Span::width)
+            + security.as_ref().map_or(0, Span::width),
     );
     let state = format!("{prefix}{}{suffix}", ellipsize(&reason, room));
     let mut spans = vec![badge, Span::raw(" "), Span::styled(state, pill_style)];
@@ -895,6 +910,7 @@ fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16, u16)>) {
     });
     spans.extend(name.into_iter().flatten());
     spans.extend(url.into_iter().flatten());
+    spans.extend(security);
     if let Some(stats) = stats {
         let pad = width.saturating_sub(spans_width(&spans) + stats.width());
         spans.push(Span::raw(" ".repeat(pad)));

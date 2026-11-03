@@ -194,6 +194,13 @@ pub fn resolve_launch(args: &Args, store: &ProfileStore) -> Result<Launch> {
     }
 }
 
+/// Printed to stderr before the TUI starts when `--insecure` is on the command line
+/// for an ad-hoc `--host` connection.
+pub fn insecure_warning(args: &Args) -> Option<&'static str> {
+    (args.conn.host.is_some() && args.conn.insecure)
+        .then_some("warning: --insecure accepts any certificate")
+}
+
 /// Builds the profile for `profile add`; does not touch the keyring.
 fn profile_for_add(name: &str, mode: Option<PasswordMode>, conn: &ConnArgs) -> Result<Profile> {
     let Some(host) = &conn.host else {
@@ -459,5 +466,16 @@ mod tests {
         );
         remove_profile(&mut s, "home").unwrap();
         assert!(s.profiles.is_empty());
+    }
+
+    #[test]
+    fn insecure_flag_warns() {
+        let warn = |a: &[&str]| insecure_warning(&Args::parse_from(a));
+        assert_eq!(
+            warn(&["mqtt-zapp", "--host", "x", "--insecure"]),
+            Some("warning: --insecure accepts any certificate")
+        );
+        assert_eq!(warn(&["mqtt-zapp", "--host", "x"]), None);
+        assert_eq!(warn(&["mqtt-zapp"]), None);
     }
 }

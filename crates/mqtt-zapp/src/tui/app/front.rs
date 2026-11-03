@@ -2,6 +2,7 @@
 //! profile form, picker sorting and reordering, and the remembered state.
 
 use super::*;
+use mqtt_zapp_core::config::Protocol;
 
 impl App {
     /// Start connecting to `p`, resolving its password: connect right away,
@@ -82,6 +83,7 @@ impl App {
             name: p.name.clone(),
             url: crate::tui::picker::server_url(&p),
             subscriptions: p.subscriptions.clone(),
+            warning: security_warning(&p),
         });
         self.mode = Mode::Browse;
         self.dirty = true;
@@ -288,5 +290,18 @@ impl App {
             _ => {}
         }
         Effect::None
+    }
+}
+
+/// What is unsafe about this connection, for the header.
+pub fn security_warning(p: &Profile) -> Option<&'static str> {
+    match p.protocol {
+        Protocol::Mqtts | Protocol::Wss if p.tls.insecure => Some("unverified tls"),
+        Protocol::Mqtt | Protocol::Ws
+            if p.username.is_some() && p.password != PasswordSource::None =>
+        {
+            Some("password in cleartext")
+        }
+        _ => None,
     }
 }

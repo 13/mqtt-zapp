@@ -583,6 +583,7 @@ fn home() -> ServerInfo {
         name: "home".into(),
         url: "mqtts://alice@broker.lan:8883".into(),
         subscriptions: vec!["#".into(), "$SYS/#".into()],
+        warning: None,
     }
 }
 
@@ -659,6 +660,7 @@ fn header_sanitizes_profile_and_reason() {
         name: "h\x1b[31m".into(),
         url: "mqtt://\x1b]0;x\x07:1".into(),
         subscriptions: vec![],
+        warning: None,
     });
     a.apply_core_event(CoreEvent::State(
         mqtt_zapp_core::client::ConnState::Disconnected {
@@ -1487,4 +1489,27 @@ fn wrap_words_fits_width_and_keeps_text() {
             assert_eq!(joined, s.split_whitespace().collect::<String>(), "w={w}");
         }
     }
+}
+
+#[test]
+fn header_shows_security_warning() {
+    let mut a = app_with(&[("a", b"1")]);
+    a.server = Some(ServerInfo {
+        warning: Some("unverified tls"),
+        ..home()
+    });
+    let b = draw(&mut a, 120, 24);
+    let top = first_line(&b);
+    let url = top.find("mqtts://").unwrap();
+    let warn = top.find("⚠ unverified tls").expect(&top);
+    assert!(warn > url, "after the URL: {top}");
+    let col = top[..warn].chars().count() as u16;
+    assert_eq!(b[(col, 0)].fg, theme::ERR);
+
+    // Narrow: the drop badge and stats go first, the warning outlasts the URL.
+    a.dropped = 3;
+    let b = draw(&mut a, 70, 24);
+    let top = first_line(&b);
+    assert!(top.contains("⚠ unverified tls"), "{top}");
+    assert!(!top.contains("dropped"), "{top}");
 }
