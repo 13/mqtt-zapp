@@ -916,6 +916,22 @@ fn reset_tree_clears_body_cache() {
 }
 
 #[test]
+fn dropped_events_accumulate() {
+    let mut a = browse(&["a"]);
+    a.apply_core_event(CoreEvent::Dropped(3));
+    a.apply_core_event(CoreEvent::Dropped(3));
+    assert_eq!(a.dropped, 6);
+}
+
+#[test]
+fn reset_tree_clears_dropped() {
+    let mut a = browse(&["a"]);
+    a.apply_core_event(CoreEvent::Dropped(3));
+    a.reset_tree();
+    assert_eq!(a.dropped, 0);
+}
+
+#[test]
 fn msg_rate_is_a_ten_second_window() {
     let mut r = MsgRate::default();
     let t0 = Instant::now();

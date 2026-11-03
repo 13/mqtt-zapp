@@ -245,6 +245,8 @@ pub struct App {
     /// Set when messages arrived since the last tick; gates the filter rebuild.
     tree_changed: bool,
     pub msg_rate: MsgRate,
+    /// Messages the core dropped because this UI fell behind.
+    pub dropped: u64,
     /// First visible row of the tree pane; maintained by the renderer.
     pub tree_offset: usize,
     pub focus: Focus,
@@ -341,6 +343,7 @@ impl App {
             dirty: true,
             tree_changed: false,
             msg_rate: MsgRate::default(),
+            dropped: 0,
             tree_offset: 0,
             focus: Focus::Tree,
             history_sel: None,
@@ -397,6 +400,7 @@ impl App {
         self.search.clear();
         self.tree_offset = 0;
         self.msg_rate = MsgRate::default();
+        self.dropped = 0;
         self.body_cache.clear();
         self.cleared_echo.clear();
         self.dirty = true;
@@ -405,6 +409,7 @@ impl App {
     pub fn apply_core_event(&mut self, ev: CoreEvent) {
         match ev {
             CoreEvent::State(s) => self.conn_state = s,
+            CoreEvent::Dropped(n) => self.dropped += n,
             CoreEvent::Message { topic, msg } => {
                 if self.cleared_echo.remove(&topic) && msg.payload.is_empty() {
                     return;

@@ -607,6 +607,30 @@ fn header_shows_broker_and_state() {
 }
 
 #[test]
+fn header_shows_dropped_badge() {
+    let mut a = app_with(&[("a", b"1")]);
+    a.server = Some(home());
+    a.dropped = 42;
+    let b = draw(&mut a, 120, 24);
+    let top = first_line(&b);
+    assert!(top.contains("42 dropped"), "{top}");
+}
+
+#[test]
+fn header_drops_dropped_badge_first_when_narrow() {
+    let mut a = app_with(&[("a", b"1")]);
+    a.server = Some(home());
+    a.dropped = 42;
+    a.apply_core_event(CoreEvent::State(
+        mqtt_zapp_core::client::ConnState::Connected,
+    ));
+    let b = draw(&mut a, 40, 10);
+    let top = first_line(&b);
+    assert!(!top.contains("dropped"), "{top}");
+    assert!(top.contains("● connected"), "{top}");
+}
+
+#[test]
 fn header_fits_40_cols() {
     let mut a = app_with(&[("a", b"1")]);
     a.server = Some(home());

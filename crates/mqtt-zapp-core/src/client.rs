@@ -47,7 +47,13 @@ impl ConnState {
 #[derive(Debug, Clone, Serialize)]
 pub enum CoreEvent {
     State(ConnState),
-    Message { topic: String, msg: Message },
+    Message {
+        topic: String,
+        msg: Message,
+    },
+    /// Messages dropped because the UI channel was full, since the last
+    /// `Dropped` event.
+    Dropped(u64),
 }
 
 #[derive(Clone)]
@@ -270,6 +276,7 @@ async fn run(
     }
     let mut backoff = BACKOFF_START_MS;
     let mut connected = false;
+    let mut dropped: u64 = 0;
     emit!(CoreEvent::State(ConnState::Connecting));
     loop {
         let polled = tokio::select! {
@@ -286,14 +293,23 @@ async fn run(
                 emit!(CoreEvent::State(ConnState::Connected));
             }
             Polled::Publish { topic, msg } => {
-                emit!(CoreEvent::Message { topic, msg });
+                // Never wait on a full UI channel: the loop must keep polling
+                // (keepalive pings, acks). Count what does not fit instead.
+                if dropped > 0 && tx.try_send(CoreEvent::Dropped(dropped)).is_ok() {
+                    dropped = 0;
+                }
+                match tx.try_send(CoreEvent::Message { topic, msg }) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => dropped += 1,
+                    Err(mpsc::error::TrySendError::Closed(_)) => return,
+                }
             }
             Polled::OutgoingDisconnect | Polled::Other => {}
             Polled::Err(reason) => {
                 connected = false;
-                let dropped = eventloop.drop_pending();
-                let reason = if dropped > 0 {
-                    format!("{reason} · dropped {dropped} unsent")
+                let unsent = eventloop.drop_pending();
+                let reason = if unsent > 0 {
+                    format!("{reason} · dropped {unsent} unsent")
                 } else {
                     reason
                 };

@@ -847,27 +847,48 @@ fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16, u16)>) {
         ),
         muted,
     ));
+    // Warnings after the pill, joined with " · "; the first part cut.
+    let mut warnings = Vec::new();
+    if app.dropped > 0 {
+        warnings.push(format!("⚠ {} dropped", app.dropped));
+    }
+    let mut warn = (!warnings.is_empty()).then(|| {
+        Span::styled(
+            format!(" · {}", warnings.join(" · ")),
+            Style::new().fg(theme::WARN),
+        )
+    });
     let fixed = badge.width() + 1;
     let pill_w = prefix.width() + reason.width() + suffix.width();
-    let total = |name: &Option<Vec<Span>>, url: &Option<Vec<Span>>, stats: &Option<Span>| {
+    let total = |name: &Option<Vec<Span>>,
+                 url: &Option<Vec<Span>>,
+                 stats: &Option<Span>,
+                 warn: &Option<Span>| {
         fixed
             + pill_w
+            + warn.as_ref().map_or(0, Span::width)
             + name.as_deref().map_or(0, spans_width)
             + url.as_deref().map_or(0, spans_width)
             + stats.as_ref().map_or(0, |s| s.width() + 2)
     };
-    if total(&name, &url, &stats) > width {
+    if total(&name, &url, &stats, &warn) > width {
+        warn = None;
+    }
+    if total(&name, &url, &stats, &warn) > width {
         url = None;
     }
-    if total(&name, &url, &stats) > width {
+    if total(&name, &url, &stats, &warn) > width {
         stats = None;
     }
-    if total(&name, &url, &stats) > width {
+    if total(&name, &url, &stats, &warn) > width {
         name = None;
     }
-    let room = width.saturating_sub(fixed + prefix.width() + suffix.width());
+    let room = width.saturating_sub(
+        fixed + prefix.width() + suffix.width() + warn.as_ref().map_or(0, Span::width),
+    );
     let state = format!("{prefix}{}{suffix}", ellipsize(&reason, room));
     let mut spans = vec![badge, Span::raw(" "), Span::styled(state, pill_style)];
+    spans.extend(warn);
     let broker = name.as_ref().map(|n| {
         let x = spans_width(&spans) + n[0].width();
         (x as u16, n[1].width() as u16)

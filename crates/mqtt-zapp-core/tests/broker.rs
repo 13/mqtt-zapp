@@ -443,3 +443,70 @@ async fn clear_retained_removes_each_topic_on_the_broker() {
     .unwrap();
     assert_eq!(seen, ["zapp/c/keep"]);
 }
+
+/// Drain `rx` until it has been quiet for 500 ms.
+async fn drain_idle(rx: &mut Receiver<CoreEvent>) -> Vec<CoreEvent> {
+    let mut out = Vec::new();
+    while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+        out.push(ev);
+    }
+    out
+}
+
+#[tokio::test]
+async fn slow_consumer_stays_connected() {
+    const N: usize = 20_000;
+    let Some(b) = support::start(false) else {
+        return;
+    };
+    let mut slow = profile("127.0.0.1", b.port, Protocol::Mqtt);
+    slow.client_id = Some("zapp-slow".into());
+    slow.subscriptions = vec!["x/#".into()];
+    let (slow_conn, mut rx) = Connection::connect(&slow, None).unwrap();
+    ready(&slow_conn, &mut rx, "x/ready/slow").await;
+
+    let mut fast = profile("127.0.0.1", b.port, Protocol::Mqtt);
+    fast.client_id = Some("zapp-flood".into());
+    let (flood, mut rx_flood) = Connection::connect(&fast, None).unwrap();
+    wait_for(&mut rx_flood, is_connected, 5).await;
+    // `rx` is not read while the flood is published and delivered.
+    for i in 0..N {
+        flood
+            .publish(&format!("x/flood/{i}"), vec![0], 0, false)
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let mut events = drain_idle(&mut rx).await;
+    // The count still pending is flushed by the next message that fits, so
+    // publish a marker and collect everything up to it.
+    flood.publish("x/marker", vec![1], 0, false).await.unwrap();
+    loop {
+        let ev = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("marker never arrived")
+            .expect("event channel closed");
+        let done = is_message(&ev, "x/marker");
+        events.push(ev);
+        if done {
+            break;
+        }
+    }
+
+    let mut delivered = 0;
+    let mut dropped = 0;
+    for ev in &events {
+        match ev {
+            CoreEvent::Message { topic, .. } if topic.starts_with("x/flood/") => delivered += 1,
+            CoreEvent::Dropped(n) => dropped += *n as usize,
+            _ => {}
+        }
+    }
+    assert!(dropped > 0, "the flood should overflow the channel");
+    assert_eq!(delivered + dropped, N, "every message accounted for once");
+    assert!(
+        !events.iter().any(is_disconnected),
+        "a slow consumer must not be disconnected"
+    );
+}
