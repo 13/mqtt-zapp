@@ -221,6 +221,12 @@ pub enum ConfirmAction {
     ClearRetained(Vec<String>),
     /// The profile to delete; asked from the picker.
     DeleteProfile(String),
+    /// Remove `topic` and its subtree from the list, clearing `retained`
+    /// on the broker first.
+    DeleteTopic {
+        topic: String,
+        retained: Vec<String>,
+    },
 }
 
 const STORE_BROKEN: &str = "profiles.toml has errors – fix it by hand first";
@@ -277,6 +283,9 @@ pub struct App {
     /// The profile exactly as the session connected with it: enter on the
     /// connected row only skips the reconnect while it is unchanged.
     session_profile: Option<Profile>,
+    /// Topics whose retained message was just cleared by a delete: the
+    /// broker's empty echo is dropped once, so the topic stays gone.
+    cleared_echo: HashSet<String>,
     /// Why `profiles.toml` could not be loaded; shown in the empty picker.
     pub store_error: Option<String>,
     /// Open while in `Mode::Publish`.
@@ -354,6 +363,7 @@ impl App {
             server: None,
             connected: None,
             session_profile: None,
+            cleared_echo: HashSet::new(),
             store_error: None,
             publish: None,
             status_note: None,
@@ -390,6 +400,7 @@ impl App {
         self.tree_offset = 0;
         self.msg_rate = MsgRate::default();
         self.body_cache.clear();
+        self.cleared_echo.clear();
         self.dirty = true;
     }
 
@@ -397,6 +408,9 @@ impl App {
         match ev {
             CoreEvent::State(s) => self.conn_state = s,
             CoreEvent::Message { topic, msg } => {
+                if self.cleared_echo.remove(&topic) && msg.payload.is_empty() {
+                    return;
+                }
                 // The paused entry, by stamp: an insert anywhere can evict
                 // the selected topic's oldest entries (depth or memory cap).
                 let stamp = |m: &mqtt_zapp_core::Message| (m.received_at, m.payload.len());
@@ -536,11 +550,83 @@ impl App {
             (KeyCode::Char('y') | KeyCode::Enter, Some(c)) => match c.action {
                 ConfirmAction::ClearRetained(topics) => Effect::ClearRetained(topics),
                 ConfirmAction::DeleteProfile(name) => Effect::DeleteProfile(name),
+                ConfirmAction::DeleteTopic { topic, retained } => {
+                    self.delete_topic(&topic, retained)
+                }
             },
             _ => {
                 self.set_note(Note::info("cancelled"), Instant::now());
                 Effect::None
             }
+        }
+    }
+
+    /// The retained, clearable (`$` topics are the broker's) topics at `id`,
+    /// or (`subtree`) at it and everything below.
+    fn retained_under(&self, id: NodeId, subtree: bool) -> Vec<String> {
+        let mut topics = Vec::new();
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            let node = self.tree.node(n);
+            let topic = self.tree.full_topic(n);
+            if node.retained && !topic.starts_with('$') {
+                topics.push(topic);
+            }
+            if subtree {
+                stack.extend(node.children.values());
+            }
+        }
+        topics
+    }
+
+    /// Ask before deleting the selected topic and everything below it:
+    /// their retained messages on the broker, then the list entries.
+    fn ask_delete_topic(&mut self) {
+        let Some(id) = self.selected else {
+            self.set_note(Note::info("no topic selected"), Instant::now());
+            return;
+        };
+        let topic = self.tree.full_topic(id);
+        let retained = self.retained_under(id, true);
+        let prompt = match retained.len() {
+            0 => format!("remove {topic} from the list? (nothing retained on the broker)"),
+            n => format!("delete {topic} and clear {n} retained on the broker?"),
+        };
+        self.confirm = Some(Confirm {
+            prompt,
+            action: ConfirmAction::DeleteTopic { topic, retained },
+        });
+        self.mode = Mode::Confirm;
+    }
+
+    /// Remove `topic` (and below) from the tree; the broker's echo of each
+    /// cleared message (an empty payload) is dropped instead of re-adding it.
+    fn delete_topic(&mut self, topic: &str, retained: Vec<String>) -> Effect {
+        let Some(id) = self.tree.find(topic) else {
+            return Effect::None;
+        };
+        self.tree.remove(id);
+        self.cleared_echo.extend(retained.iter().cloned());
+        // Select the nearest ancestor still in the tree, else nothing.
+        let levels: Vec<&str> = topic.split('/').collect();
+        let parent = (1..levels.len())
+            .rev()
+            .find_map(|n| self.tree.find(&levels[..n].join("/")));
+        match parent {
+            Some(p) => self.select(p),
+            None => {
+                self.selected = None;
+                self.chart = None;
+                self.diff_base = None;
+                self.history_sel = None;
+                self.payload_scroll = 0;
+            }
+        }
+        self.set_note(Note::info(format!("deleted {topic}")), Instant::now());
+        if retained.is_empty() {
+            Effect::None
+        } else {
+            Effect::ClearRetained(retained)
         }
     }
 
@@ -551,20 +637,9 @@ impl App {
             self.set_note(Note::info("no retained messages here"), Instant::now());
             return;
         };
-        let mut topics = Vec::new();
-        let mut stack = vec![id];
-        while let Some(n) = stack.pop() {
-            let node = self.tree.node(n);
-            // `$` topics (e.g. `$SYS`) belong to the broker; clients cannot
-            // clear them.
-            let topic = self.tree.full_topic(n);
-            if node.retained && !topic.starts_with('$') {
-                topics.push(topic);
-            }
-            if subtree {
-                stack.extend(node.children.values());
-            }
-        }
+        // `$` topics (e.g. `$SYS`) belong to the broker; clients cannot
+        // clear them.
+        let topics = self.retained_under(id, subtree);
         let topic = self.tree.full_topic(id);
         let prompt = match (subtree, topics.len()) {
             (_, 0) => {
@@ -788,6 +863,7 @@ impl App {
             }
             Action::MarkDiffBase => self.mark_diff_base(),
             Action::Brokers => self.open_brokers(),
+            Action::DeleteTopic => self.ask_delete_topic(),
             Action::ScrollDown => self.scroll_payload(true),
             Action::ScrollUp => self.scroll_payload(false),
             Action::Top => self.move_selection(|_, _| 0),

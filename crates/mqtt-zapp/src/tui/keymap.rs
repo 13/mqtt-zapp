@@ -41,6 +41,7 @@ pub enum Action {
     MoveDown,
     MarkDiffBase,
     Brokers,
+    DeleteTopic,
 }
 
 impl Action {
@@ -79,6 +80,7 @@ impl Action {
         (Action::MoveDown, "move_down", &["J"]),
         (Action::MarkDiffBase, "mark_diff_base", &["m"]),
         (Action::Brokers, "brokers", &["b"]),
+        (Action::DeleteTopic, "delete_topic", &["delete"]),
     ];
 
     /// The snake_case name used in `[keys]`.

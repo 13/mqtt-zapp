@@ -1432,3 +1432,112 @@ fn enter_on_connected_profile_after_hard_failure_reconnects() {
     press(&mut a, 'b');
     assert!(matches!(a.handle_key(key(KeyCode::Enter)), Effect::Connect(p, _) if p.name == "lab"));
 }
+
+fn del_key(a: &mut App) -> Effect {
+    a.handle_key(key(KeyCode::Delete))
+}
+
+#[test]
+fn delete_topic_asks_then_clears_retained_and_removes_subtree() {
+    let mut a = browse(&["a/b", "a/b/c", "a/x"]);
+    a.selected = a.tree.find("a/b");
+    assert!(matches!(del_key(&mut a), Effect::None));
+    assert_eq!(a.mode, Mode::Confirm);
+    assert_eq!(
+        a.confirm.as_ref().unwrap().prompt,
+        "delete a/b and clear 2 retained on the broker?"
+    );
+    match a.handle_key(key(KeyCode::Char('y'))) {
+        Effect::ClearRetained(mut t) => {
+            t.sort();
+            assert_eq!(t, ["a/b", "a/b/c"]);
+        }
+        e => panic!("{e:?}"),
+    }
+    assert_eq!(a.mode, Mode::Browse);
+    assert_eq!(a.tree.find("a/b"), None);
+    assert!(a.tree.find("a/x").is_some());
+    assert_eq!(
+        a.selected,
+        a.tree.find("a"),
+        "selection moves to the parent"
+    );
+    let parent = a.tree.node(a.tree.find("a").unwrap());
+    assert_eq!(parent.children.keys().collect::<Vec<_>>(), ["x"]);
+}
+
+#[test]
+fn broker_echo_of_the_clear_does_not_bring_the_topic_back() {
+    let mut a = browse(&["a/b", "a/x"]);
+    a.selected = a.tree.find("a/b");
+    del_key(&mut a);
+    a.handle_key(key(KeyCode::Char('y')));
+    a.apply_core_event(plain("a/b", ""));
+    assert_eq!(a.tree.find("a/b"), None, "empty echo dropped");
+    // A real new message brings it back.
+    a.apply_core_event(plain("a/b", "again"));
+    assert!(a.tree.find("a/b").is_some());
+    // The echo is swallowed once only.
+    a.apply_core_event(plain("a/x", ""));
+    assert!(a.tree.find("a/x").is_some());
+}
+
+#[test]
+fn delete_topic_without_retained_only_removes_from_list() {
+    let mut a = browse(&[]);
+    a.apply_core_event(plain("live/t", "1"));
+    a.apply_core_event(msg("$SYS/broker/uptime", "5"));
+    a.selected = a.tree.find("live/t");
+    del_key(&mut a);
+    assert_eq!(
+        a.confirm.as_ref().unwrap().prompt,
+        "remove live/t from the list? (nothing retained on the broker)"
+    );
+    assert!(matches!(a.handle_key(key(KeyCode::Enter)), Effect::None));
+    assert_eq!(a.tree.find("live"), None, "empty parent pruned");
+    assert_eq!(a.selected, None);
+    // `$` topics are the broker's: only the list.
+    a.selected = a.tree.find("$SYS/broker/uptime");
+    del_key(&mut a);
+    assert!(
+        a.confirm
+            .as_ref()
+            .unwrap()
+            .prompt
+            .starts_with("remove $SYS/broker/uptime")
+    );
+    assert!(matches!(
+        a.handle_key(key(KeyCode::Char('y'))),
+        Effect::None
+    ));
+    assert_eq!(a.tree.find("$SYS"), None);
+}
+
+#[test]
+fn delete_topic_cancel_and_nothing_selected() {
+    let mut a = browse(&["a/b"]);
+    assert!(matches!(del_key(&mut a), Effect::None));
+    assert_eq!(a.mode, Mode::Browse);
+    assert_eq!(
+        a.note_at(Instant::now()),
+        Some(&Note::info("no topic selected"))
+    );
+    a.selected = a.tree.find("a/b");
+    del_key(&mut a);
+    assert!(matches!(
+        a.handle_key(key(KeyCode::Char('n'))),
+        Effect::None
+    ));
+    assert!(a.tree.find("a/b").is_some());
+}
+
+#[test]
+fn delete_topic_clears_pinned_history_and_diff_base() {
+    let mut a = browse(&["a/b", "a/b", "a/x"]);
+    a.selected = a.tree.find("a/b");
+    a.history_sel = Some(0);
+    a.diff_base = Some((SystemTime::now(), 1));
+    del_key(&mut a);
+    a.handle_key(key(KeyCode::Char('y')));
+    assert_eq!((a.history_sel, a.diff_base), (None, None));
+}

@@ -99,6 +99,7 @@ time.
 | `Y` | `copy_payload` | Copy the shown payload to the clipboard (OSC 52) |
 | `x` | `delete_retained` | Delete the retained message of the selected topic (asks first) |
 | `X` | `clear_retained` | Clear every retained message in the subtree (asks first) |
+| `delete` | `delete_topic` | Delete the topic and everything under it: clear their retained messages on the broker, then remove them from the list (asks first) |
 | `s` | `sort` | Cycle the tree order: name (natural), message count, most recent; in the picker: custom, name, last used |
 | `L` | `expand_all` | Expand the selected node and everything below it |
 | `H` | `collapse_all` | Collapse the selected node and everything below it |

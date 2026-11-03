@@ -193,6 +193,54 @@ impl TopicTree {
         cur
     }
 
+    /// Forget `id` and everything below it, then the ancestors this leaves
+    /// empty (no message, no children). Returns how many topics with a
+    /// message were removed. The root stays. Removed ids are never reused;
+    /// their queue slots go stale and are skipped like evicted ones.
+    pub fn remove(&mut self, id: NodeId) -> u32 {
+        let Some(parent) = self.nodes.get(id).and_then(|n| n.parent) else {
+            return 0;
+        };
+        let removed_msgs = self.nodes[id].msg_count;
+        let removed_topics =
+            self.nodes[id].topic_count + u32::from(self.nodes[id].latest.is_some());
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            let node = &mut self.nodes[n];
+            stack.extend(std::mem::take(&mut node.children).into_values());
+            self.bytes -= node.history.iter().map(|m| m.payload.len()).sum::<usize>();
+            self.entries -= node.history.len();
+            node.history.clear();
+            node.history_seq.clear();
+            node.latest = None;
+            node.retained = false;
+            node.parked = false;
+            node.msg_count = 0;
+            node.topic_count = 0;
+        }
+        let mut cur = Some(parent);
+        while let Some(a) = cur {
+            let n = &mut self.nodes[a];
+            n.msg_count -= removed_msgs;
+            n.topic_count -= removed_topics;
+            cur = n.parent;
+        }
+        // Detach `id`, then prune ancestors left without content.
+        let (mut child, mut up) = (id, parent);
+        loop {
+            let name = self.nodes[child].name.clone();
+            self.nodes[up].children.remove(&name);
+            let p = &self.nodes[up];
+            match p.parent {
+                Some(next) if p.latest.is_none() && p.children.is_empty() => {
+                    (child, up) = (up, next);
+                }
+                _ => break,
+            }
+        }
+        removed_topics
+    }
+
     pub fn node(&self, id: NodeId) -> &TopicNode {
         &self.nodes[id]
     }
@@ -284,6 +332,61 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn msg(p: &str) -> Message {
+        Message {
+            payload: p.into(),
+            qos: 0,
+            retain: false,
+            received_at: std::time::SystemTime::now(),
+        }
+    }
+
+    #[test]
+    fn remove_subtree_fixes_counts_bytes_and_prunes_empty_parents() {
+        let mut t = TopicTree::new(5);
+        t.insert("a/b/c", msg("123"));
+        t.insert("a/b/c/d", msg("45"));
+        t.insert("a/x", msg("6"));
+        let bytes = t.history_bytes();
+        let b = t.find("a/b").unwrap();
+        assert_eq!(t.remove(b), 2, "c and d had messages");
+        assert_eq!(t.find("a/b"), None);
+        assert_eq!(t.find("a/b/c/d"), None);
+        assert_eq!(t.history_bytes(), bytes - 5);
+        let a = t.find("a").unwrap();
+        assert_eq!(t.node(a).topic_count, 1);
+        assert_eq!(t.node(a).msg_count, 1);
+        assert_eq!(t.node(TopicTree::ROOT).topic_count, 1);
+        assert_eq!(t.node(TopicTree::ROOT).msg_count, 1);
+        assert_eq!(t.iter_with_message().count(), 1);
+        // Removing the last topic prunes the now-empty `a` too.
+        let x = t.find("a/x").unwrap();
+        assert_eq!(t.remove(x), 1);
+        assert_eq!(t.find("a"), None);
+        assert!(t.node(TopicTree::ROOT).children.is_empty());
+        assert_eq!(t.history_bytes(), 0);
+        assert_eq!(t.remove(TopicTree::ROOT), 0, "the root stays");
+    }
+
+    #[test]
+    fn removed_topic_can_come_back_and_cap_still_works() {
+        let mut t = TopicTree::with_limits(10, 10);
+        for p in ["aaaa", "bbbb"] {
+            t.insert("gone", msg(p));
+        }
+        let g = t.find("gone").unwrap();
+        t.remove(g);
+        // Stale queue slots of the removed node must not break the cap.
+        for p in ["1111", "2222", "3333", "4444"] {
+            t.insert("kept", msg(p));
+        }
+        assert!(t.history_bytes() <= 10, "{}", t.history_bytes());
+        let id = t.insert("gone", msg("new"));
+        assert_eq!(t.find("gone"), Some(id));
+        assert_eq!(t.node(id).history.len(), 1);
+        assert_eq!(t.node(TopicTree::ROOT).topic_count, 2);
+    }
 
     #[test]
     fn retained_flag_is_sticky() {

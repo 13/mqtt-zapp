@@ -242,7 +242,11 @@ const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
     (
         "retained",
         1,
-        &[Action::DeleteRetained, Action::ClearRetained],
+        &[
+            Action::DeleteRetained,
+            Action::ClearRetained,
+            Action::DeleteTopic,
+        ],
     ),
     (
         "tree",
