@@ -14,6 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use std::fmt;
 use std::path::PathBuf;
+use unicode_width::UnicodeWidthStr;
 
 /// A single-line text input with a cursor (a char index).
 #[derive(Clone, Default)]
@@ -229,11 +230,15 @@ fn cycle<T: Copy + PartialEq>(all: &[T], cur: T, forward: bool) -> T {
 }
 
 const PROTOCOLS: [Protocol; 4] = [Protocol::Mqtt, Protocol::Mqtts, Protocol::Ws, Protocol::Wss];
-const SOURCES: [PasswordSource; 3] = [
+#[cfg(feature = "keyring")]
+const SOURCES: &[PasswordSource] = &[
     PasswordSource::None,
     PasswordSource::Keyring,
     PasswordSource::Prompt,
 ];
+/// Without keyring support only an existing keyring profile shows it.
+#[cfg(not(feature = "keyring"))]
+const SOURCES: &[PasswordSource] = &[PasswordSource::None, PasswordSource::Prompt];
 
 impl ProfileForm {
     /// A form for `existing`, or for a new profile. `taken` lists the names
@@ -366,7 +371,7 @@ impl ProfileForm {
                         self.set_protocol(cycle(&PROTOCOLS, self.protocol, fwd))
                     }
                     (PField::PasswordSource, Some(fwd)) => {
-                        self.source = cycle(&SOURCES, self.source, fwd)
+                        self.source = cycle(SOURCES, self.source, fwd)
                     }
                     (PField::Insecure, Some(_)) => self.insecure = !self.insecure,
                     (f, _) => {
@@ -456,7 +461,7 @@ const LABEL_WIDTH: usize = 14;
 
 /// One cell per char of `text`, sanitized char by char so `cursor` (a char
 /// index) still lines up; chars are skipped from the left to keep the cursor
-/// within `width`.
+/// within `width` columns (wide chars count two).
 fn input_spans(text: &str, cursor: Option<usize>, width: usize) -> Vec<Span<'static>> {
     let mut cells: Vec<String> = text
         .chars()
@@ -465,7 +470,15 @@ fn input_spans(text: &str, cursor: Option<usize>, width: usize) -> Vec<Span<'sta
     if cursor.is_some_and(|c| c >= cells.len()) {
         cells.push(" ".into());
     }
-    let skip = cursor.map_or(0, |c| (c + 1).saturating_sub(width.max(1)));
+    let skip = cursor.map_or(0, |c| {
+        let mut start = c + 1;
+        let mut used = 0;
+        while start > 0 && used + cells[start - 1].width() <= width.max(1) {
+            start -= 1;
+            used += cells[start].width();
+        }
+        start.min(c)
+    });
     cells
         .into_iter()
         .enumerate()
@@ -787,6 +800,7 @@ mod tests {
         assert_eq!(f.error, None, "a key clears the error");
     }
 
+    #[cfg(feature = "keyring")] // needs the keyring source
     #[test]
     fn keyring_password_required_unless_already_stored() {
         // New profile: required.
@@ -815,6 +829,7 @@ mod tests {
         assert!(save(&mut f).is_none());
     }
 
+    #[cfg(feature = "keyring")] // needs the keyring source
     #[test]
     fn password_dropped_unless_keyring() {
         let mut f = filled();
@@ -916,6 +931,7 @@ mod tests {
         assert!(!rows.iter().any(|r| r.contains(" name  ")), "{rows:#?}");
     }
 
+    #[cfg(feature = "keyring")] // needs the keyring source
     #[test]
     fn form_masks_password() {
         let mut f = filled();
@@ -952,6 +968,31 @@ mod tests {
         assert!(all.contains("name is required"), "{all}");
     }
 
+    #[test]
+    fn wide_chars_keep_cursor_in_view() {
+        use unicode_width::UnicodeWidthStr;
+        let spans = input_spans(&"中".repeat(30), Some(30), 10);
+        let cols: usize = spans.iter().map(|s| s.content.width()).sum();
+        assert!(cols <= 10, "{cols} columns");
+        let last = spans.last().unwrap();
+        assert!(
+            last.style.add_modifier.contains(Modifier::REVERSED),
+            "cursor shown"
+        );
+    }
+
+    #[cfg(not(feature = "keyring"))]
+    #[test]
+    fn keyring_not_offered_without_feature() {
+        let mut f = ProfileForm::new(None, vec![]);
+        goto(&mut f, PField::PasswordSource);
+        for _ in 0..6 {
+            f.on_key(key(KeyCode::Char(' ')));
+            assert_ne!(f.source, PasswordSource::Keyring);
+        }
+    }
+
+    #[cfg(feature = "keyring")] // needs the keyring source
     #[test]
     fn debug_hides_password() {
         let mut f = filled();
