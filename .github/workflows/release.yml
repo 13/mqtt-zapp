@@ -1,18 +1,45 @@
 name: Release
+# A pushed v* tag builds every package, smoke-tests each one on its target
+# distro and publishes them with SHA256SUMS. A manual run builds and tests
+# the same files and keeps them as workflow artifacts, without a release.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
 jobs:
-  release:
+  version:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: v
+        name: Tag matches the Cargo version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            v=$(packaging/check-version.sh "$GITHUB_REF_NAME")
+          else
+            v=$(cargo metadata --no-deps --format-version 1 |
+              jq -r '.packages[] | select(.name == "mqtt-zapp") | .version')
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - run: packaging/test.sh
+
+  musl:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      FILE: mqtt-zapp-v${{ needs.version.outputs.version }}-x86_64-linux-musl
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --locked --target x86_64-unknown-linux-musl -p mqtt-zapp --no-default-features
       - name: Verify static binary
@@ -20,9 +47,112 @@ jobs:
       - name: Package
         run: |
           strip target/x86_64-unknown-linux-musl/release/mqtt-zapp
-          cp target/x86_64-unknown-linux-musl/release/mqtt-zapp "mqtt-zapp-${GITHUB_REF_NAME//\//-}-x86_64-linux-musl"
+          cp target/x86_64-unknown-linux-musl/release/mqtt-zapp "$FILE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: musl
+          path: ${{ env.FILE }}
+          if-no-files-found: error
+
+  appimage:
+    needs: [version, musl]
+    runs-on: ubuntu-latest
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: musl
+          path: musl
+      - name: Build
+        run: packaging/appimage.sh "musl/mqtt-zapp-v$V-x86_64-linux-musl" "$V" dist
+      - name: Smoke test on Ubuntu 22.04 (no FUSE)
+        run: |
+          out=$(docker run --rm -v "$PWD/dist:/p:ro" ubuntu:22.04 \
+            "/p/mqtt-zapp-$V-x86_64.AppImage" --appimage-extract-and-run --version)
+          echo "$out"
+          test "$out" = "mqtt-zapp $V"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: dist/mqtt-zapp-${{ env.V }}-x86_64.AppImage
+          if-no-files-found: error
+
+  deb:
+    needs: version
+    # The oldest supported runner: its glibc (2.35) sets the floor, so the
+    # package installs on Debian 12+ and Ubuntu 22.04+.
+    runs-on: ubuntu-22.04
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - run: cargo install cargo-deb --locked --version 3.8.0
+      - run: cargo deb -p mqtt-zapp --locked
+      - name: Smoke test on Debian 12
+        run: |
+          dpkg-deb -I target/debian/*.deb
+          out=$(docker run --rm -v "$PWD/target/debian:/p:ro" debian:12 bash -c \
+            "apt-get update -qq && apt-get install -y -qq /p/mqtt-zapp_${V}-1_amd64.deb >/dev/null && mqtt-zapp --version")
+          echo "$out"
+          test "$(tail -n1 <<<"$out")" = "mqtt-zapp $V"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: target/debian/mqtt-zapp_${{ env.V }}-1_amd64.deb
+          if-no-files-found: error
+
+  arch:
+    needs: version
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      # git before checkout, so the checkout is a repo `git archive` can read.
+      - run: pacman -Syu --noconfirm --needed base-devel rust git dbus
+      - uses: actions/checkout@v5
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Build (makepkg refuses root, so as an unprivileged user)
+        run: |
+          sed -i "s/^pkgver=.*/pkgver=$V/" packaging/arch/PKGBUILD
+          git archive --prefix="mqtt-zapp-$V/" -o "packaging/arch/mqtt-zapp-$V.tar.gz" HEAD
+          useradd -m builder
+          chown -R builder packaging/arch
+          cd packaging/arch && sudo -u builder makepkg --noconfirm
+      - name: Smoke test
+        run: |
+          pacman -U --noconfirm "packaging/arch/mqtt-zapp-$V-1-x86_64.pkg.tar.zst"
+          pacman -Qi mqtt-zapp
+          test "$(mqtt-zapp --version)" = "mqtt-zapp $V"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch
+          path: packaging/arch/mqtt-zapp-${{ env.V }}-1-x86_64.pkg.tar.zst
+          if-no-files-found: error
+
+  release:
+    # Every package job must pass; nothing is published otherwise.
+    needs: [version, musl, appimage, deb, arch]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
       - name: Create release
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" "mqtt-zapp-${GITHUB_REF_NAME}-x86_64-linux-musl" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --generate-notes
