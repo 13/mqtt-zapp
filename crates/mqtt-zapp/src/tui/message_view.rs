@@ -285,13 +285,55 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App) {
         Some(series) => {
             let [chart, rest] =
                 Layout::vertical([Constraint::Min(5), Constraint::Percentage(50)]).areas(payload);
-            render_chart(f, chart, &s, series.as_deref());
+            render_chart(f, chart, app, &s, series.as_deref());
             rest
         }
         None => payload,
     };
     render_payload(f, payload, app);
     render_history(f, history, app, &s);
+}
+
+type ChartKey = (usize, usize, Option<Stamp>, Option<String>);
+
+/// Chart points, shared between the cache and the frame being drawn.
+type Points = Rc<Vec<(f64, f64)>>;
+
+/// The last computed chart points, reused until the topic, its history or
+/// the series change: parsing every history entry each frame is costly for
+/// big JSON payloads.
+#[derive(Default)]
+pub struct ChartCache {
+    slot: RefCell<Option<(ChartKey, Points)>>,
+    #[cfg(test)]
+    pub builds: std::cell::Cell<u32>,
+}
+
+/// (history index, value) for each history entry with a number.
+fn chart_points(app: &App, s: &Shown, path: Option<&str>) -> Points {
+    use mqtt_zapp_core::payload::numeric_at;
+    let h = &s.node.history;
+    let key = (
+        app.selected.unwrap_or_default(),
+        h.len(),
+        h.back().map(|m| (m.received_at, m.payload.len())),
+        path.map(str::to_owned),
+    );
+    if let Some((k, p)) = &*app.chart_cache.slot.borrow()
+        && *k == key
+    {
+        return Rc::clone(p);
+    }
+    #[cfg(test)]
+    app.chart_cache.builds.set(app.chart_cache.builds.get() + 1);
+    let points: Points = Rc::new(
+        h.iter()
+            .enumerate()
+            .filter_map(|(i, m)| numeric_at(&m.payload, path).map(|y| (i as f64, y)))
+            .collect(),
+    );
+    *app.chart_cache.slot.borrow_mut() = Some((key, Rc::clone(&points)));
+    points
 }
 
 /// `12.50` → `12.5`, `3.00` → `3`.
@@ -302,19 +344,13 @@ fn fmt_num(x: f64) -> String {
 
 /// A braille line chart of the series over the topic's history (oldest
 /// left); entries without a number are skipped.
-fn render_chart(f: &mut Frame, area: Rect, s: &Shown, path: Option<&str>) {
-    use mqtt_zapp_core::payload::numeric_at;
+fn render_chart(f: &mut Frame, area: Rect, app: &App, s: &Shown, path: Option<&str>) {
     use ratatui::symbols::Marker;
     use ratatui::widgets::{Axis, Chart, Dataset, GraphType};
     let name = path.unwrap_or("value");
     let block = theme::pane(&format!("chart · {name}"), false);
-    let points: Vec<(f64, f64)> = s
-        .node
-        .history
-        .iter()
-        .enumerate()
-        .filter_map(|(i, m)| numeric_at(&m.payload, path).map(|y| (i as f64, y)))
-        .collect();
+    let points = chart_points(app, s, path);
+    let points = &*points;
     if points.len() < 2 {
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -335,7 +371,7 @@ fn render_chart(f: &mut Frame, area: Rect, s: &Shown, path: Option<&str>) {
         .marker(Marker::Braille)
         .graph_type(GraphType::Line)
         .style(Style::new().fg(theme::ACCENT))
-        .data(&points)];
+        .data(points)];
     let muted = Style::new().fg(theme::MUTED);
     let chart = Chart::new(data.to_vec())
         .block(block)
@@ -701,6 +737,18 @@ mod tests {
         a.selected = None;
         a.handle_action(Action::Down);
         assert_eq!(a.chart, None);
+    }
+
+    #[test]
+    fn chart_points_are_cached() {
+        let mut a = app_with(&[b"1", b"2", b"3"]);
+        a.handle_action(Action::Chart);
+        let _ = draw(&a);
+        let _ = draw(&a);
+        assert_eq!(a.chart_cache.builds.get(), 1);
+        send(&mut a, T, b"4", false);
+        let _ = draw(&a);
+        assert_eq!(a.chart_cache.builds.get(), 2);
     }
 
     #[test]

@@ -135,5 +135,4 @@ Planned for Phase 1.x:
 
 - Sparkplug B decoding
 - MQTT 5
-- copy to clipboard (OSC 52)
 - a profile editor in the TUI

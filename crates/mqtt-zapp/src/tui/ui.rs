@@ -260,6 +260,12 @@ fn render_help(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(keys, key_style),
         ])
     };
+    // Longest action name plus a space, so names never run into keys.
+    let name_w = bindings
+        .iter()
+        .map(|(a, _)| a.name().len() + 1)
+        .max()
+        .unwrap_or(15);
     let mut columns: [Vec<Line>; 3] = Default::default();
     for (title, col, actions) in HELP_GROUPS {
         let lines = &mut columns[*col];
@@ -278,7 +284,7 @@ fn render_help(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 keys.join(", ")
             };
-            lines.push(row(action.name(), keys, 15));
+            lines.push(row(action.name(), keys, name_w));
         }
     }
     for (title, keys) in HELP_FIXED {
@@ -411,11 +417,7 @@ fn row_spans<'a>(
         name_style = name_style.fg(FLASH_FG).add_modifier(FLASH_MODIFIER);
     }
     highlight(&mut spans, name, query, name_style);
-    if node
-        .latest
-        .as_ref()
-        .is_some_and(|m| m.retain && !m.payload.is_empty())
-    {
+    if node.retained {
         spans.push(Span::styled(" ®", Style::new().fg(theme::MUTED)));
     }
     if let Some(m) = &node.latest {
@@ -1285,10 +1287,28 @@ mod tests {
     }
 
     #[test]
+    fn help_rows_keep_name_and_key_apart() {
+        let mut a = app_with(&[("a", b"1")]);
+        a.handle_action(Action::Help);
+        let s = text(&draw(&mut a, 80, 24));
+        assert!(s.contains("delete_retained x"), "{s}");
+    }
+
+    #[test]
     fn retained_marker_on_row() {
         let mut a = app_with(&[("plain", b"1")]);
         retained(&mut a, "kept", b"2");
         retained(&mut a, "gone", b"");
+        // A live (RETAIN=0) update keeps the marker.
+        a.apply_core_event(CoreEvent::Message {
+            topic: "kept".into(),
+            msg: Message {
+                payload: b"2".to_vec(),
+                qos: 0,
+                retain: false,
+                received_at: SystemTime::now(),
+            },
+        });
         let s = text(&draw(&mut a, 100, 24));
         assert!(s.contains("kept ®  2"), "{s}");
         assert!(!s.contains("plain ®"), "{s}");
@@ -1306,7 +1326,7 @@ mod tests {
         assert!(s.contains("confirm"), "{s}");
         assert!(last_line(&b).starts_with("y confirm"), "{s}");
         let s = text(&draw(&mut a, 100, 24));
-        assert!(s.contains("clear 1 retained messages under a?"), "{s}");
+        assert!(s.contains("clear 1 retained message under a?"), "{s}");
     }
 
     #[test]

@@ -109,7 +109,6 @@ impl fmt::Debug for Effect {
     }
 }
 
-/// How long a footer note (publish result) stays visible.
 /// `fmt` if chrono accepts it, else the default (a bad format would make
 /// formatting fail at draw time).
 fn valid_time_format(fmt: &str) -> String {
@@ -123,6 +122,7 @@ fn valid_time_format(fmt: &str) -> String {
 
 /// Payloads remembered per topic for ctrl-p/ctrl-n in the publish form.
 const SENT_PER_TOPIC: usize = 20;
+/// How long a footer note (publish result) stays visible.
 pub const NOTE_TTL: Duration = Duration::from_secs(5);
 
 /// Messages per second over a sliding 10 s window, counted in 1 s buckets so
@@ -220,6 +220,8 @@ pub struct App {
     pub payload_scroll: usize,
     /// Memoised payload-area content; see `message_view`.
     pub body_cache: super::message_view::BodyCache,
+    /// Memoised chart points; see `message_view`.
+    pub chart_cache: super::message_view::ChartCache,
     /// Rows the payload area had in the last frame; sizes half-page scrolls.
     pub payload_height: Cell<u16>,
     pub keymap: Keymap,
@@ -286,6 +288,7 @@ impl App {
             show_diff: false,
             payload_scroll: 0,
             body_cache: Default::default(),
+            chart_cache: Default::default(),
             payload_height: Cell::new(0),
             keymap: Keymap::from_settings(&settings.keys)?,
             history_depth: settings.history_depth,
@@ -550,11 +553,6 @@ impl App {
             self.set_note(Note::info("no retained messages here"), Instant::now());
             return;
         };
-        let is_retained = |n: &mqtt_zapp_core::TopicNode| {
-            n.latest
-                .as_ref()
-                .is_some_and(|m| m.retain && !m.payload.is_empty())
-        };
         let mut topics = Vec::new();
         let mut stack = vec![id];
         while let Some(n) = stack.pop() {
@@ -562,7 +560,7 @@ impl App {
             // `$` topics (e.g. `$SYS`) belong to the broker; clients cannot
             // clear them.
             let topic = self.tree.full_topic(n);
-            if is_retained(node) && !topic.starts_with('$') {
+            if node.retained && !topic.starts_with('$') {
                 topics.push(topic);
             }
             if subtree {
@@ -576,6 +574,7 @@ impl App {
                 return;
             }
             (false, _) => format!("delete retained message on {topic}?"),
+            (true, 1) => format!("clear 1 retained message under {topic}?"),
             (true, n) => format!("clear {n} retained messages under {topic}?"),
         };
         self.confirm = Some(Confirm { prompt, topics });
@@ -1073,6 +1072,22 @@ mod tests {
         let mut t = c.topics.clone();
         t.sort();
         assert_eq!(t, vec!["a/y", "a/y/z"]);
+    }
+
+    #[test]
+    fn live_update_keeps_topic_clearable() {
+        let mut a = browse(&["a/b"]);
+        a.apply_core_event(plain("a/b", "live"));
+        a.selected = a.tree.find("a/b");
+        a.handle_action(Action::DeleteRetained);
+        assert_eq!(a.mode, Mode::Confirm);
+        a.handle_key(key(KeyCode::Esc));
+        a.selected = a.tree.find("a");
+        a.handle_action(Action::ClearRetained);
+        assert_eq!(
+            a.confirm.as_ref().unwrap().prompt,
+            "clear 1 retained message under a?"
+        );
     }
 
     #[test]

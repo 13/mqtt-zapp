@@ -18,6 +18,9 @@ pub struct TopicNode {
     pub msg_count: u64,
     /// Descendants that have received at least one message.
     pub topic_count: u32,
+    /// The broker holds a retained message here. Sticky: brokers forward
+    /// live updates with RETAIN=0, so only an empty payload clears it.
+    pub retained: bool,
     #[serde(skip)]
     pub last_update: Option<Instant>,
 }
@@ -32,6 +35,7 @@ impl TopicNode {
             history: VecDeque::new(),
             msg_count: 0,
             topic_count: 0,
+            retained: false,
             last_update: None,
         }
     }
@@ -70,6 +74,11 @@ impl TopicTree {
         let first = self.nodes[cur].latest.is_none();
         let now = Instant::now();
         let node = &mut self.nodes[cur];
+        if msg.payload.is_empty() {
+            node.retained = false;
+        } else if msg.retain {
+            node.retained = true;
+        }
         node.latest = Some(msg.clone());
         node.history.push_back(msg);
         while node.history.len() > self.history_depth {
@@ -180,6 +189,29 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_flag_is_sticky() {
+        let m = |p: &str, retain| Message {
+            payload: p.into(),
+            qos: 0,
+            retain,
+            received_at: std::time::SystemTime::now(),
+        };
+        let mut t = TopicTree::new(5);
+        let id = t.insert("a", m("1", true));
+        assert!(t.node(id).retained);
+        // Live updates arrive with RETAIN=0 even when published retained.
+        t.insert("a", m("2", false));
+        assert!(t.node(id).retained);
+        // An empty payload is the broker's "cleared".
+        t.insert("a", m("", false));
+        assert!(!t.node(id).retained);
+        t.insert("a", m("3", false));
+        assert!(!t.node(id).retained);
+        t.insert("a", m("", true));
+        assert!(!t.node(id).retained);
+    }
 
     #[test]
     fn natural_cmp_orders() {

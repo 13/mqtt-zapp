@@ -296,12 +296,45 @@ fn run_editor(
     Ok(())
 }
 
-/// Write `initial` to a temp file, run `cmd "<file>"` through `sh` (so the
+/// A new file only the user can read (0600, never an existing one), in
+/// `$XDG_RUNTIME_DIR` when set, holding `initial`.
+fn private_temp_file(initial: &str) -> Result<std::path::PathBuf> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|d| d.is_dir())
+        .unwrap_or_else(std::env::temp_dir);
+    for attempt in 0..16u32 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let path = dir.join(format!(
+            "mqtt-zapp-{}-{nanos:x}{attempt}.txt",
+            std::process::id()
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                f.write_all(initial.as_bytes())
+                    .context("writing temp file")?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).context("creating temp file"),
+        }
+    }
+    anyhow::bail!("could not create a temp file in {}", dir.display())
+}
+
+/// Write `initial` to a private temp file, run `cmd "<file>"` through `sh` (so the
 /// editor command may carry arguments) and read the file back. One trailing
 /// newline, as editors add, is dropped.
 fn edit_text(initial: &str, cmd: &str) -> Result<String> {
-    let path = std::env::temp_dir().join(format!("mqtt-zapp-{}.txt", std::process::id()));
-    std::fs::write(&path, initial).context("writing temp file")?;
+    let path = private_temp_file(initial)?;
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(format!("{cmd} \"$1\""))
@@ -322,6 +355,13 @@ fn edit_text(initial: &str, cmd: &str) -> Result<String> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::edit_text;
+
+    #[test]
+    fn editor_temp_file_is_private() {
+        // The editor sees the file as "$1": print its mode into the file.
+        let out = edit_text("secret", "stat -c %a \"$1\" >").unwrap();
+        assert_eq!(out, "600");
+    }
 
     #[test]
     fn editor_failure_keeps_payload() {
