@@ -12,6 +12,8 @@ use rumqttc::{
     AsyncClient, Event, EventLoop, MqttOptions, Outgoing, Packet, QoS, SubscribeFilter,
     TlsConfiguration, Transport,
 };
+use rustls::pki_types::pem::{self, PemObject};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -465,20 +467,31 @@ fn mqtt_options_v5(profile: &Profile, password: Option<String>) -> Result<v5::Mq
 }
 
 fn tls_config(tls: &TlsConfig) -> Result<Arc<rustls::ClientConfig>> {
-    let builder = rustls::ClientConfig::builder();
+    // An explicit provider: rustls 0.23 would otherwise need a process-wide
+    // default, and we build only ring (see Cargo.toml).
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let builder = rustls::ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .context("TLS protocol versions")?;
     let builder = if tls.insecure {
         builder
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(insecure::AcceptAnyCert::new()))
+            .with_custom_certificate_verifier(Arc::new(insecure::AcceptAnyCert::new(&provider)))
     } else {
         builder.with_root_certificates(root_store(tls)?)
     };
     let config = match (&tls.client_cert, &tls.client_key) {
         (None, None) => builder.with_no_client_auth(),
         (Some(cert), Some(key)) => {
-            let certs = read_pem(cert, |r| rustls_pemfile::certs(r).collect())?;
-            let key = read_pem(key, rustls_pemfile::private_key)?
-                .with_context(|| format!("no private key in {}", key.display()))?;
+            let certs = read_pem(cert, |b| {
+                CertificateDer::pem_slice_iter(b).collect::<Result<Vec<_>, _>>()
+            })?;
+            let key = read_pem(key, |b| match PrivateKeyDer::from_pem_slice(b) {
+                Ok(k) => Ok(Some(k)),
+                Err(pem::Error::NoItemsFound) => Ok(None),
+                Err(e) => Err(e),
+            })?
+            .with_context(|| format!("no private key in {}", key.display()))?;
             builder
                 .with_client_auth_cert(certs, key)
                 .context("invalid client certificate or key")?
@@ -490,15 +503,31 @@ fn tls_config(tls: &TlsConfig) -> Result<Arc<rustls::ClientConfig>> {
 
 fn root_store(tls: &TlsConfig) -> Result<rustls::RootCertStore> {
     let mut roots = rustls::RootCertStore::empty();
-    let certs = match &tls.ca_file {
-        Some(path) => read_pem(path, |r| rustls_pemfile::certs(r).collect())?,
-        None => rustls_native_certs::load_native_certs().context("loading system CA roots")?,
-    };
-    roots.add_parsable_certificates(certs);
-    if roots.is_empty() {
-        match &tls.ca_file {
-            Some(p) => bail!("no usable CA certificates in {}", p.display()),
-            None => bail!("no usable system CA certificates found"),
+    match &tls.ca_file {
+        Some(path) => {
+            let certs = read_pem(path, |b| {
+                CertificateDer::pem_slice_iter(b).collect::<Result<Vec<_>, _>>()
+            })?;
+            roots.add_parsable_certificates(certs);
+            if roots.is_empty() {
+                bail!("no usable CA certificates in {}", path.display());
+            }
+        }
+        None => {
+            // 0.8 returns what it could load plus per-source errors; a few
+            // unreadable stores are fine as long as something loaded.
+            let native = rustls_native_certs::load_native_certs();
+            roots.add_parsable_certificates(native.certs);
+            if roots.is_empty() {
+                if native.errors.is_empty() {
+                    bail!("no usable system CA certificates found");
+                }
+                let errors: Vec<String> = native.errors.iter().map(|e| e.to_string()).collect();
+                bail!(
+                    "no usable system CA certificates found: {}",
+                    errors.join("; ")
+                );
+            }
         }
     }
     Ok(roots)
@@ -506,10 +535,10 @@ fn root_store(tls: &TlsConfig) -> Result<rustls::RootCertStore> {
 
 fn read_pem<T>(
     path: &std::path::Path,
-    parse: impl FnOnce(&mut dyn std::io::BufRead) -> std::io::Result<T>,
+    parse: impl FnOnce(&[u8]) -> std::result::Result<T, pem::Error>,
 ) -> Result<T> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    parse(&mut bytes.as_slice()).with_context(|| format!("parsing PEM in {}", path.display()))
+    parse(&bytes).with_context(|| format!("parsing PEM in {}", path.display()))
 }
 
 mod insecure {
@@ -519,7 +548,7 @@ mod insecure {
     use super::rustls;
     use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
     use rustls::crypto::{
-        WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature,
+        CryptoProvider, WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature,
     };
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
     use rustls::{DigitallySignedStruct, Error, SignatureScheme};
@@ -528,8 +557,9 @@ mod insecure {
     pub(super) struct AcceptAnyCert(WebPkiSupportedAlgorithms);
 
     impl AcceptAnyCert {
-        pub(super) fn new() -> Self {
-            Self(rustls::crypto::ring::default_provider().signature_verification_algorithms)
+        /// Verifies handshake signatures with `provider`'s algorithms.
+        pub(super) fn new(provider: &CryptoProvider) -> Self {
+            Self(provider.signature_verification_algorithms)
         }
     }
 
@@ -650,5 +680,73 @@ mod tests {
         p.tls.insecure = true;
         let o = mqtt_options(&p, None).unwrap();
         assert!(matches!(o.transport(), Transport::Tls(_)));
+    }
+
+    /// A self-signed cert and its key as PEM files in a temp dir.
+    fn pem_files() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("c.pem");
+        let key = dir.path().join("c.key");
+        std::fs::write(&cert, ck.cert.pem()).unwrap();
+        std::fs::write(&key, ck.signing_key.serialize_pem()).unwrap();
+        (dir, cert, key)
+    }
+
+    fn tls_err(tls: &TlsConfig) -> String {
+        format!("{:#}", tls_config(tls).unwrap_err())
+    }
+
+    #[test]
+    fn pem_ca_file_and_client_auth_load() {
+        let (_dir, cert, key) = pem_files();
+        let tls = TlsConfig {
+            ca_file: Some(cert.clone()),
+            client_cert: Some(cert),
+            client_key: Some(key),
+            insecure: false,
+        };
+        let config = tls_config(&tls).unwrap();
+        assert!(config.client_auth_cert_resolver.has_certs());
+    }
+
+    #[test]
+    fn pem_errors_keep_their_messages() {
+        let (dir, cert, key) = pem_files();
+        let empty = dir.path().join("empty.pem");
+        std::fs::write(&empty, "not pem\n").unwrap();
+
+        let tls = TlsConfig {
+            ca_file: Some(empty.clone()),
+            ..Default::default()
+        };
+        assert!(tls_err(&tls).starts_with("no usable CA certificates in"));
+
+        let tls = TlsConfig {
+            client_cert: Some(cert.clone()),
+            client_key: Some(cert.clone()), // a cert, not a key
+            insecure: true,
+            ..Default::default()
+        };
+        assert!(tls_err(&tls).starts_with("no private key in"));
+
+        for (c, k) in [(Some(cert), None), (None, Some(key))] {
+            let tls = TlsConfig {
+                client_cert: c,
+                client_key: k,
+                insecure: true,
+                ..Default::default()
+            };
+            assert_eq!(
+                tls_err(&tls),
+                "TLS client auth needs both client_cert and client_key"
+            );
+        }
+
+        let tls = TlsConfig {
+            ca_file: Some(dir.path().join("missing.pem")),
+            ..Default::default()
+        };
+        assert!(tls_err(&tls).starts_with("reading "));
     }
 }

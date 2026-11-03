@@ -1,16 +1,17 @@
 [advisories]
 # Defaults: vulnerabilities deny, unmaintained warn.
 ignore = [
-  # rustls 0.22 / rustls-webpki 0.102 are pulled in by rumqttc 0.24 and cannot
-  # be bumped within semver. Remove these when Task 13 lands.
-  { id = "RUSTSEC-2026-0346", reason = "fixed by rumqttc 0.25 upgrade (Task 13)" },
-  { id = "RUSTSEC-2026-0349", reason = "fixed by rumqttc 0.25 upgrade (Task 13)" },
-  { id = "RUSTSEC-2026-0049", reason = "fixed by rumqttc 0.25 upgrade (Task 13)" },
-  { id = "RUSTSEC-2026-0098", reason = "fixed by rumqttc 0.25 upgrade (Task 13)" },
-  { id = "RUSTSEC-2026-0099", reason = "fixed by rumqttc 0.25 upgrade (Task 13)" },
-  { id = "RUSTSEC-2026-0104", reason = "fixed by rumqttc 0.25 upgrade (Task 13)" },
-  { id = "RUSTSEC-2026-0382", reason = "fixed by rumqttc 0.25 upgrade (Task 13)" },
-  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is unmaintained but still correct; used by mqtt-zapp-core and rumqttc 0.24. Replace with rustls-pki-types PEM parsing alongside the rumqttc 0.25 upgrade (Task 13)" },
+  # rumqttc 0.25.1 (latest) still depends on rustls-webpki 0.102.8, which has
+  # no fixed 0.102.x release. It uses that crate only for an error-enum variant
+  # (`TlsError::WebPki`) and never calls into it; certificate verification runs
+  # on rustls 0.23's rustls-webpki 0.103.x, which has the fixes. Drop these when
+  # rumqttc moves off 0.102.
+  { id = "RUSTSEC-2026-0049", reason = "rustls-webpki 0.102.8 via rumqttc 0.25.1: linked but never called; verification uses 0.103.x" },
+  { id = "RUSTSEC-2026-0098", reason = "rustls-webpki 0.102.8 via rumqttc 0.25.1: linked but never called; verification uses 0.103.x" },
+  { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.102.8 via rumqttc 0.25.1: linked but never called; verification uses 0.103.x" },
+  { id = "RUSTSEC-2026-0104", reason = "rustls-webpki 0.102.8 via rumqttc 0.25.1: linked but never called; verification uses 0.103.x" },
+  { id = "RUSTSEC-2026-0382", reason = "rustls-webpki 0.102.8 via rumqttc 0.25.1: linked but never called; verification uses 0.103.x" },
+  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is unmaintained; mqtt-zapp-core no longer uses it, only rumqttc 0.25.1's TlsConfiguration::Simple path does, which we never take (we pass TlsConfiguration::Rustls)" },
   { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained (proc-macro, build time only); pulled in by ratatui 0.29. Goes away with a ratatui upgrade" },
 ]
 
