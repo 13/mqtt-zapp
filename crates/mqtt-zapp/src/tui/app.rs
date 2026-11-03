@@ -261,6 +261,9 @@ pub struct App {
     /// lines that live rows share survives (kitty clears it on any redraw of
     /// one of its lines).
     pub frozen: bool,
+    /// The history entry (by stamp) that freezing pinned so `Y` copies the
+    /// payload on screen; unfreezing goes back to live if it is still pinned.
+    freeze_pin: Option<(std::time::SystemTime, usize)>,
     /// What the help overlay is searching for; empty when none.
     pub help_query: String,
     /// Set when messages arrived since the last tick; gates the filter rebuild.
@@ -394,6 +397,7 @@ impl App {
             conn_state,
             dirty: true,
             frozen: false,
+            freeze_pin: None,
             help_query: String::new(),
             tree_changed: false,
             msg_rate: MsgRate::default(),
@@ -549,7 +553,10 @@ impl App {
     fn tick(&mut self) {
         // Throttled: a busy broker changes the tree every tick, and a rebuild
         // scans every node. A skipped change stays pending in `tree_changed`.
+        // Frozen: a rebuild could move the selection off the shown topic,
+        // so the change waits for the thaw.
         if self.tree_changed
+            && !self.frozen
             && (self.search.is_empty()
                 || self.last_filter_rebuild.elapsed() >= FILTER_REBUILD_EVERY)
         {
@@ -1100,7 +1107,7 @@ impl App {
             Action::Chart => self.cycle_chart(),
             Action::Stats => self.mode = Mode::Stats,
             Action::Freeze => {
-                self.frozen = !self.frozen;
+                self.toggle_freeze();
                 let note = if self.frozen {
                     "display frozen – f to resume"
                 } else {
@@ -1262,6 +1269,31 @@ impl App {
         }
     }
 
+    /// `f`. Freezing a live view pins the shown entry, so actions on the
+    /// selection (`Y`) see what is on screen while messages keep landing.
+    fn toggle_freeze(&mut self) {
+        self.frozen = !self.frozen;
+        let stamp = |m: &mqtt_zapp_core::Message| (m.received_at, m.payload.len());
+        if self.frozen {
+            self.freeze_pin = None;
+            if self.history_sel.is_none() && self.history_len() > 0 {
+                self.history_sel = Some(self.history_len() - 1);
+                self.freeze_pin = super::message_view::shown_message(self).map(stamp);
+            }
+        } else if let Some(pin) = self.freeze_pin.take() {
+            // Undo our own pin, also when its entry fell out of the ring;
+            // keep one the user moved to meanwhile.
+            let still_ours = super::message_view::shown_message(self).map(stamp) == Some(pin)
+                || self
+                    .selected
+                    .is_some_and(|s| !self.tree.node(s).history.iter().any(|m| stamp(m) == pin));
+            if still_ours && self.history_sel.is_some() {
+                self.history_sel = None;
+                self.payload_scroll = 0;
+            }
+        }
+    }
+
     fn history_len(&self) -> usize {
         self.selected
             .map_or(0, |id| self.tree.node(id).history.len())
@@ -1355,6 +1387,7 @@ impl App {
 
     pub(super) fn select(&mut self, id: NodeId) {
         if self.selected != Some(id) {
+            self.freeze_pin = None;
             self.chart = None;
             self.diff_base = None;
             self.history_sel = None;

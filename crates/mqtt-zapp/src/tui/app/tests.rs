@@ -1902,10 +1902,78 @@ fn freeze_stops_tick_redraws() {
     a.last_filter_rebuild -= Duration::from_millis(500);
     a.on_tick();
     assert!(!a.dirty, "a frozen display must not redraw on its own");
-    // Messages still land in the tree (and the filter) while frozen.
+    // Messages still land in the tree; the filter waits for the thaw.
     let b = a.tree.find("b/live").expect("message applied while frozen");
     assert_eq!(a.tree.node(b).msg_count, 1);
-    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 2);
+}
+
+#[test]
+fn frozen_tick_does_not_rebuild_filter() {
+    let mut a = browse(&["a/live", "c/other"]);
+    a.search = "live".into();
+    a.last_filter_rebuild -= Duration::from_millis(500);
+    a.on_tick();
+    a.selected = a.tree.find("a/live");
+    a.handle_action(Action::Freeze);
+    let n = a.filter_builds.get();
+    a.apply_core_event(msg("b/live", "new"));
+    a.last_filter_rebuild -= Duration::from_millis(500);
+    a.on_tick();
+    assert_eq!(a.filter_builds.get(), n, "no tick rebuild while frozen");
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 1);
+    assert_eq!(a.selected, a.tree.find("a/live"));
+}
+
+#[test]
+fn unfreeze_rebuilds_pending_filter() {
+    let mut a = browse(&["a/live"]);
+    a.search = "live".into();
+    a.last_filter_rebuild -= Duration::from_millis(500);
+    a.on_tick();
+    a.handle_action(Action::Freeze);
+    a.apply_core_event(msg("b/live", "new"));
+    a.last_filter_rebuild -= Duration::from_millis(500);
+    a.on_tick();
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 1);
+    a.handle_action(Action::Freeze);
+    assert!(!a.frozen);
+    a.on_tick();
+    assert_eq!(
+        a.filter.as_ref().unwrap().matches.len(),
+        2,
+        "the change seen while frozen lands once live"
+    );
+}
+
+#[test]
+fn freeze_pins_shown_payload_for_copy() {
+    let mut a = browse(&[]);
+    a.apply_core_event(msg("x/y", "old"));
+    a.selected = a.tree.find("x/y");
+    a.handle_action(Action::Freeze);
+    a.apply_core_event(msg("x/y", "new"));
+    match a.handle_action(Action::CopyPayload) {
+        Effect::Copy { text, .. } => assert_eq!(text, "old", "Y copies what is on screen"),
+        e => panic!("{e:?}"),
+    }
+    a.handle_action(Action::Freeze);
+    assert_eq!(a.history_sel, None, "unfreeze goes back to live");
+    match a.handle_action(Action::CopyPayload) {
+        Effect::Copy { text, .. } => assert_eq!(text, "new"),
+        e => panic!("{e:?}"),
+    }
+    // The pinned entry falls out of the ring while frozen: still live after.
+    a.handle_action(Action::Freeze);
+    for i in 0..a.history_depth + 1 {
+        a.apply_core_event(msg("x/y", &format!("n{i}")));
+    }
+    a.handle_action(Action::Freeze);
+    assert_eq!(a.history_sel, None, "an evicted pin still thaws to live");
+    // A pin the user made before freezing survives the thaw.
+    a.history_sel = Some(0);
+    a.handle_action(Action::Freeze);
+    a.handle_action(Action::Freeze);
+    assert_eq!(a.history_sel, Some(0));
 }
 
 #[test]
