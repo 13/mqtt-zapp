@@ -44,7 +44,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
 fn render_front(f: &mut Frame, app: &App, area: Rect) {
     let [main, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
     match (app.mode, &app.password) {
-        (Mode::Password, Some(st)) => super::picker::render_password(f, main, st),
+        (Mode::Password, Some(st)) => {
+            if !app.picker.profiles.is_empty() {
+                super::picker::render_picker(f, main, &app.picker, None);
+                theme::dim_backdrop(f, main);
+            }
+            super::picker::render_password(f, main, st)
+        }
         _ => super::picker::render_picker(f, main, &app.picker, app.store_error.as_deref()),
     }
     f.render_widget(Paragraph::new(footer_line(app, area.width)), status);
@@ -71,46 +77,109 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(footer_line(app, area.width)), status);
 }
 
-/// Effective keymap on the left; keys that bypass the keymap on the right.
+/// The help overlay's groups; every action is in exactly one.
+const HELP_GROUPS: [(&str, &[Action]); 3] = [
+    (
+        "navigate",
+        &[
+            Action::Up,
+            Action::Down,
+            Action::Collapse,
+            Action::Expand,
+            Action::ToggleExpand,
+            Action::Top,
+            Action::Bottom,
+            Action::Select,
+        ],
+    ),
+    (
+        "view",
+        &[
+            Action::FocusNext,
+            Action::ScrollDown,
+            Action::ScrollUp,
+            Action::ToggleDiff,
+        ],
+    ),
+    (
+        "actions",
+        &[
+            Action::Search,
+            Action::Publish,
+            Action::Help,
+            Action::Cancel,
+            Action::Quit,
+        ],
+    ),
+];
+
+/// Effective keymap, grouped, on the left; keys that bypass the keymap on
+/// the right.
 fn render_help(f: &mut Frame, area: Rect, app: &App) {
-    let block = theme::pane("help - any key closes", true);
+    let bindings = app.keymap.bindings();
+    debug_assert!(
+        bindings
+            .iter()
+            .all(|(a, _)| { HELP_GROUPS.iter().filter(|(_, g)| g.contains(a)).count() == 1 })
+    );
+    theme::dim_backdrop(f, area);
+    let area = theme::centered(area, 76, 22);
+    let block = theme::pane("help · any key closes", true).title_bottom(
+        Line::styled(
+            " remap in settings.toml [keys] ",
+            Style::new().fg(theme::MUTED),
+        )
+        .right_aligned(),
+    );
     let inner = block.inner(area);
     f.render_widget(Clear, area);
     f.render_widget(block, area);
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(inner);
-    let bold = Style::new().add_modifier(Modifier::BOLD);
-    let mut lines = vec![Line::styled("keymap ([keys] in settings.toml)", bold)];
-    for (action, keys) in app.keymap.bindings() {
-        let keys: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
-        let keys = if keys.is_empty() {
-            "(unbound)".to_owned()
-        } else {
-            keys.join(", ")
-        };
-        lines.push(Line::from(format!("{:<14}{keys}", action.name())));
+    let heading = Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD);
+    let key_style = Style::new().add_modifier(Modifier::BOLD);
+    let row = |name: &str, keys: String| {
+        Line::from(vec![
+            Span::styled(format!(" {name:<14}"), Style::new().fg(theme::MUTED)),
+            Span::styled(keys, key_style),
+        ])
+    };
+    let mut lines = Vec::new();
+    for (title, actions) in HELP_GROUPS {
+        lines.push(Line::styled(format!(" {title}"), heading));
+        for action in actions {
+            let keys = bindings
+                .iter()
+                .find(|(a, _)| a == action)
+                .map(|(_, k)| k.iter().map(|k| k.to_string()).collect::<Vec<_>>())
+                .unwrap_or_default();
+            let keys = if keys.is_empty() {
+                "(unbound)".to_owned()
+            } else {
+                keys.join(", ")
+            };
+            lines.push(row(action.name(), keys));
+        }
     }
     f.render_widget(Paragraph::new(lines), left);
-    let mut lines = vec![Line::styled("publish form", bold)];
-    lines.extend(
-        [
-            "ctrl-s    send",
-            "ctrl-f    format json",
-            "tab       next field",
-            "esc       close",
-        ]
-        .map(Line::from),
-    );
+    let mut lines = vec![Line::styled(" publish form", heading)];
+    for (k, what) in [
+        ("ctrl-s", "send"),
+        ("ctrl-f", "format json"),
+        ("tab", "next field"),
+        ("esc", "close"),
+    ] {
+        lines.push(row(k, what.into()));
+    }
     lines.push(Line::default());
-    lines.push(Line::styled("search", bold));
-    lines.extend(
-        [
-            "type      filter topics",
-            "enter     keep filter",
-            "esc       clear",
-        ]
-        .map(Line::from),
-    );
+    lines.push(Line::styled(" search", heading));
+    for (k, what) in [
+        ("type", "filter topics"),
+        ("enter", "keep filter"),
+        ("esc", "clear"),
+    ] {
+        lines.push(row(k, what.into()));
+    }
     f.render_widget(Paragraph::new(lines), right);
 }
 
@@ -906,6 +975,39 @@ mod tests {
         assert!(last.contains("esc clear"), "{last}");
     }
 
+    #[test]
+    fn password_modal_shows_server() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use mqtt_zapp_core::config::PasswordSource::Prompt;
+        let mut a = picker_app(vec![profile("home", Prompt)]);
+        a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let s = text(&draw(&mut a, 80, 24));
+        assert!(s.contains("password · home"), "{s}");
+        assert!(s.contains("mqtts://alice@broker.lan:8883"), "{s}");
+    }
+
+    #[test]
+    fn help_groups_actions() {
+        let mut a = app_with(&[("a", b"1")]);
+        a.handle_action(Action::Help);
+        let s = text(&draw(&mut a, 100, 30));
+        for want in ["navigate", "view", "actions"] {
+            assert!(s.contains(want), "{want}: {s}");
+        }
+    }
+
+    #[test]
+    fn overlay_fits_tiny_terminal() {
+        let mut a = app_with(&[("a", b"1")]);
+        a.handle_action(Action::Help);
+        let b = draw(&mut a, 40, 10);
+        assert!(text(&b).contains("help"));
+        a.mode = Mode::Browse;
+        a.handle_action(Action::Publish);
+        let s = text(&draw(&mut a, 40, 10));
+        assert!(s.contains("publish"), "{s}");
+    }
+
     fn last_line(b: &Buffer) -> String {
         text(b).lines().last().unwrap().trim_end().to_owned()
     }
@@ -936,11 +1038,13 @@ mod tests {
         a.picker.sel = 1;
         let b = draw(&mut a, 80, 24);
         let s = text(&b);
-        assert!(s.contains("home  mqtts://broker.lan:8883  alice"), "{s}");
-        let row = s.lines().position(|l| l.contains("lab  mqtts")).unwrap() as u16;
-        assert_eq!(b[(3, row)].bg, theme::SEL_BG);
-        let other = s.lines().position(|l| l.contains("home  mqtts")).unwrap() as u16;
-        assert_ne!(b[(3, other)].bg, theme::SEL_BG);
+        let row = s.lines().position(|l| l.contains("▶ lab")).unwrap();
+        let line = s.lines().nth(row).unwrap();
+        assert!(line.contains("mqtts://alice@broker.lan:8883"), "{s}");
+        let col = line[..line.find("lab").unwrap()].chars().count() as u16;
+        assert_eq!(b[(col, row as u16)].bg, theme::SEL_BG);
+        let other = s.lines().position(|l| l.contains("  home ")).unwrap() as u16;
+        assert_ne!(b[(col, other)].bg, theme::SEL_BG);
         assert!(
             last_line(&b).contains("enter connect  j/k move  q quit"),
             "{s}"

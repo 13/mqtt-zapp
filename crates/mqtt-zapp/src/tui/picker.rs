@@ -5,9 +5,9 @@ use mqtt_zapp_core::config::{Profile, Protocol};
 use mqtt_zapp_core::payload::sanitize;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Clear, Paragraph};
 use std::fmt;
 
 pub const EMPTY_HINT: &str = "no profiles – add one with: mqtt-zapp profile add --name … --host …";
@@ -78,61 +78,81 @@ pub fn server_url(p: &Profile) -> String {
     sanitize(&format!("{proto}://{user}{}:{}{path}", p.host, p.port)).replace('\n', " ")
 }
 
-/// `name  protocol://host:port  user`, as in `profile list`.
-fn profile_line(p: &Profile) -> String {
-    let proto = format!("{:?}", p.protocol).to_lowercase();
-    sanitize(&format!(
-        "{}  {}://{}:{}  {}",
-        p.name,
-        proto,
-        p.host,
-        p.port,
-        p.username.as_deref().unwrap_or("")
-    ))
-    .replace('\n', " ")
-}
-
+/// The broker list as a centred card: `▶ name  url`, names padded to line up.
 pub fn render_picker(f: &mut Frame, area: Rect, st: &PickerState, error: Option<&str>) {
-    let block = Block::bordered().title("mqtt-zapp – pick a broker");
-    let lines: Vec<Line> = if st.profiles.is_empty() {
-        let mut v = Vec::new();
-        if let Some(e) = error {
-            v.push(Line::styled(
-                sanitize(e).replace('\n', " "),
-                Style::new().fg(Color::Red),
+    let muted = Style::new().fg(theme::MUTED);
+    let lines: Vec<Line> =
+        if st.profiles.is_empty() {
+            let mut v = vec![Line::default()];
+            if let Some(e) = error {
+                v.push(Line::styled(
+                    format!(" {}", sanitize(e).replace('\n', " ")),
+                    Style::new().fg(theme::ERR),
+                ));
+            }
+            v.push(Line::styled(format!(" {EMPTY_HINT}"), muted));
+            v
+        } else {
+            let names: Vec<String> = st
+                .profiles
+                .iter()
+                .map(|p| sanitize(&p.name).replace('\n', " "))
+                .collect();
+            let pad = names.iter().map(|n| n.chars().count()).max().unwrap_or(0);
+            let card = theme::centered(area, 72, st.profiles.len() as u16 + 4);
+            let height = card.height.saturating_sub(4) as usize;
+            let skip = (st.sel + 1).saturating_sub(height.max(1));
+            let mut v = vec![Line::default()];
+            v.extend(st.profiles.iter().zip(&names).enumerate().skip(skip).map(
+                |(i, (p, name))| {
+                    let sel = i == st.sel;
+                    let line = Line::from(vec![
+                        Span::styled(
+                            if sel { " ▶ " } else { "   " },
+                            Style::new().fg(theme::ACCENT),
+                        ),
+                        Span::styled(
+                            format!("{name:<pad$}"),
+                            Style::new().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw("  "),
+                        Span::styled(server_url(p), muted),
+                    ]);
+                    if sel {
+                        line.style(theme::selection(true))
+                    } else {
+                        line
+                    }
+                },
             ));
-        }
-        v.push(Line::raw(EMPTY_HINT));
-        v
-    } else {
-        let height = block.inner(area).height as usize;
-        let skip = (st.sel + 1).saturating_sub(height);
-        st.profiles
-            .iter()
-            .enumerate()
-            .skip(skip)
-            .map(|(i, p)| {
-                let line = Line::raw(profile_line(p));
-                if i == st.sel {
-                    line.style(theme::selection(true))
-                } else {
-                    line
-                }
-            })
-            .collect()
-    };
-    f.render_widget(Paragraph::new(lines).block(block), area);
+            v
+        };
+    let card = theme::centered(area, 72, lines.len() as u16 + 3);
+    f.render_widget(
+        Paragraph::new(lines).block(theme::pane("mqtt-zapp · pick a broker", true)),
+        card,
+    );
 }
 
+/// A small modal under the picker: the broker and the masked input.
 pub fn render_password(f: &mut Frame, area: Rect, st: &PasswordState) {
-    let title = format!(
-        "password for {}",
-        sanitize(&st.profile.name).replace('\n', " ")
-    );
-    let line = Line::raw(format!("{}▏", st.masked()));
+    let title = format!("password · {}", st.profile.name);
+    let lines = vec![
+        Line::styled(
+            format!(" {}", server_url(&st.profile)),
+            Style::new().fg(theme::MUTED),
+        ),
+        Line::default(),
+        Line::from(vec![
+            Span::styled(" › ", Style::new().fg(theme::ACCENT)),
+            Span::raw(format!("{}▏", st.masked())),
+        ]),
+    ];
+    let modal = theme::centered(area, 50, 5);
+    f.render_widget(Clear, modal);
     f.render_widget(
-        Paragraph::new(line).block(Block::bordered().title(title)),
-        area,
+        Paragraph::new(lines).block(theme::pane(&title, true)),
+        modal,
     );
 }
 
@@ -203,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_line_has_empty_user_when_none() {
-        assert_eq!(profile_line(&profile("a")), "a  mqtt://h:1883  ");
+    fn server_url_has_no_at_without_user() {
+        assert_eq!(server_url(&profile("a")), "mqtt://h:1883");
     }
 }

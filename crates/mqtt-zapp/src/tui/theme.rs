@@ -3,6 +3,8 @@
 //! terminal palette (light or dark) decides the actual shades.
 
 use mqtt_zapp_core::payload::sanitize;
+use ratatui::Frame;
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType};
@@ -52,6 +54,25 @@ pub fn key_hint(key: &str, label: &str) -> [Span<'static>; 2] {
     ]
 }
 
+/// A `width`×`height` rect centred in `area`, clamped to it and kept one
+/// cell off its edges when there is room.
+pub fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let fit = |want: u16, have: u16| want.min(if have > 2 { have - 2 } else { have });
+    let (w, h) = (fit(width, area.width), fit(height, area.height));
+    Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    )
+}
+
+/// Dim everything already drawn in `area`, behind an overlay.
+pub fn dim_backdrop(f: &mut Frame, area: Rect) {
+    f.buffer_mut()
+        .set_style(area, Style::new().add_modifier(Modifier::DIM));
+}
+
 /// The selected row: bright in the focused pane, grey elsewhere.
 pub fn selection(focused: bool) -> Style {
     if focused {
@@ -91,6 +112,16 @@ mod tests {
         let b = draw_pane(false);
         assert_eq!(b[(0, 0)].symbol(), "╭");
         assert!(!top_row(&b).contains('●'));
+    }
+
+    #[test]
+    fn centered_clamps() {
+        let area = Rect::new(0, 0, 40, 10);
+        let r = centered(area, 76, 22);
+        assert!(r.x >= area.x && r.right() <= area.right(), "{r:?}");
+        assert!(r.y >= area.y && r.bottom() <= area.bottom(), "{r:?}");
+        let r = centered(Rect::new(0, 0, 100, 30), 76, 22);
+        assert_eq!(r, Rect::new(12, 4, 76, 22));
     }
 
     #[test]

@@ -1,13 +1,14 @@
 //! The publish form: a topic line, a multi-line payload, QoS and retain.
 //! State and key handling live here; the overlay is drawn by `render`.
 
+use super::theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mqtt_zapp_core::payload::sanitize;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use tui_textarea::TextArea;
 
 const INVALID_TOPIC: &str = "invalid topic";
@@ -164,24 +165,19 @@ impl PublishForm {
 }
 
 /// Bottom panel over the main area: about 40% of its height.
-pub fn overlay_area(area: Rect) -> Rect {
-    let h = (area.height * 2 / 5).max(7).min(area.height);
-    Rect::new(area.x, area.y + area.height - h, area.width, h)
-}
-
 pub fn render(f: &mut Frame, area: Rect, form: &PublishForm) {
-    let area = overlay_area(area);
+    theme::dim_backdrop(f, area);
+    let area = theme::centered(area, 80, 18);
     f.render_widget(Clear, area);
     let block = match &form.error {
         Some(e) => Block::bordered()
+            .border_type(BorderType::Thick)
             .title(Span::styled(
-                format!("publish - {}", sanitize(e).replace('\n', " ")),
-                Style::new().fg(Color::Red),
+                format!(" publish - {} ", sanitize(e).replace('\n', " ")),
+                Style::new().fg(theme::ERR).add_modifier(Modifier::BOLD),
             ))
-            .border_style(Style::new().fg(Color::Red)),
-        None => Block::bordered()
-            .title("publish")
-            .border_style(Style::new().fg(Color::Cyan)),
+            .border_style(Style::new().fg(theme::ERR)),
+        None => theme::pane("publish", true),
     };
     let inner = block.inner(area);
     f.render_widget(block, area);
