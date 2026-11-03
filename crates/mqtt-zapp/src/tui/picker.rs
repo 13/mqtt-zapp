@@ -9,6 +9,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 use std::fmt;
+use unicode_width::UnicodeWidthStr;
 
 pub const EMPTY_HINT: &str = "no profiles – add one with: mqtt-zapp profile add --name … --host …";
 
@@ -105,7 +106,7 @@ pub fn render_picker(
                 .iter()
                 .map(|p| sanitize(&p.name).replace('\n', " "))
                 .collect();
-            let pad = names.iter().map(|n| n.chars().count()).max().unwrap_or(0);
+            let pad = names.iter().map(|n| n.width()).max().unwrap_or(0);
             let card = theme::centered(area, 72, st.profiles.len() as u16 + 4);
             let height = card.height.saturating_sub(4) as usize;
             let skip = (st.sel + 1).saturating_sub(height.max(1));
@@ -120,7 +121,7 @@ pub fn render_picker(
                             Style::new().fg(theme::ACCENT),
                         ),
                         Span::styled(
-                            format!("{name:<pad$}"),
+                            format!("{name}{}", " ".repeat(pad - name.width())),
                             Style::new().add_modifier(Modifier::BOLD),
                         ),
                         Span::raw("  "),

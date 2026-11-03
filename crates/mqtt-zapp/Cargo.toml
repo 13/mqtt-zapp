@@ -8,6 +8,7 @@ mqtt-zapp-core = { path = "../mqtt-zapp-core", default-features = false }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 rpassword = "7"
+unicode-width = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 ratatui = "0.29"

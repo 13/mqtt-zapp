@@ -16,16 +16,17 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 use std::time::Instant;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub const MIN_WIDTH: u16 = 40;
 pub const MIN_HEIGHT: u16 = 10;
 /// Narrower terminals show the tree above the message pane.
 const STACK_BELOW: u16 = 80;
-/// Rows that got a message within `app::FLASH` are drawn bold yellow.
+/// Topic names that got a message within `app::FLASH` are drawn bold yellow.
 pub const FLASH_MODIFIER: Modifier = Modifier::BOLD;
 const FLASH_FG: Color = Color::Yellow;
 const PREVIEW_CHARS: usize = 60;
-/// Longest status-bar note; broker error text can be long.
+/// Longest footer note; broker error text can be long.
 const NOTE_MAX_CHARS: usize = 120;
 /// Search matches in tree rows.
 const MATCH_MODIFIER: Modifier = Modifier::BOLD.union(Modifier::UNDERLINED);
@@ -43,7 +44,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
 }
 
-/// The picker and the password prompt: one pane above the status bar.
+/// The picker and the password prompt: a centred card above the footer.
 fn render_front(f: &mut Frame, app: &App, area: Rect) {
     let [main, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
     match (app.mode, &app.password) {
@@ -390,10 +391,10 @@ fn hints(app: &App) -> Vec<(String, &'static str)> {
         (Mode::Browse, Focus::Tree) => vec![
             (k(Action::Search), "search"),
             (k(Action::Publish), "publish"),
-            (k(Action::Select), "expand"),
-            (k(Action::FocusNext), "focus"),
             (k(Action::Help), "help"),
             (k(Action::Quit), "quit"),
+            (k(Action::FocusNext), "focus"),
+            (k(Action::Select), "expand"),
         ],
         (Mode::Browse, Focus::Payload) => vec![
             (jk, "scroll"),
@@ -403,7 +404,7 @@ fn hints(app: &App) -> Vec<(String, &'static str)> {
             (k(Action::Quit), "quit"),
         ],
         (Mode::Browse, Focus::History) => vec![
-            (jk, "history"),
+            (jk, "older/newer"),
             (k(Action::ToggleDiff), "diff"),
             (k(Action::FocusNext), "focus"),
             (k(Action::Help), "help"),
@@ -504,12 +505,21 @@ fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(Span::width).sum()
 }
 
-/// Cut `s` to at most `max` columns, ending in `…` when it was cut.
+/// Cut `s` to at most `max` display columns, ending in `…` when it was cut.
 fn ellipsize(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
+    if s.width() <= max {
         return s.to_owned();
     }
-    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w + 1 > max {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
     if max > 0 {
         out.push('…');
     }
@@ -528,22 +538,21 @@ fn header_line(app: &App, width: u16) -> Line<'static> {
             .bg(theme::ACCENT)
             .add_modifier(Modifier::BOLD),
     );
-    let (state, color) = match &app.conn_state {
-        ConnState::Connected => ("● connected".to_owned(), theme::OK),
-        ConnState::Connecting => ("◌ connecting".to_owned(), theme::WARN),
-        ConnState::Disconnected {
-            reason,
-            retry_in_ms: 0,
-        } => (format!("✕ {}", single_line(reason)), theme::ERR),
+    // (prefix, reason, suffix): only the reason is ever cut.
+    let (prefix, reason, suffix, color) = match &app.conn_state {
+        ConnState::Connected => ("● connected", String::new(), String::new(), theme::OK),
+        ConnState::Connecting => ("◌ connecting", String::new(), String::new(), theme::WARN),
         ConnState::Disconnected {
             reason,
             retry_in_ms,
         } => (
-            format!(
-                "✕ {} · retry {}s",
-                single_line(reason),
-                retry_in_ms.div_ceil(1000)
-            ),
+            "✕ ",
+            single_line(reason),
+            if *retry_in_ms == 0 {
+                String::new()
+            } else {
+                format!(" · retry {}s", retry_in_ms.div_ceil(1000))
+            },
             theme::ERR,
         ),
     };
@@ -571,7 +580,7 @@ fn header_line(app: &App, width: u16) -> Line<'static> {
         muted,
     ));
     let fixed = badge.width() + 1;
-    let pill_w = state.chars().count();
+    let pill_w = prefix.width() + reason.width() + suffix.width();
     let total = |name: &Option<Vec<Span>>, url: &Option<Vec<Span>>, stats: &Option<Span>| {
         fixed
             + pill_w
@@ -588,7 +597,8 @@ fn header_line(app: &App, width: u16) -> Line<'static> {
     if total(&name, &url, &stats) > width {
         name = None;
     }
-    let state = ellipsize(&state, width.saturating_sub(fixed));
+    let room = width.saturating_sub(fixed + prefix.width() + suffix.width());
+    let state = format!("{prefix}{}{suffix}", ellipsize(&reason, room));
     let mut spans = vec![badge, Span::raw(" "), Span::styled(state, pill_style)];
     spans.extend(name.into_iter().flatten());
     spans.extend(url.into_iter().flatten());
@@ -1009,7 +1019,7 @@ mod tests {
         let mut a = app_with(&[("a", b"1")]);
         let last = last_line(&draw(&mut a, 100, 24));
         assert!(
-            last.contains("/ search  p publish  enter expand  tab focus  ? help"),
+            last.contains("/ search  p publish  ? help  q quit  tab focus  enter expand"),
             "{last}"
         );
         let mut s = Settings::default();
@@ -1104,7 +1114,7 @@ mod tests {
         let top = first_line(&b);
         assert!(top.starts_with(" mqtt-zapp "), "{top}");
         assert!(top.contains('✕'), "{top}");
-        assert!(top.ends_with('…'), "{top}");
+        assert!(top.ends_with("… · retry 1s"), "{top}");
         let second = text(&b).lines().nth(1).unwrap().to_owned();
         assert!(
             second.starts_with('┏') || second.starts_with('╭'),
@@ -1163,6 +1173,47 @@ mod tests {
     }
 
     #[test]
+    fn ellipsize_counts_columns() {
+        use unicode_width::UnicodeWidthStr;
+        let e = ellipsize("日本語テキスト", 5);
+        assert!(e.width() <= 5, "{e}");
+        assert!(e.ends_with('…'), "{e}");
+        assert_eq!(ellipsize("abc", 3), "abc");
+    }
+
+    #[test]
+    fn header_keeps_retry_suffix() {
+        let mut a = app_with(&[("a", b"1")]);
+        a.apply_core_event(CoreEvent::State(
+            mqtt_zapp_core::client::ConnState::Disconnected {
+                reason: "connection refused by the remote broker".into(),
+                retry_in_ms: 3200,
+            },
+        ));
+        let top = first_line(&draw(&mut a, 40, 10));
+        assert!(top.ends_with("· retry 4s"), "{top}");
+        assert!(top.contains('…'), "{top}");
+    }
+
+    #[test]
+    fn payload_focus_ignores_tree_keys() {
+        let mut a = app_with(&[("a/b", b"1"), ("c", b"2")]);
+        a.handle_action(Action::Down);
+        let sel = a.selected;
+        a.focus = Focus::Payload;
+        for x in [
+            Action::Expand,
+            Action::ToggleExpand,
+            Action::Select,
+            Action::Collapse,
+        ] {
+            a.handle_action(x);
+            assert!(a.expanded.is_empty(), "{x:?}");
+            assert_eq!(a.selected, sel, "{x:?}");
+        }
+    }
+
+    #[test]
     fn footer_hints_follow_focus() {
         let mut a = app_with(&[("a", b"1")]);
         let last = last_line(&draw(&mut a, 100, 24));
@@ -1185,6 +1236,7 @@ mod tests {
         let last = last_line(&draw(&mut a, 40, 10));
         assert!(last.chars().count() <= 40, "{last}");
         assert!(last.starts_with("/ search"), "{last}");
+        assert!(last.contains("? help"), "{last}");
         // Whole hints only: every key is followed by its label.
         let words: Vec<&str> = last.split("  ").collect();
         assert!(words.iter().all(|w| w.contains(' ')), "{last}");

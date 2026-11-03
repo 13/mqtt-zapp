@@ -88,7 +88,7 @@ impl fmt::Debug for Effect {
     }
 }
 
-/// How long a status-bar note (publish result) stays visible.
+/// How long a footer note (publish result) stays visible.
 pub const NOTE_TTL: Duration = Duration::from_secs(5);
 
 /// Messages per second over a sliding 10 s window, counted in 1 s buckets so
@@ -192,7 +192,7 @@ pub struct App {
     pub store_error: Option<String>,
     /// Open while in `Mode::Publish`.
     pub publish: Option<PublishForm>,
-    /// A transient status-bar message (publish result) and when it was set.
+    /// A transient footer message (publish result) and when it was set.
     pub status_note: Option<(Note, Instant)>,
     /// Pane rectangles of the last frame, for mouse hit-testing.
     pub hit: Cell<HitAreas>,
@@ -403,7 +403,7 @@ impl App {
         }
         // ROOT is touched by every insert, so it tells whether any row flashes.
         let flashing = self.is_flashing(TopicTree::ROOT, now);
-        // The msg/s figure in the status bar decays without new messages.
+        // The msg/s figure in the header decays without new messages.
         if flashing || self.msg_rate.per_sec(now) > 0.0 {
             self.dirty = true;
         }
@@ -573,6 +573,9 @@ impl App {
             Action::Down if self.focus == Focus::Payload => self.scroll_payload_by(1),
             Action::Top if self.focus == Focus::Payload => self.payload_scroll = 0,
             Action::Bottom if self.focus == Focus::Payload => self.scroll_payload_by(isize::MAX),
+            // Tree-only keys do nothing while the payload has focus.
+            Action::Collapse | Action::Expand | Action::ToggleExpand | Action::Select
+                if self.focus == Focus::Payload => {}
             Action::Up => self.move_selection(|i, _| i.saturating_sub(1)),
             Action::Down => self.move_selection(|i, n| (i + 1).min(n - 1)),
             Action::FocusNext => {

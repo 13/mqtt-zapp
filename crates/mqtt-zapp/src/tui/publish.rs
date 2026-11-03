@@ -164,7 +164,7 @@ impl PublishForm {
     }
 }
 
-/// Bottom panel over the main area: about 40% of its height.
+/// The publish form: a card centred over the main area.
 pub fn render(f: &mut Frame, area: Rect, form: &PublishForm) {
     theme::dim_backdrop(f, area);
     let area = theme::centered(area, 80, 18);
