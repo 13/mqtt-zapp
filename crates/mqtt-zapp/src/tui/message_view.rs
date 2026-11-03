@@ -13,10 +13,11 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, BorderType, Paragraph};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::SystemTime;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Payloads above this are not diffed (the diff is quadratic-ish in lines).
 const MAX_DIFF_BYTES: usize = 256 * 1024;
@@ -205,39 +206,177 @@ fn human_bytes(n: usize) -> String {
     }
 }
 
-/// `topic  QoS 1  RETAINED  JSON  5 B  12:00:00.000` as styled chips.
-fn metadata(s: &Shown, topic: &str, kind: &str, time_fmt: &str) -> Line<'static> {
-    let muted = Style::new().fg(theme::MUTED);
+/// Below this many rows (or with the panes stacked) the header is one row.
+pub const HEADER_CARD_MIN_HEIGHT: u16 = 14;
+
+/// `now`, `12s ago`, `4m ago`, `3h ago`, `2d ago`. A time in the future
+/// (clock skew) is `now`.
+pub fn age(received: SystemTime, now: SystemTime) -> String {
+    let secs = now.duration_since(received).map_or(0, |d| d.as_secs());
+    match secs {
+        0 => "now".into(),
+        s if s < 60 => format!("{s}s ago"),
+        s if s < 3600 => format!("{}m ago", s / 60),
+        s if s < 86_400 => format!("{}h ago", s / 3600),
+        s => format!("{}d ago", s / 86_400),
+    }
+}
+
+/// Keep `max` display columns of `s`, from the end (`true`) or the start.
+fn take_width(s: &str, max: usize, from_end: bool) -> String {
+    let mut out = Vec::new();
+    let mut w = 0;
+    let chars: Vec<char> = if from_end {
+        s.chars().rev().collect()
+    } else {
+        s.chars().collect()
+    };
+    for c in chars {
+        let cw = c.width().unwrap_or(0);
+        if w + cw > max {
+            break;
+        }
+        w += cw;
+        out.push(c);
+    }
+    if from_end {
+        out.reverse();
+    }
+    out.into_iter().collect()
+}
+
+/// Split `topic` into (parents with their trailing `/`, leaf), fitted so
+/// that parents plus the padded leaf badge take at most `width` columns.
+/// The parents lose their middle first; the leaf is cut (from the left)
+/// only once there is no room for any parent.
+fn fit_topic(topic: &str, width: usize) -> (String, String) {
+    let topic = one_line(topic);
+    let (parents, leaf) = match topic.rfind('/') {
+        Some(i) => (topic[..=i].to_owned(), topic[i + 1..].to_owned()),
+        None => (String::new(), topic.clone()),
+    };
+    let leaf_room = width.saturating_sub(2);
+    if leaf.width() > leaf_room {
+        return (
+            String::new(),
+            format!("…{}", take_width(&leaf, leaf_room.saturating_sub(1), true)),
+        );
+    }
+    let room = width - 2 - leaf.width();
+    if parents.width() <= room {
+        return (parents, leaf);
+    }
+    // `head…tail/`: the tail keeps the trailing `/`.
+    if room < 3 {
+        return (String::new(), leaf);
+    }
+    let keep = room - 1;
+    let head = take_width(&parents, keep / 2, false);
+    let tail = take_width(&parents, keep - head.width(), true);
+    (format!("{head}…{tail}"), leaf)
+}
+
+fn leaf_badge(leaf: &str) -> Span<'static> {
+    Span::styled(
+        format!(" {leaf} "),
+        Style::new()
+            .fg(Color::Black)
+            .bg(theme::ACCENT)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+/// `JSON` `5 B` `QoS 1` [`RETAINED`] badges.
+fn badges(s: &Shown, kind: &str) -> Vec<Span<'static>> {
     let chip = Style::new()
         .fg(theme::MUTED)
         .add_modifier(Modifier::REVERSED);
-    let mut spans = vec![
+    let mut v = vec![
         Span::styled(
-            one_line(topic),
-            Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            format!(" {kind} "),
+            Style::new().fg(Color::Black).bg(theme::ACCENT),
         ),
+        Span::raw(" "),
+        Span::styled(format!(" {} ", human_bytes(s.msg.payload.len())), chip),
         Span::raw(" "),
         Span::styled(format!(" QoS {} ", s.msg.qos), chip),
     ];
     if s.msg.retain {
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
+        v.push(Span::raw(" "));
+        v.push(Span::styled(
             " RETAINED ",
             Style::new().fg(Color::Black).bg(Color::Magenta),
         ));
     }
-    spans.extend([
+    v
+}
+
+fn width_of(spans: &[Span]) -> usize {
+    spans.iter().map(|s| s.content.width()).sum()
+}
+
+/// The card's two inner rows for a `width`-column interior.
+fn header_lines(
+    s: &Shown,
+    topic: &str,
+    kind: &str,
+    time_fmt: &str,
+    now: SystemTime,
+    width: u16,
+) -> [Line<'static>; 2] {
+    let width = width as usize;
+    let muted = Style::new().fg(theme::MUTED);
+    let (parents, leaf) = fit_topic(topic, width.saturating_sub(1));
+    let path = Line::from(vec![
         Span::raw(" "),
-        Span::styled(format!(" {kind} "), chip),
-        Span::raw(" "),
-        Span::styled(human_bytes(s.msg.payload.len()), muted),
-        Span::raw(" "),
-        Span::styled(clock(s.msg.received_at, time_fmt), muted),
+        Span::styled(parents, muted),
+        leaf_badge(&leaf),
     ]);
+    let mut left = vec![Span::raw(" ")];
+    left.extend(badges(s, kind));
+    let clock = clock(s.msg.received_at, time_fmt);
+    let age = age(s.msg.received_at, now);
+    // Right side: `time · age`, else just the age, else nothing.
+    let used = width_of(&left);
+    let right = [format!("{clock} · {age} "), format!("{age} ")]
+        .into_iter()
+        .find(|r| used + 1 + r.width() <= width)
+        .unwrap_or_default();
+    let gap = width.saturating_sub(used + right.width());
+    left.push(Span::raw(" ".repeat(gap)));
+    left.push(Span::styled(right, muted));
+    [path, Line::from(left)]
+}
+
+/// One row: path with the leaf badge, the badges, `time · age`.
+fn header_compact(
+    s: &Shown,
+    topic: &str,
+    kind: &str,
+    time_fmt: &str,
+    now: SystemTime,
+    width: u16,
+) -> Line<'static> {
+    let muted = Style::new().fg(theme::MUTED);
+    let (parents, leaf) = fit_topic(topic, (width as usize / 2).max(8));
+    let mut spans = vec![
+        Span::styled(parents, muted),
+        leaf_badge(&leaf),
+        Span::raw(" "),
+    ];
+    spans.extend(badges(s, kind));
+    spans.push(Span::styled(
+        format!(
+            "  {} · {}",
+            clock(s.msg.received_at, time_fmt),
+            age(s.msg.received_at, now)
+        ),
+        muted,
+    ));
     Line::from(spans)
 }
 
-pub fn render_message(f: &mut Frame, area: Rect, app: &App) {
+pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
     let Some(s) = shown(app) else {
         // Payload and history focus both land here while there is nothing
         // to show, so the focus stays visible.
@@ -262,14 +401,16 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App) {
     // History takes at most half of what the meta line leaves, so the
     // payload keeps room in short (stacked) layouts; with history focused it
     // keeps at least one row so the focus stays visible.
-    let half = area.height.saturating_sub(1) / 2;
+    let card = !stacked && area.height >= HEADER_CARD_MIN_HEIGHT;
+    let header_rows = if card { 4 } else { 1 };
+    let half = area.height.saturating_sub(header_rows) / 2;
     let mut hist_rows = (s.node.history.len().min(HISTORY_ROWS) as u16).min(half.saturating_sub(2));
     if app.focus == Focus::History {
         hist_rows = hist_rows.max(1);
     }
     let hist_height = if hist_rows == 0 { 0 } else { hist_rows + 2 };
     let [meta, payload, history] = Layout::vertical([
-        Constraint::Length(1),
+        Constraint::Length(header_rows),
         Constraint::Min(0),
         Constraint::Length(hist_height),
     ])
@@ -277,10 +418,18 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App) {
 
     let topic = app.tree.full_topic(app.selected.unwrap_or_default());
     let kind = body(app).map_or("", |(_, k)| k);
-    f.render_widget(
-        Paragraph::new(metadata(&s, &topic, kind, &app.timestamp_format)),
-        meta,
-    );
+    let now = SystemTime::now();
+    if card {
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(theme::MUTED));
+        let inner = block.inner(meta);
+        let rows = header_lines(&s, &topic, kind, &app.timestamp_format, now, inner.width);
+        f.render_widget(Paragraph::new(rows.to_vec()).block(block), meta);
+    } else {
+        let row = header_compact(&s, &topic, kind, &app.timestamp_format, now, meta.width);
+        f.render_widget(Paragraph::new(row), meta);
+    }
     let payload = match &app.chart {
         Some(series) => {
             let [chart, rest] =
@@ -532,6 +681,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::style::Color;
+    use std::time::Duration;
     use std::time::SystemTime;
 
     const T: &str = "dev/x";
@@ -570,7 +720,7 @@ mod tests {
 
     fn draw(a: &App) -> Buffer {
         let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        t.draw(|f| render_message(f, f.area(), a)).unwrap();
+        t.draw(|f| render_message(f, f.area(), a, false)).unwrap();
         t.backend().buffer().clone()
     }
 
@@ -672,6 +822,18 @@ mod tests {
         assert_eq!(s.matches("second-payload").count(), 2, "{s}");
     }
 
+    /// The card's badge row: the line just below the path row.
+    fn badge_row(l: &[String]) -> (usize, &String) {
+        let y = l.iter().position(|r| r.contains("dev/")).unwrap() + 1;
+        (y, &l[y])
+    }
+
+    /// The clock on the badge row: the word before ` · <age>`.
+    fn clock_of(row: &str) -> &str {
+        let before = &row[..row.rfind(" · ").unwrap()];
+        before.split(' ').rfind(|w| !w.is_empty()).unwrap()
+    }
+
     #[test]
     fn metadata_line() {
         let mut a = app_depth(10);
@@ -679,18 +841,134 @@ mod tests {
         a.selected = a.tree.find(T);
         let b = draw(&a);
         let l = lines(&b);
-        let y = l.iter().position(|r| r.contains("dev/x")).unwrap();
-        let m = &l[y];
+        let (y, m) = badge_row(&l);
         assert!(m.contains(" QoS 1 "), "{m}");
         assert!(m.contains(" RETAINED "), "{m}");
         assert!(m.contains(" TEXT "), "{m}");
         assert!(m.contains("5 B"), "{m}");
         let x = m[..m.find("RETAINED").unwrap()].chars().count() as u16;
         assert_eq!(b[(x, y as u16)].bg, Color::Magenta);
-        let t = m.split(' ').rfind(|w| !w.is_empty()).unwrap();
+        let t = clock_of(m);
         assert_eq!(t.len(), 12, "HH:MM:SS.mmm in {t:?}");
         assert_eq!(&t[2..3], ":");
         assert_eq!(&t[8..9], ".");
+        assert!(
+            m.trim_end()
+                .trim_end_matches('│')
+                .trim_end()
+                .ends_with("· now"),
+            "{m}"
+        );
+    }
+
+    #[test]
+    fn age_formats() {
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let at = |s: u64| age(t0, t0 + Duration::from_secs(s));
+        assert_eq!(at(0), "now");
+        assert_eq!(at(12), "12s ago");
+        assert_eq!(at(240), "4m ago");
+        assert_eq!(at(3 * 3600 + 5), "3h ago");
+        assert_eq!(at(2 * 86400 + 7), "2d ago");
+    }
+
+    #[test]
+    fn age_future_is_now() {
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        assert_eq!(age(t0 + Duration::from_secs(30), t0), "now");
+    }
+
+    #[test]
+    fn header_card_draws_box_path_and_badges() {
+        let topic = "tasmota/tele/tasmota_A1B2C3/SENSOR";
+        let mut a = app_depth(10);
+        send(&mut a, topic, br#"{"a":1}"#, true);
+        a.selected = a.tree.find(topic);
+        let b = draw(&a);
+        let l = lines(&b);
+        assert!(l[0].starts_with('╭'), "{}", l[0]);
+        assert!(l[3].starts_with('╰'), "{}", l[3]);
+        assert!(
+            l[1].contains("tasmota/tele/tasmota_A1B2C3/ SENSOR "),
+            "{}",
+            l[1]
+        );
+        let x = l[1][..l[1].find("SENSOR").unwrap()].chars().count() as u16;
+        assert_eq!(b[(x, 1)].bg, theme::ACCENT);
+        let px = l[1][..l[1].find("tasmota").unwrap()].chars().count() as u16;
+        assert_eq!(b[(px, 1)].fg, theme::MUTED);
+        assert!(l[2].contains(" JSON "), "{}", l[2]);
+        let jx = l[2][..l[2].find("JSON").unwrap()].chars().count() as u16;
+        assert_eq!(b[(jx, 2)].bg, theme::ACCENT);
+        assert!(
+            l[2].contains(" QoS 1 ") && l[2].contains(" RETAINED "),
+            "{}",
+            l[2]
+        );
+    }
+
+    #[test]
+    fn header_no_retained_badge_when_not_retained() {
+        let a = app_with(&[b"x"]);
+        let l = lines(&draw(&a));
+        assert!(!l[2].contains("RETAINED"), "{}", l[2]);
+    }
+
+    #[test]
+    fn header_long_cjk_topic_keeps_leaf() {
+        let (parents, leaf) = fit_topic("设备/房间/很长很长很长很长很长很长很长很长/温度", 30);
+        assert_eq!(leaf, "温度");
+        assert!(parents.width() + leaf.width() + 2 <= 30, "{parents}");
+        assert!(parents.contains('…') && parents.ends_with('/'), "{parents}");
+        let (p, leaf) = fit_topic("a/b/c", 40);
+        assert_eq!((p.as_str(), leaf.as_str()), ("a/b/", "c"));
+        let (p, leaf) = fit_topic(&format!("a/{}", "x".repeat(50)), 12);
+        assert!(p.is_empty(), "{p}");
+        assert!(leaf.starts_with('…') && leaf.width() + 2 <= 12, "{leaf}");
+    }
+
+    #[test]
+    fn header_row_never_overflows() {
+        let topic = "设备/房间/很长很长很长很长很长很长很长很长/温度";
+        let mut a = app_depth(10);
+        send(&mut a, topic, b"21.5", true);
+        a.selected = a.tree.find(topic);
+        let mut t = Terminal::new(TestBackend::new(40, 30)).unwrap();
+        t.draw(|f| render_message(f, f.area(), &a, false)).unwrap();
+        let b = t.backend().buffer();
+        let l = lines(b);
+        // Wide chars occupy two cells (the second reads as a blank here).
+        assert!(l[1].ends_with('│'), "{:?}", l[1]);
+        assert!(l[1].contains("温 度"), "leaf kept: {:?}", l[1]);
+        let x = (0..40).find(|&x| b[(x, 1)].symbol() == "温").unwrap();
+        assert_eq!(b[(x, 1)].bg, theme::ACCENT);
+    }
+
+    #[test]
+    fn header_compact_when_short_or_stacked() {
+        let a = app_with(&[b"x"]);
+        for (w, h, stacked) in [(79, 24, true), (100, 12, false)] {
+            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+            t.draw(|f| render_message(f, f.area(), &a, stacked))
+                .unwrap();
+            let l = lines(t.backend().buffer());
+            assert!(!l[0].contains('╭'), "{w}x{h}: {}", l[0]);
+            assert!(
+                l[0].contains("dev/ x ") && l[0].contains(" TEXT "),
+                "{}",
+                l[0]
+            );
+        }
+    }
+
+    #[test]
+    fn on_tick_redraws_once_a_second_for_the_age() {
+        let mut a = app_with(&[b"x"]);
+        a.on_tick();
+        a.dirty = false;
+        a.age_second = 0;
+        a.on_tick();
+        assert!(a.dirty);
     }
 
     #[test]
@@ -765,8 +1043,8 @@ mod tests {
         let mut a = app_with(&[b"x"]);
         a.timestamp_format = "%H:%M".into();
         let l = lines(&draw(&a));
-        let m = l.iter().find(|r| r.contains("dev/x")).unwrap();
-        let t = m.split(' ').rfind(|w| !w.is_empty()).unwrap();
+        let (_, m) = badge_row(&l);
+        let t = clock_of(m);
         assert_eq!(t.len(), 5, "{m}");
         assert_eq!(&t[2..3], ":");
     }

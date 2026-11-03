@@ -102,13 +102,14 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
     .areas(area);
     f.render_widget(Paragraph::new(header_line(app, area.width)), header);
     // Payloads need the width; below `STACK_BELOW` columns the panes stack.
-    let [tree, message] = if main.width < STACK_BELOW {
+    let stacked = main.width < STACK_BELOW;
+    let [tree, message] = if stacked {
         Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(main)
     } else {
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(main)
     };
     render_tree(f, app, tree);
-    super::message_view::render_message(f, message, app);
+    super::message_view::render_message(f, message, app, stacked);
     if let (Mode::Publish, Some(form)) = (app.mode, &app.publish) {
         super::publish::render(f, main, form);
     }

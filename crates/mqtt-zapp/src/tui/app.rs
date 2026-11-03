@@ -242,6 +242,8 @@ pub struct App {
     /// Index into the selected node's `history` (0 = oldest); `None` follows
     /// the latest message.
     pub history_sel: Option<usize>,
+    /// Unix second of the last redraw for the header's live age.
+    pub age_second: u64,
     pub show_diff: bool,
     pub payload_scroll: usize,
     /// Memoised payload-area content; see `message_view`.
@@ -313,6 +315,7 @@ impl App {
             tree_offset: 0,
             focus: Focus::Tree,
             history_sel: None,
+            age_second: 0,
             show_diff: false,
             payload_scroll: 0,
             body_cache: Default::default(),
@@ -627,6 +630,16 @@ impl App {
         }
         // ROOT is touched by every insert, so it tells whether any row flashes.
         let flashing = self.is_flashing(TopicTree::ROOT, now);
+        // The message header's age ("3s ago") ticks once a second.
+        if self.selected.is_some() {
+            let sec = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            if sec != self.age_second {
+                self.age_second = sec;
+                self.dirty = true;
+            }
+        }
         // The msg/s figure in the header decays without new messages.
         if flashing || self.msg_rate.per_sec(now) > 0.0 {
             self.dirty = true;
