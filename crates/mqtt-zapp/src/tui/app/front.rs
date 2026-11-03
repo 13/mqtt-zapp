@@ -40,6 +40,21 @@ impl App {
         Effect::None
     }
 
+    /// Connected (or reconnecting) to a broker. The picker can then be
+    /// left with esc, back to the live session.
+    pub fn in_session(&self) -> bool {
+        self.server.is_some()
+    }
+
+    /// From browse: the picker, on the connected profile. The session keeps
+    /// running underneath until another profile is picked.
+    pub(super) fn open_brokers(&mut self) {
+        let profiles = std::mem::take(&mut self.picker.profiles);
+        let connected = self.connected.clone();
+        self.picker.set_profiles(profiles, connected.as_deref());
+        self.mode = Mode::Picker;
+    }
+
     fn connect_effect(&mut self, p: Profile, password: Option<String>) -> Effect {
         // Only saved profiles; an ad-hoc `--host` connect has no picker entry.
         if self.picker.profiles.iter().any(|o| o.name == p.name) {
@@ -48,6 +63,7 @@ impl App {
                 .map_or(0, |d| d.as_secs() as i64);
             self.picker.last_used.insert(p.name.clone(), now);
         }
+        self.connected = self.picker.profiles.contains(&p).then(|| p.name.clone());
         self.server = Some(ServerInfo {
             name: p.name.clone(),
             url: crate::tui::picker::server_url(&p),
@@ -63,6 +79,18 @@ impl App {
         self.dirty = true;
         match action {
             Action::Quit => return Effect::Quit,
+            Action::Cancel | Action::Brokers if self.in_session() => self.mode = Mode::Browse,
+            Action::Select
+                if self.connected.is_some()
+                    && self.picker.selected().map(|p| &p.name) == self.connected.as_ref() =>
+            {
+                self.mode = Mode::Browse;
+                let note = format!(
+                    "already connected to {}",
+                    self.connected.as_deref().unwrap_or("")
+                );
+                self.set_note(Note::info(note), Instant::now());
+            }
             Action::Up => self.picker.up(),
             Action::Down => self.picker.down(),
             Action::CycleSort => {
@@ -181,6 +209,9 @@ impl App {
         if let Some(t) = self.picker.last_used.remove(old) {
             self.picker.last_used.insert(new.to_owned(), t);
         }
+        if self.connected.as_deref() == Some(old) {
+            self.connected = Some(new.to_owned());
+        }
     }
 
     /// A profile edit was saved (`original` = its old name, if any).
@@ -200,6 +231,9 @@ impl App {
 
     pub fn profile_deleted(&mut self, name: &str) {
         self.picker.last_used.remove(name);
+        if self.connected.as_deref() == Some(name) {
+            self.connected = None;
+        }
     }
 
     pub fn profile_save_failed(&mut self, err: String) {

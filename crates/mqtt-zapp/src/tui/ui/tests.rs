@@ -1102,3 +1102,50 @@ fn help_overlay_lists_effective_keymap() {
         assert!(s.contains(want), "{want}: {s}");
     }
 }
+
+#[test]
+fn picker_title_and_marker_show_connected() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use mqtt_zapp_core::config::PasswordSource::None as N;
+    let mut a = picker_app(vec![profile("home", N), profile("lab", N)]);
+    a.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    a.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+    let s = text(&draw(&mut a, 80, 24));
+    assert!(s.contains("pick a broker · custom · connected: lab"), "{s}");
+    let lab = s
+        .lines()
+        .find(|l| l.contains("lab ") && l.contains("://"))
+        .unwrap();
+    assert!(lab.contains('●'), "{lab}");
+    let home = s
+        .lines()
+        .find(|l| l.contains("home ") && l.contains("://"))
+        .unwrap();
+    assert!(!home.contains('●'), "{home}");
+    assert!(s.contains("esc back"), "{s}");
+    a.profile_deleted("lab");
+    let s = text(&draw(&mut a, 80, 24));
+    let lab = s
+        .lines()
+        .find(|l| l.contains("lab ") && l.contains("://"))
+        .unwrap();
+    assert!(!lab.contains('●') && !s.contains("connected:"), "{s}");
+}
+
+#[test]
+fn click_broker_name_opens_picker() {
+    let mut a = app_with(&[("a", b"1")]);
+    a.server = Some(home());
+    let b = draw(&mut a, 120, 24);
+    let (x, y) = find_at(&b, "home");
+    assert_eq!(y, 0);
+    assert!(matches!(click(&mut a, x + 1, y), Effect::None));
+    assert_eq!(a.mode, Mode::Picker);
+    // The badge left of it does nothing.
+    let mut a = app_with(&[("a", b"1")]);
+    a.server = Some(home());
+    let _ = draw(&mut a, 120, 24);
+    click(&mut a, 2, 0);
+    assert_eq!(a.mode, Mode::Browse);
+}

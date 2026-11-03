@@ -271,6 +271,9 @@ pub struct App {
     pub password: Option<PasswordState>,
     /// The broker last connected to, shown in the header.
     pub server: Option<ServerInfo>,
+    /// The saved profile the session is on, marked in the picker; `None`
+    /// for an ad-hoc `--host` session. Follows renames, cleared on delete.
+    pub connected: Option<String>,
     /// Why `profiles.toml` could not be loaded; shown in the empty picker.
     pub store_error: Option<String>,
     /// Open while in `Mode::Publish`.
@@ -346,6 +349,7 @@ impl App {
             picker: PickerState::new(store.profiles, &Default::default()),
             password: None,
             server: None,
+            connected: None,
             store_error: None,
             publish: None,
             status_note: None,
@@ -778,6 +782,7 @@ impl App {
                 self.payload_scroll = 0;
             }
             Action::MarkDiffBase => self.mark_diff_base(),
+            Action::Brokers => self.open_brokers(),
             Action::ScrollDown => self.scroll_payload(true),
             Action::ScrollUp => self.scroll_payload(false),
             Action::Top => self.move_selection(|_, _| 0),

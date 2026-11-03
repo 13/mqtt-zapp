@@ -62,27 +62,40 @@ fn render_front(f: &mut Frame, app: &App, area: Rect) {
     let [main, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
     match (app.mode, &app.password) {
         (Mode::ProfileForm, _) => {
-            let _ = super::picker::render_picker(f, main, &app.picker, None);
+            let _ =
+                super::picker::render_picker(f, main, &app.picker, None, app.connected.as_deref());
             if let Some(form) = &app.profile_form {
                 super::profile_form::render(f, main, form);
             }
         }
         (Mode::Confirm, _) => {
-            let _ = super::picker::render_picker(f, main, &app.picker, None);
+            let _ =
+                super::picker::render_picker(f, main, &app.picker, None, app.connected.as_deref());
             if let Some(c) = &app.confirm {
                 render_confirm(f, main, c);
             }
         }
         (Mode::Password, Some(st)) => {
             if !app.picker.profiles.is_empty() {
-                let _ = super::picker::render_picker(f, main, &app.picker, None);
+                let _ = super::picker::render_picker(
+                    f,
+                    main,
+                    &app.picker,
+                    None,
+                    app.connected.as_deref(),
+                );
                 theme::dim_backdrop(f, main);
             }
             super::picker::render_password(f, main, st)
         }
         _ => {
-            let (card, skip) =
-                super::picker::render_picker(f, main, &app.picker, app.store_error.as_deref());
+            let (card, skip) = super::picker::render_picker(
+                f,
+                main,
+                &app.picker,
+                app.store_error.as_deref(),
+                app.connected.as_deref(),
+            );
             app.hit.set(HitAreas {
                 picker: card,
                 picker_skip: skip,
@@ -100,7 +113,16 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(1),
     ])
     .areas(area);
-    f.render_widget(Paragraph::new(header_line(app, area.width)), header);
+    let (top, broker) = header_line(app, area.width);
+    f.render_widget(Paragraph::new(top), header);
+    app.hit.set(HitAreas {
+        header_broker: broker.map_or(Rect::default(), |(x, w)| Rect {
+            x: header.x + x,
+            width: w,
+            ..header
+        }),
+        ..app.hit.get()
+    });
     // Payloads need the width; below `STACK_BELOW` columns the panes stack.
     let stacked = main.width < STACK_BELOW;
     let [tree, message] = if stacked {
@@ -211,6 +233,7 @@ const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
             Action::Publish,
             Action::CopyTopic,
             Action::CopyPayload,
+            Action::Brokers,
             Action::Help,
             Action::Cancel,
             Action::Quit,
@@ -553,8 +576,11 @@ fn hints(app: &App) -> Vec<(String, &'static str)> {
                 "reorder",
             ),
             (k(Action::CycleSort), "sort"),
-            (k(Action::Quit), "quit"),
-        ],
+        ]
+        .into_iter()
+        .chain(app.in_session().then(|| (k(Action::Cancel), "back")))
+        .chain([(k(Action::Quit), "quit")])
+        .collect(),
         (Mode::Password, _) if app.picker.profiles.is_empty() => {
             vec![("enter".into(), "connect"), ("esc".into(), "quit")]
         }
@@ -692,8 +718,9 @@ fn ellipsize(s: &str, max: usize) -> String {
 
 /// ` mqtt-zapp  ● connected  name  url ……… rate · topics`. When the line is
 /// too wide the url goes first, then the stats, then the name; the state
-/// pill is cut last.
-fn header_line(app: &App, width: u16) -> Line<'static> {
+/// pill is cut last. Also returns where the broker name was drawn (x, width),
+/// a click target for the picker.
+fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16, u16)>) {
     let width = usize::from(width);
     let badge = Span::styled(
         " mqtt-zapp ",
@@ -764,6 +791,10 @@ fn header_line(app: &App, width: u16) -> Line<'static> {
     let room = width.saturating_sub(fixed + prefix.width() + suffix.width());
     let state = format!("{prefix}{}{suffix}", ellipsize(&reason, room));
     let mut spans = vec![badge, Span::raw(" "), Span::styled(state, pill_style)];
+    let broker = name.as_ref().map(|n| {
+        let x = spans_width(&spans) + n[0].width();
+        (x as u16, n[1].width() as u16)
+    });
     spans.extend(name.into_iter().flatten());
     spans.extend(url.into_iter().flatten());
     if let Some(stats) = stats {
@@ -771,7 +802,7 @@ fn header_line(app: &App, width: u16) -> Line<'static> {
         spans.push(Span::raw(" ".repeat(pad)));
         spans.push(stats);
     }
-    Line::from(spans)
+    (Line::from(spans), broker)
 }
 
 #[cfg(test)]

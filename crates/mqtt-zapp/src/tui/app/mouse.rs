@@ -26,6 +26,8 @@ pub struct HitAreas {
     pub header_topic: Rect,
     /// The payload pane's `⧉ copy` title; a click copies the payload.
     pub payload_copy: Rect,
+    /// The broker name in the top bar; a click opens the picker.
+    pub header_broker: Rect,
 }
 
 fn inner(r: Rect) -> Rect {
@@ -88,6 +90,9 @@ impl App {
     }
 
     fn browse_click(&mut self, at: Position, hit: HitAreas) -> Effect {
+        if hit.header_broker.contains(at) {
+            return self.handle_action(Action::Brokers);
+        }
         // The copy targets sit on top of the panes, so they go first.
         if hit.header_topic.contains(at) {
             return self.copy(true);

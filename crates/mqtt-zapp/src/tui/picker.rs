@@ -169,12 +169,14 @@ pub fn server_url(p: &Profile) -> String {
 }
 
 /// The broker list as a centred card: `▶ name  url`, names padded to line up.
-/// Returns the card and how many profiles were scrolled off its top.
+/// The profile the session is on (`connected`) gets a `●` and is named in
+/// the title. Returns the card and how many profiles were scrolled off its top.
 pub fn render_picker(
     f: &mut Frame,
     area: Rect,
     st: &PickerState,
     error: Option<&str>,
+    connected: Option<&str>,
 ) -> (Rect, usize) {
     let mut skipped = 0;
     let muted = Style::new().fg(theme::MUTED);
@@ -215,7 +217,11 @@ pub fn render_picker(
                             format!("{name}{}", " ".repeat(pad - name.width())),
                             Style::new().add_modifier(Modifier::BOLD),
                         ),
-                        Span::raw("  "),
+                        if connected == Some(p.name.as_str()) {
+                            Span::styled(" ● ", Style::new().fg(theme::OK))
+                        } else {
+                            Span::raw("   ")
+                        },
                         Span::styled(server_url(p), muted),
                     ]);
                     if sel { theme::select(line, true) } else { line }
@@ -224,13 +230,14 @@ pub fn render_picker(
         v
     };
     let card = theme::centered(area, 72, lines.len() as u16 + 3);
-    f.render_widget(
-        Paragraph::new(lines).block(theme::pane(
-            &format!("mqtt-zapp · pick a broker · {}", st.sort.name()),
-            true,
-        )),
-        card,
-    );
+    let mut title = format!("mqtt-zapp · pick a broker · {}", st.sort.name());
+    if let Some(name) = connected.filter(|n| st.profiles.iter().any(|p| p.name == *n)) {
+        title.push_str(&format!(
+            " · connected: {}",
+            sanitize(name).replace('\n', " ")
+        ));
+    }
+    f.render_widget(Paragraph::new(lines).block(theme::pane(&title, true)), card);
     (card, skipped)
 }
 
@@ -405,7 +412,7 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 10);
         let mut t = ratatui::Terminal::new(backend).unwrap();
         t.draw(|f| {
-            render_picker(f, f.area(), &st, None);
+            render_picker(f, f.area(), &st, None, None);
         })
         .unwrap();
         let text: String = t

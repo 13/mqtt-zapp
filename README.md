@@ -31,6 +31,10 @@ mqtt-zapp --profile home                   # saved profile
 mqtt-zapp --host 192.168.1.10              # ad-hoc, plain mqtt on 1883
 ```
 
+To switch brokers while connected, press `b` (or click the broker name in the
+top bar). The picker opens with the current profile marked `●`; the session
+keeps running until you pick another one, and `esc` goes back to it.
+
 ### Profiles
 
 In the picker, `a` adds a profile, `e` edits the selected one and `D` deletes
@@ -82,6 +86,7 @@ time.
 | `tab` | `focus_next` | Switch pane |
 | `enter` | `select` | Select |
 | `d` | `toggle_diff` | Diff against the previous message (or the marked one) |
+| `b` | `brokers` | Switch broker: open the picker (esc returns) |
 | `m` | `mark_diff_base` | Mark the shown history entry as the diff base (again: unmark) |
 | `?` | `help` | Show the key help |
 | `q` | `quit` | Quit |

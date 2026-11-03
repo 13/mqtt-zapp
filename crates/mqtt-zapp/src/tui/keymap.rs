@@ -40,6 +40,7 @@ pub enum Action {
     MoveUp,
     MoveDown,
     MarkDiffBase,
+    Brokers,
 }
 
 impl Action {
@@ -77,6 +78,7 @@ impl Action {
         (Action::MoveUp, "move_up", &["K"]),
         (Action::MoveDown, "move_down", &["J"]),
         (Action::MarkDiffBase, "mark_diff_base", &["m"]),
+        (Action::Brokers, "brokers", &["b"]),
     ];
 
     /// The snake_case name used in `[keys]`.

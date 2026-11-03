@@ -1290,3 +1290,123 @@ fn move_at_edge_in_name_sort_changes_nothing() {
     assert!(matches!(press(&mut a, 'K'), Effect::None));
     assert_eq!(a.picker.sort, PickerSort::Name);
 }
+
+/// Connected to `lab` (second of home/lab/vault) through the picker.
+fn session_on_lab() -> App {
+    let mut a = picker_app(vec![
+        profile("home", PasswordSource::None),
+        profile("lab", PasswordSource::None),
+        profile("vault", PasswordSource::Prompt),
+    ]);
+    a.handle_key(key(KeyCode::Down));
+    assert!(matches!(a.handle_key(key(KeyCode::Enter)), Effect::Connect(p, _) if p.name == "lab"));
+    a.picker.sel = 0;
+    a
+}
+
+#[test]
+fn b_opens_picker_on_connected_profile() {
+    let mut a = session_on_lab();
+    assert!(matches!(press(&mut a, 'b'), Effect::None));
+    assert_eq!(a.mode, Mode::Picker);
+    assert_eq!(a.picker.selected().unwrap().name, "lab");
+    assert!(a.in_session());
+}
+
+#[test]
+fn esc_in_picker_returns_to_session() {
+    let mut a = session_on_lab();
+    press(&mut a, 'b');
+    assert!(matches!(a.handle_key(key(KeyCode::Esc)), Effect::None));
+    assert_eq!(a.mode, Mode::Browse);
+    press(&mut a, 'b');
+    assert!(matches!(press(&mut a, 'b'), Effect::None));
+    assert_eq!(a.mode, Mode::Browse);
+}
+
+#[test]
+fn esc_in_picker_without_session_does_nothing() {
+    let mut a = picker_app(vec![profile("home", PasswordSource::None)]);
+    assert!(!a.in_session());
+    assert!(matches!(a.handle_key(key(KeyCode::Esc)), Effect::None));
+    assert!(matches!(press(&mut a, 'b'), Effect::None));
+    assert_eq!(a.mode, Mode::Picker);
+}
+
+#[test]
+fn enter_on_connected_profile_returns_without_reconnect() {
+    let mut a = session_on_lab();
+    press(&mut a, 'b');
+    assert!(matches!(a.handle_key(key(KeyCode::Enter)), Effect::None));
+    assert_eq!(a.mode, Mode::Browse);
+    assert_eq!(
+        a.note_at(Instant::now()),
+        Some(&Note::info("already connected to lab"))
+    );
+}
+
+#[test]
+fn enter_on_other_profile_switches() {
+    let mut a = session_on_lab();
+    press(&mut a, 'b');
+    a.handle_key(key(KeyCode::Up));
+    assert!(matches!(a.handle_key(key(KeyCode::Enter)), Effect::Connect(p, _) if p.name == "home"));
+    assert_eq!(a.server.as_ref().unwrap().name, "home");
+}
+
+#[test]
+fn switch_password_esc_returns_to_picker_session_intact() {
+    let mut a = session_on_lab();
+    press(&mut a, 'b');
+    a.handle_key(key(KeyCode::Down));
+    assert!(matches!(a.handle_key(key(KeyCode::Enter)), Effect::None));
+    assert_eq!(a.mode, Mode::Password);
+    assert!(matches!(a.handle_key(key(KeyCode::Esc)), Effect::None));
+    assert_eq!(a.mode, Mode::Picker);
+    assert!(a.in_session());
+    assert_eq!(a.server.as_ref().unwrap().name, "lab");
+    assert_eq!(a.connected.as_deref(), Some("lab"));
+}
+
+#[test]
+fn messages_keep_arriving_while_picking() {
+    let mut a = session_on_lab();
+    press(&mut a, 'b');
+    a.apply_core_event(msg("still/here", "1"));
+    a.handle_key(key(KeyCode::Esc));
+    assert!(a.tree.find("still/here").is_some());
+}
+
+#[test]
+fn connected_marker_follows_rename_and_delete() {
+    let mut a = session_on_lab();
+    a.profile_renamed("lab", "lab2");
+    assert_eq!(a.connected.as_deref(), Some("lab2"));
+    a.profile_deleted("lab2");
+    assert_eq!(a.connected, None);
+    assert!(a.in_session(), "deleting the profile keeps the session");
+}
+
+#[test]
+fn adhoc_session_marks_nothing() {
+    let mut a = App::new(
+        Launch::Connect(profile("adhoc", PasswordSource::None)),
+        ProfileStore {
+            profiles: vec![Profile {
+                host: "other".into(),
+                ..profile("adhoc", PasswordSource::None)
+            }],
+        },
+        Settings::default(),
+    )
+    .unwrap();
+    assert!(matches!(a.startup_effect(), Effect::Connect(..)));
+    assert_eq!(a.connected, None);
+    press(&mut a, 'b');
+    assert_eq!(a.mode, Mode::Picker);
+    // A saved profile that happens to share the ad-hoc name still connects.
+    assert!(matches!(
+        a.handle_key(key(KeyCode::Enter)),
+        Effect::Connect(..)
+    ));
+}
