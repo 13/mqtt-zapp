@@ -464,6 +464,9 @@ impl App {
         self.set_filter(None);
         // The new tree starts its `shape_gen` over: never reuse old rows.
         self.rows_cache.take();
+        // Picker frames don't draw the tree: a click before the next tree
+        // frame must not hit the old tree's rows.
+        self.drawn_rows.take();
         self.search.clear();
         self.tree_offset = 0;
         self.msg_rate = MsgRate::default();

@@ -133,7 +133,7 @@ impl App {
             return;
         }
         let idx = usize::from(at.y - area.y) + self.tree_offset;
-        let Some(row) = self.drawn_rows().get(idx).copied() else {
+        let Some(row) = self.drawn_row(idx) else {
             return;
         };
         let marker = area.x + row.depth.saturating_mul(2);
@@ -145,6 +145,16 @@ impl App {
         }
     }
 
+    /// The drawn row at `idx`, unless its node is not in the current tree
+    /// (rows drawn before a reset or a delete); `is_alive` is also false
+    /// for an id past the end.
+    fn drawn_row(&self, idx: usize) -> Option<super::Row> {
+        self.drawn_rows()
+            .get(idx)
+            .copied()
+            .filter(|r| self.tree.is_alive(r.id))
+    }
+
     /// A right click on a tree row copies that row's topic; the selection
     /// stays where it was.
     fn tree_copy_click(&mut self, at: Position, area: Rect) -> Effect {
@@ -152,7 +162,7 @@ impl App {
             return Effect::None;
         }
         let idx = usize::from(at.y - area.y) + self.tree_offset;
-        match self.drawn_rows().get(idx) {
+        match self.drawn_row(idx) {
             Some(row) => Effect::Copy {
                 what: "topic",
                 text: mqtt_zapp_core::payload::clipboard_safe(

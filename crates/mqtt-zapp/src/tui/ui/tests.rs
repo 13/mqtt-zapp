@@ -468,6 +468,36 @@ fn tree_click_uses_drawn_rows() {
 }
 
 #[test]
+fn tree_click_after_reset_tree_does_not_panic() {
+    let names: Vec<String> = (0..20).map(|i| format!("t{i:02}")).collect();
+    let items: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b"1"[..])).collect();
+    let mut a = app_with(&items);
+    let b = draw(&mut a, 100, 30);
+    let y = tree_row(&b, "t19");
+    // A broker switch: the picker frames that follow never draw the tree.
+    a.reset_tree();
+    a.apply_core_event(CoreEvent::Message {
+        topic: "x".into(),
+        msg: Message {
+            payload: Bytes::copy_from_slice(b"1"),
+            qos: 0,
+            retain: false,
+            received_at: SystemTime::now(),
+            truncated_from: None,
+        },
+    });
+    click(&mut a, 10, y);
+    use crossterm::event::{MouseButton, MouseEventKind};
+    let _ = mouse(&mut a, MouseEventKind::Down(MouseButton::Right), 10, y);
+    assert!(
+        a.selected.is_none_or(|s| a.tree.is_alive(s) && s < a.tree.len()),
+        "{:?}",
+        a.selected
+    );
+    draw(&mut a, 100, 30);
+}
+
+#[test]
 fn publish_keys_in_footer() {
     let mut a = app_with(&[("a", b"1")]);
     a.handle_action(Action::Publish);
