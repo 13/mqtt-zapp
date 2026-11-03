@@ -206,6 +206,27 @@ impl ProfileStore {
         }
     }
 
+    /// Add `profile` (`old_name` = `None`) or replace the profile named
+    /// `old_name` in place, possibly under a new name. Refuses a name that
+    /// another profile already has.
+    pub fn replace(&mut self, old_name: Option<&str>, profile: Profile) -> Result<()> {
+        if self
+            .profiles
+            .iter()
+            .any(|p| p.name == profile.name && Some(p.name.as_str()) != old_name)
+        {
+            anyhow::bail!("profile '{}' already exists", profile.name);
+        }
+        match old_name {
+            None => self.profiles.push(profile),
+            Some(old) => match self.profiles.iter_mut().find(|p| p.name == old) {
+                Some(slot) => *slot = profile,
+                None => anyhow::bail!("unknown profile '{old}'"),
+            },
+        }
+        Ok(())
+    }
+
     pub fn remove(&mut self, name: &str) -> bool {
         let before = self.profiles.len();
         self.profiles.retain(|p| p.name != name);
@@ -343,6 +364,35 @@ mod tests {
         assert_eq!(s.get("a").unwrap().port, 1);
         assert!(s.remove("a"));
         assert!(!s.remove("a"));
+    }
+
+    #[test]
+    fn replace_renames_in_place() {
+        let mut s = ProfileStore::default();
+        s.upsert(sample("a"));
+        s.upsert(sample("b"));
+        s.replace(Some("a"), sample("z")).unwrap();
+        let names: Vec<_> = s.profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["z", "b"]);
+        s.replace(None, sample("c")).unwrap();
+        assert_eq!(s.profiles.len(), 3);
+    }
+
+    #[test]
+    fn replace_refuses_collision() {
+        let mut s = ProfileStore::default();
+        s.upsert(sample("a"));
+        s.upsert(sample("b"));
+        let e = s.replace(Some("a"), sample("b")).unwrap_err().to_string();
+        assert!(e.contains("profile 'b' already exists"), "{e}");
+        assert!(s.replace(None, sample("a")).is_err());
+        let e = s
+            .replace(Some("nope"), sample("x"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("unknown profile 'nope'"), "{e}");
+        s.replace(Some("a"), sample("a")).unwrap(); // same name: plain edit
+        assert_eq!(s.profiles.len(), 2);
     }
 
     #[test]
