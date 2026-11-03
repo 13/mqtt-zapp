@@ -880,6 +880,9 @@ fn ellipsize(s: &str, max: usize) -> String {
     out
 }
 
+/// Header cells a disconnect reason keeps before anything else is cut.
+const REASON_MIN: usize = 12;
+
 /// ` mqtt-zapp  ● connected  name  url ……… rate · topics`. When the line is
 /// too wide the url goes first, then the stats, then the name; the state
 /// pill is cut last. Also returns where the broker name was drawn (x, width),
@@ -959,7 +962,10 @@ fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16, u16)>) {
         .frozen
         .then(|| Span::styled(" · ❄ frozen", Style::new().fg(theme::WARN)));
     let fixed = badge.width() + 1 + frozen.as_ref().map_or(0, Span::width);
-    let pill_w = prefix.width() + reason.width() + suffix.width();
+    // The cuts count the reason at most `REASON_MIN` wide: it is ellipsized
+    // into whatever is left, so a long one must not push the rest out.
+    let reason_w = reason.width().min(REASON_MIN);
+    let pill_w = prefix.width() + reason_w + suffix.width();
     let total = |name: &Option<Vec<Span>>,
                  url: &Option<Vec<Span>>,
                  stats: &Option<Span>,
@@ -988,13 +994,7 @@ fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16, u16)>) {
     if total(&name, &url, &stats, &warn, &security) > width {
         security = None;
     }
-    let room = width.saturating_sub(
-        fixed
-            + prefix.width()
-            + suffix.width()
-            + warn.as_ref().map_or(0, Span::width)
-            + security.as_ref().map_or(0, Span::width),
-    );
+    let room = width.saturating_sub(total(&name, &url, &stats, &warn, &security) - reason_w);
     let state = format!("{prefix}{}{suffix}", ellipsize(&reason, room));
     let mut spans = vec![badge, Span::raw(" "), Span::styled(state, pill_style)];
     spans.extend(frozen);

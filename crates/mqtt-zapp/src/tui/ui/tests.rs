@@ -490,7 +490,8 @@ fn tree_click_after_reset_tree_does_not_panic() {
     use crossterm::event::{MouseButton, MouseEventKind};
     let _ = mouse(&mut a, MouseEventKind::Down(MouseButton::Right), 10, y);
     assert!(
-        a.selected.is_none_or(|s| a.tree.is_alive(s) && s < a.tree.len()),
+        a.selected
+            .is_none_or(|s| a.tree.is_alive(s) && s < a.tree.len()),
         "{:?}",
         a.selected
     );
@@ -1729,6 +1730,29 @@ fn header_shows_security_warning() {
     let top = first_line(&b);
     assert!(top.contains("⚠ unverified tls"), "{top}");
     assert!(!top.contains("dropped"), "{top}");
+}
+
+#[test]
+fn security_warning_survives_long_disconnect_reason() {
+    let mut a = app_with(&[("a", b"1")]);
+    a.server = Some(ServerInfo {
+        warning: Some("password in cleartext"),
+        ..home()
+    });
+    a.apply_core_event(CoreEvent::State(
+        mqtt_zapp_core::client::ConnState::Disconnected {
+            reason: "r".repeat(100),
+            retry_in_ms: 2000,
+        },
+    ));
+    let top = first_line(&draw(&mut a, 80, 24));
+    assert!(top.contains("⚠ password in cleartext"), "{top}");
+    assert!(top.contains('…'), "the reason is ellipsized: {top}");
+    assert!(top.contains("retry 2s"), "{top}");
+    assert!(
+        !top.contains("mqtts://"),
+        "the url goes before the warning: {top}"
+    );
 }
 
 #[test]
