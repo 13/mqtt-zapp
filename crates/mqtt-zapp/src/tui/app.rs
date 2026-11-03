@@ -583,6 +583,16 @@ impl App {
         self.dirty = true;
     }
 
+    /// A note from a background task (publish or clear result): stored like
+    /// `set_note`, but a frozen display shows it at the next input-driven draw.
+    pub fn set_background_note(&mut self, note: Note, now: Instant) {
+        let dirty = self.dirty;
+        self.set_note(note, now);
+        if self.frozen {
+            self.dirty = dirty;
+        }
+    }
+
     pub fn set_note(&mut self, note: Note, now: Instant) {
         self.status_note = Some((note, now));
         self.dirty = true;

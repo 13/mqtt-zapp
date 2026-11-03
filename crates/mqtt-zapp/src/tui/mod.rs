@@ -282,7 +282,7 @@ async fn event_loop(
                 // The connection task ended.
                 None => session.rx = None,
             },
-            Some(note) = notes.recv() => app.set_note(note, Instant::now()),
+            Some(note) = notes.recv() => app.set_background_note(note, Instant::now()),
             _ = tick.tick() => {
                 app.on_tick();
                 if app.dirty {

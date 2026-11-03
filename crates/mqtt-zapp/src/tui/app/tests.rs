@@ -1869,8 +1869,9 @@ fn freeze_key_toggles_and_redraws() {
         Some(&Note::info("display frozen – f to resume"))
     );
     a.dirty = false;
-    // Input still redraws while frozen, through the tick.
+    // A tick alone does not redraw a frozen display; a key does.
     a.on_tick();
+    assert!(!a.dirty);
     a.handle_key(key(KeyCode::Char('j')));
     assert!(a.dirty);
     a.handle_key(key(KeyCode::Char('f')));
@@ -1886,4 +1887,32 @@ fn resize_redraws_while_frozen() {
     a.on_resize();
     a.on_tick();
     assert!(a.dirty, "a resize always redraws");
+}
+
+#[test]
+fn background_note_does_not_redraw_while_frozen() {
+    let mut a = browse(&["a"]);
+    a.frozen = true;
+    a.dirty = false;
+    let now = Instant::now();
+    a.set_background_note(Note::info("published"), now);
+    a.on_tick();
+    assert!(
+        !a.dirty,
+        "a background result must not redraw a frozen display"
+    );
+    assert_eq!(a.note_at(now), Some(&Note::info("published")));
+    a.frozen = false;
+    a.set_background_note(Note::info("cleared 3 retained"), now);
+    assert!(a.dirty);
+}
+
+#[test]
+fn f_types_in_search_input_while_frozen() {
+    let mut a = search_app();
+    a.frozen = true;
+    a.handle_key(key(KeyCode::Char('/')));
+    a.handle_key(key(KeyCode::Char('f')));
+    assert_eq!(a.search, "f");
+    assert!(a.frozen, "f in the search input is text, not the toggle");
 }
