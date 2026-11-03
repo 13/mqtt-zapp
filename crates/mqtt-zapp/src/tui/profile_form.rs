@@ -522,7 +522,7 @@ pub fn render(f: &mut Frame, area: Rect, form: &ProfileForm) {
     let card = theme::centered(area, 72, fields.len() as u16 + 4);
     f.render_widget(Clear, card);
     let title = match &form.original {
-        Some(name) => format!("edit profile · {name}"),
+        Some(name) => format!("edit profile · {}", sanitize(name).replace('\n', " ")),
         None => "add profile".into(),
     };
     let block = match &form.error {
@@ -886,6 +886,20 @@ mod tests {
         let all = rows.join("\n");
         assert!(!all.contains('\x1b'));
         assert!(all.contains("evil"));
+    }
+
+    #[test]
+    fn error_title_sanitizes_profile_name() {
+        let p = sample("x\x1b[2J", PasswordSource::None);
+        let mut f = ProfileForm::new(Some(&p), vec![]);
+        goto(&mut f, PField::Host);
+        f.on_key(key(KeyCode::Backspace));
+        save(&mut f);
+        assert_eq!(f.error.as_deref(), Some("host is required"));
+        for (w, h) in [(80, 24), (40, 10)] {
+            let all = draw(&f, w, h).join("\n");
+            assert!(!all.contains('\x1b'), "{w}x{h}: {all}");
+        }
     }
 
     #[test]
