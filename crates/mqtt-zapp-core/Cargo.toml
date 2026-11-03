@@ -12,10 +12,16 @@ directories = "5"
 rand = "0.8"
 anyhow = "1"
 keyring = { version = "3", optional = true, features = ["sync-secret-service", "crypto-rust"] }
+rumqttc = { version = "0.24", features = ["use-rustls", "websocket"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+tokio-util = "0.7"
+rustls-pemfile = "2"
+rustls-native-certs = "0.7"
 
 [features]
 default = ["keyring"]
 keyring = ["dep:keyring"]
 
 [dev-dependencies]
+rcgen = "0.14"
 tempfile = "3"
