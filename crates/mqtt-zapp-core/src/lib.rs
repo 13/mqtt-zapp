@@ -1,3 +1,4 @@
+pub mod diff;
 pub mod payload;
 pub mod search;
 pub mod tree;
