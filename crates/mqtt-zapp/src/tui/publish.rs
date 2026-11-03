@@ -54,8 +54,8 @@ pub struct PublishForm {
 
 impl PublishForm {
     /// `prefill_topic` is used verbatim so the form publishes to exactly the
-    /// selected topic. Rendering is terminal-safe: ratatui's `Buffer`
-    /// drops graphemes containing control characters.
+    /// selected topic. Rendering goes through `topic_line`, which sanitizes
+    /// per char, so control characters never reach the terminal.
     pub fn new(prefill_topic: &str) -> PublishForm {
         let mut topic = TextArea::new(vec![prefill_topic.to_owned()]);
         topic.move_cursor(tui_textarea::CursorMove::End);
@@ -198,7 +198,10 @@ pub fn render(f: &mut Frame, area: Rect, form: &PublishForm) {
         Paragraph::new("topic: ").style(label_style(form, Field::Topic)),
         label,
     );
-    f.render_widget(Paragraph::new(topic_line(form)), topic);
+    f.render_widget(
+        Paragraph::new(topic_line(form, topic.width as usize)),
+        topic,
+    );
     let block = Block::new()
         .borders(Borders::TOP)
         .title("payload")
@@ -216,26 +219,47 @@ pub fn render(f: &mut Frame, area: Rect, form: &PublishForm) {
 /// The topic line, drawn by hand rather than by the text area: the text area
 /// hands control characters (a broker topic may contain ESC) to the buffer
 /// unfiltered, so each char is sanitized here, one for one, keeping the
-/// cursor position. The text itself stays raw, so a send is exact.
-fn topic_line(form: &PublishForm) -> Line<'static> {
+/// cursor position. The text itself stays raw, so a send is exact. Chars are
+/// skipped from the left so the cursor stays inside `width` columns.
+fn topic_line(form: &PublishForm, width: usize) -> Line<'static> {
     let lines = form.topic.lines();
-    let cursor = (form.field == Field::Topic).then(|| form.topic.cursor().1);
-    let mut spans = Vec::new();
-    for (i, c) in lines.join("\u{23ce}").chars().enumerate() {
-        let text = sanitize(&c.to_string());
-        let style = if lines.len() == 1 && cursor == Some(i) {
-            Style::new().add_modifier(Modifier::REVERSED)
-        } else {
-            Style::new()
-        };
-        spans.push(Span::styled(text, style));
+    let single = lines.len() == 1;
+    let cursor = (single && form.field == Field::Topic).then(|| form.topic.cursor().1);
+    let mut cells: Vec<(String, bool)> = lines
+        .join("\u{23ce}")
+        .chars()
+        .enumerate()
+        .map(|(i, c)| {
+            let text = match c {
+                '\n' | '\r' => "\u{23ce}".to_owned(),
+                c => sanitize(&c.to_string()),
+            };
+            (text, cursor == Some(i))
+        })
+        .collect();
+    if cursor.is_some_and(|c| c >= cells.len()) {
+        cells.push((" ".into(), true));
     }
-    if lines.len() == 1 && cursor.is_some_and(|c| c >= lines[0].chars().count()) {
-        spans.push(Span::styled(
-            " ",
-            Style::new().add_modifier(Modifier::REVERSED),
-        ));
+    let widths: Vec<usize> = cells.iter().map(|(t, _)| t.chars().count()).collect();
+    let end = cells.iter().position(|(_, cur)| *cur).unwrap_or(0);
+    let mut skip = 0;
+    let mut used: usize = widths[..(end + 1).min(widths.len())].iter().sum();
+    while used > width && skip < end {
+        used -= widths[skip];
+        skip += 1;
     }
+    let spans = cells
+        .into_iter()
+        .skip(skip)
+        .map(|(t, cur)| {
+            let style = if cur {
+                Style::new().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::new()
+            };
+            Span::styled(t, style)
+        })
+        .collect::<Vec<_>>();
     Line::from(spans)
 }
 
@@ -397,11 +421,31 @@ mod tests {
     fn control_char_topic_renders_without_escape() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        let f = PublishForm::new("a/\x1b[2Jb\tc");
+        let f = PublishForm::new("a/\x1b[2Jb\tc\nd\re");
         let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
         t.draw(|fr| render(fr, fr.area(), &f)).unwrap();
         let b = t.backend().buffer().clone();
-        assert!(b.content.iter().all(|c| !c.symbol().contains('\x1b')));
+        assert!(
+            b.content
+                .iter()
+                .all(|c| !c.symbol().contains(['\x1b', '\n', '\r']))
+        );
+    }
+
+    #[test]
+    fn long_topic_scrolls_to_keep_cursor_visible() {
+        let long = format!("{}END", "x".repeat(100));
+        let f = PublishForm::new(&long);
+        let line = topic_line(&f, 20);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("END") && text.chars().count() <= 21, "{text}");
+        let cur = line
+            .spans
+            .iter()
+            .position(|s| s.style.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(cur, Some(line.spans.len() - 1), "cursor at end, visible");
+        let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+        assert!(used <= 20, "{used}");
     }
 
     #[test]
