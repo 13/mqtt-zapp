@@ -3,8 +3,9 @@
 //! Each change is read-modify-write against the file on disk, so profiles
 //! added meanwhile (e.g. with `mqtt-zapp profile add`) survive. Keyring
 //! writes that add a secret happen before the file is saved, so a keyring
-//! failure leaves the file untouched; old secrets are deleted only after the
-//! save, and failing to delete them does not fail the change.
+//! failure leaves the file untouched, and are undone if the save fails. Old
+//! secrets are deleted only after the save, and failing to delete them does
+//! not fail the change.
 
 use super::profile_form::ProfileEdit;
 use anyhow::{Result, bail};
@@ -45,18 +46,36 @@ pub fn persist_edit(edit: ProfileEdit, s: &dyn Secrets) -> Result<ProfileStore> 
     let new = edit.profile.clone();
     store.replace(edit.original.as_deref(), edit.profile)?;
     let keyring = new.password == PasswordSource::Keyring;
+    // The secret written below and the one it replaced, to undo on failure.
+    let mut written = None;
     if keyring {
-        match (&edit.password, &old) {
-            (Some(pw), _) => s.store(&new.name, pw)?,
-            (None, Some(o)) if *o != new.name => {
-                if let Some(pw) = s.load(o)? {
-                    s.store(&new.name, &pw)?;
+        let pw = match (&edit.password, &old) {
+            (Some(pw), _) => Some(pw.clone()),
+            (None, Some(o)) if *o != new.name => s.load(o)?,
+            (None, Some(_)) => None,
+            // The form believed a secret was stored, but on disk the
+            // profile does not use the keyring (changed meanwhile).
+            (None, None) => {
+                if s.load(&new.name)?.is_none() {
+                    bail!("type a password, or use prompt");
                 }
+                None
             }
-            _ => {}
+        };
+        if let Some(pw) = pw {
+            let previous = s.load(&new.name)?;
+            s.store(&new.name, &pw)?;
+            written = Some(previous);
         }
     }
-    store.save()?;
+    if let Err(e) = store.save() {
+        match written {
+            Some(Some(previous)) => _ = s.store(&new.name, &previous),
+            Some(None) => _ = s.delete(&new.name),
+            None => {}
+        }
+        return Err(e);
+    }
     if let Some(o) = old.filter(|o| !keyring || *o != new.name) {
         let _ = s.delete(&o);
     }
@@ -251,6 +270,55 @@ mod tests {
         assert!(e.contains("keyring locked"), "{e}");
         assert_eq!(names(&ProfileStore::load().unwrap()), ["a"]);
         assert_eq!(k.snapshot(), [("a".into(), "pw".into())], "old secret kept");
+    }
+
+    /// Make `profiles.toml` unwritable, so `save` fails after `load`.
+    fn read_only(d: &ConfigDir) {
+        use std::os::unix::fs::PermissionsExt;
+        let f = d.0.join("profiles.toml");
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o444)).unwrap();
+    }
+
+    #[test]
+    fn failed_save_restores_replaced_secret() {
+        let d = ConfigDir::new("restore");
+        on_disk(vec![profile("a", Keyring)]);
+        read_only(&d);
+        let k = FakeSecrets::with(&[("a", "old")]);
+        assert!(persist_edit(edit(Some("a"), profile("a", Keyring), Some("new")), &k).is_err());
+        assert_eq!(k.snapshot(), [("a".into(), "old".into())]);
+    }
+
+    #[test]
+    fn failed_save_leaves_no_orphan_secret() {
+        let d = ConfigDir::new("orphan");
+        on_disk(vec![profile("a", Keyring)]);
+        read_only(&d);
+        let k = FakeSecrets::with(&[("a", "pw")]);
+        assert!(persist_edit(edit(Some("a"), profile("b", Keyring), None), &k).is_err());
+        assert_eq!(k.snapshot(), [("a".into(), "pw".into())]);
+        let k = FakeSecrets::default();
+        assert!(persist_edit(edit(None, profile("n", Keyring), Some("x")), &k).is_err());
+        assert!(k.snapshot().is_empty());
+    }
+
+    #[test]
+    fn keyring_without_any_secret_is_refused() {
+        // The picker thought `a` used the keyring, but on disk it no longer
+        // does (changed with the CLI meanwhile), so there is no secret.
+        let _d = ConfigDir::new("nosecret");
+        on_disk(vec![profile("a", Prompt)]);
+        let e = persist_edit(
+            edit(Some("a"), profile("a", Keyring), None),
+            &FakeSecrets::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("type a password, or use prompt"), "{e}");
+        assert_eq!(ProfileStore::load().unwrap().profiles[0].password, Prompt);
+        // A secret already in the keyring under that name is fine.
+        let k = FakeSecrets::with(&[("a", "pw")]);
+        persist_edit(edit(Some("a"), profile("a", Keyring), None), &k).unwrap();
     }
 
     #[test]
