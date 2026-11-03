@@ -19,6 +19,8 @@ use std::time::Instant;
 
 pub const MIN_WIDTH: u16 = 40;
 pub const MIN_HEIGHT: u16 = 10;
+/// Narrower terminals show the tree above the message pane.
+const STACK_BELOW: u16 = 80;
 /// Rows that got a message within `app::FLASH` are drawn bold yellow.
 pub const FLASH_MODIFIER: Modifier = Modifier::BOLD;
 const FLASH_FG: Color = Color::Yellow;
@@ -64,8 +66,12 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
     ])
     .areas(area);
     f.render_widget(Paragraph::new(header_line(app, area.width)), header);
-    let [tree, message] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(main);
+    // Payloads need the width; below `STACK_BELOW` columns the panes stack.
+    let [tree, message] = if main.width < STACK_BELOW {
+        Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(main)
+    } else {
+        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(main)
+    };
     render_tree(f, app, tree);
     super::message_view::render_message(f, message, app);
     if let (Mode::Publish, Some(form)) = (app.mode, &app.publish) {
@@ -614,6 +620,34 @@ mod tests {
     }
 
     #[test]
+    fn narrow_terminal_stacks_panes() {
+        let names: Vec<String> = (0..40).map(|i| format!("t{i:02}")).collect();
+        let items: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b"1"[..])).collect();
+        let mut a = app_with(&items);
+        a.handle_action(Action::Down); // select something first
+        a.handle_action(Action::Bottom);
+        let b = draw(&mut a, 60, 30);
+        assert_eq!(b[(0, 1)].symbol(), "┏");
+        assert_eq!(b[(59, 1)].symbol(), "┓");
+        let s = text(&b);
+        let second = s
+            .lines()
+            .skip(2)
+            .position(|l| l.starts_with('╭'))
+            .expect("message pane below the tree");
+        assert!(second > 5, "{s}");
+        assert!(s.contains("t39"), "selected row visible: {s}");
+    }
+
+    #[test]
+    fn wide_terminal_splits_40_60() {
+        let mut a = app_with(&[("a", b"1")]);
+        let b = draw(&mut a, 100, 24);
+        assert_eq!(b[(39, 1)].symbol(), "┓");
+        assert_eq!(b[(40, 1)].symbol(), "╭");
+    }
+
+    #[test]
     fn tab_moves_thick_border_to_history() {
         let mut a = app_with(&[("a", b"1"), ("a", b"2")]);
         a.handle_action(Action::Down);
@@ -626,18 +660,18 @@ mod tests {
         };
         let b = draw(&mut a, 100, 24);
         let (x, y) = first_thick(&b);
-        assert!(x < 50, "tree focused: {x}");
+        assert!(x < 40, "tree focused: {x}");
         assert_eq!(b[(x, y)].symbol(), "┏");
         a.handle_action(Action::FocusNext);
         a.handle_action(Action::FocusNext);
         let b = draw(&mut a, 100, 24);
         let (x, _) = first_thick(&b);
-        assert!(x >= 50, "history focused: {x}");
+        assert!(x >= 40, "history focused: {x}");
         let tree_corner = (0..b.content.len())
             .find(|&i| b.content[i].symbol() == "╭")
             .map(|i| i as u16 % 100)
             .unwrap();
-        assert!(tree_corner < 50);
+        assert!(tree_corner < 40);
     }
 
     #[test]
@@ -666,7 +700,7 @@ mod tests {
                 .find(|l| l.contains(needle))
                 .unwrap_or_else(|| panic!("{needle}: {s}"))
                 .chars()
-                .take(40) // the tree pane at 80 columns
+                .take(32) // the tree pane at 80 columns
                 .collect::<String>()
         };
         // Counts are right-aligned against the pane's right border.
@@ -719,13 +753,13 @@ mod tests {
         assert!(last.starts_with("/wzr▏"), "{last}");
         assert!(last.ends_with("enter keep  esc clear"), "{last}");
         assert!(!s.contains("  b  1"), "non-matching row hidden: {s}");
-        let tree_part = |l: &str| l.chars().take(40).collect::<String>();
+        let tree_part = |l: &str| l.chars().take(32).collect::<String>();
         let row = s
             .lines()
             .position(|l| tree_part(l).contains("esp-WZR1  "))
             .unwrap();
         let line = s.lines().nth(row).unwrap();
-        let line = &line[..line.char_indices().nth(40).unwrap().0]; // tree pane
+        let line = &line[..line.char_indices().nth(32).unwrap().0]; // tree pane
         let col_of = |byte: usize| line[..byte].chars().count() as u16;
         let (name, prev) = (line.find("WZR").unwrap(), line.rfind("wzr").unwrap());
         let row = row as u16;

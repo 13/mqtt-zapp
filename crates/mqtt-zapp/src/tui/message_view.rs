@@ -234,7 +234,9 @@ fn metadata(s: &Shown, topic: &str, kind: &str) -> Line<'static> {
 
 pub fn render_message(f: &mut Frame, area: Rect, app: &App) {
     let Some(s) = shown(app) else {
-        let block = theme::pane("message", false);
+        // Payload and history focus both land here while there is nothing
+        // to show, so the focus stays visible.
+        let block = theme::pane("message", app.focus != Focus::Tree);
         let inner = block.inner(area);
         f.render_widget(block, area);
         let [_, mid] = Layout::vertical([
@@ -612,6 +614,16 @@ mod tests {
     fn not_retained_is_not_marked() {
         let a = app_with(&[b"hello"]);
         assert!(!text(&draw(&a)).contains("RETAINED"));
+    }
+
+    #[test]
+    fn placeholder_pane_shows_focus() {
+        let mut a = app_depth(10);
+        assert_eq!(draw(&a)[(0, 0)].symbol(), "╭");
+        a.focus = Focus::Payload;
+        assert_eq!(draw(&a)[(0, 0)].symbol(), "┏");
+        a.focus = Focus::History;
+        assert_eq!(draw(&a)[(0, 0)].symbol(), "┏");
     }
 
     #[test]
