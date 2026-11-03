@@ -2,7 +2,7 @@
 //! disconnect reasons) goes through `sanitize`/`preview` before it reaches
 //! the terminal.
 
-use super::app::{App, Mode};
+use super::app::{App, Focus, Mode};
 use super::rows::Row;
 use mqtt_zapp_core::TopicTree;
 use mqtt_zapp_core::client::ConnState;
@@ -21,6 +21,15 @@ pub const SELECTED_BG: Color = Color::DarkGray;
 pub const FLASH_MODIFIER: Modifier = Modifier::BOLD;
 const FLASH_FG: Color = Color::Yellow;
 const PREVIEW_CHARS: usize = 60;
+
+/// Border of a pane: highlighted while it has focus.
+pub fn border_style(focused: bool) -> Style {
+    if focused {
+        Style::new().fg(Color::Cyan)
+    } else {
+        Style::new()
+    }
+}
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -46,13 +55,14 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
     let [tree, message] =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(main);
     render_tree(f, app, tree);
-    // TODO(task 9): the message pane.
-    f.render_widget(Block::bordered().title("message"), message);
+    super::message_view::render_message(f, message, app);
     f.render_widget(Paragraph::new(status_text(app)), status);
 }
 
 fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
-    let block = Block::bordered().title("topics");
+    let block = Block::bordered()
+        .title("topics")
+        .border_style(border_style(app.focus == Focus::Tree));
     let height = block.inner(area).height as usize;
     let rows = app.rows();
     let selected = app

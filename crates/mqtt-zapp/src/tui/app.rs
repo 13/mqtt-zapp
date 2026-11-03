@@ -11,6 +11,7 @@ use mqtt_zapp_core::client::{ConnState, CoreEvent};
 use mqtt_zapp_core::config::{Profile, ProfileStore, Settings};
 use mqtt_zapp_core::search::{self, Filter};
 use mqtt_zapp_core::{NodeId, TopicTree};
+use std::cell::Cell;
 use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -31,6 +32,13 @@ pub enum Mode {
     Publish,
     #[allow(dead_code)] // TODO(task 11): help overlay
     Help,
+}
+
+/// Which pane the j/k keys drive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Tree,
+    History,
 }
 
 #[derive(Debug)]
@@ -93,6 +101,14 @@ pub struct App {
     pub msg_rate: MsgRate,
     /// First visible row of the tree pane; maintained by the renderer.
     pub tree_offset: usize,
+    pub focus: Focus,
+    /// Index into the selected node's `history` (0 = oldest); `None` follows
+    /// the latest message.
+    pub history_sel: Option<usize>,
+    pub show_diff: bool,
+    pub payload_scroll: u16,
+    /// Rows the payload area had in the last frame; sizes half-page scrolls.
+    pub payload_height: Cell<u16>,
     keymap: Keymap,
     history_depth: usize,
     pending_connect: Option<Profile>,
@@ -124,6 +140,11 @@ impl App {
             dirty: true,
             msg_rate: MsgRate::default(),
             tree_offset: 0,
+            focus: Focus::Tree,
+            history_sel: None,
+            show_diff: false,
+            payload_scroll: 0,
+            payload_height: Cell::new(0),
             keymap: Keymap::from_settings(&settings.keys)?,
             history_depth: settings.history_depth,
             pending_connect,
@@ -144,6 +165,8 @@ impl App {
         self.tree = TopicTree::new(self.history_depth);
         self.expanded.clear();
         self.selected = None;
+        self.history_sel = None;
+        self.payload_scroll = 0;
         self.filter = None;
         self.tree_offset = 0;
         self.msg_rate = MsgRate::default();
@@ -154,7 +177,18 @@ impl App {
         match ev {
             CoreEvent::State(s) => self.conn_state = s,
             CoreEvent::Message { topic, msg } => {
-                self.tree.insert(&topic, msg);
+                let before = self
+                    .tree
+                    .find(&topic)
+                    .map(|id| self.tree.node(id).history.len());
+                let id = self.tree.insert(&topic, msg);
+                // A full ring drops its oldest entry, shifting every index down
+                // by one; keep a frozen selection on its entry (or the oldest).
+                if before.is_some_and(|n| n > 0 && n == self.tree.node(id).history.len())
+                    && self.selected == Some(id)
+                {
+                    self.history_sel = self.history_sel.map(|i| i.saturating_sub(1));
+                }
                 self.msg_rate.record(Instant::now());
             }
         }
@@ -213,8 +247,22 @@ impl App {
         self.dirty = true;
         match action {
             Action::Quit => return Effect::Quit,
+            Action::Up if self.focus == Focus::History => self.history_older(),
+            Action::Down if self.focus == Focus::History => self.history_newer(),
             Action::Up => self.move_selection(|i, _| i.saturating_sub(1)),
             Action::Down => self.move_selection(|i, n| (i + 1).min(n - 1)),
+            Action::FocusNext => {
+                self.focus = match self.focus {
+                    Focus::Tree => Focus::History,
+                    Focus::History => Focus::Tree,
+                }
+            }
+            Action::ToggleDiff => {
+                self.show_diff = !self.show_diff;
+                self.payload_scroll = 0;
+            }
+            Action::ScrollDown => self.scroll_payload(true),
+            Action::ScrollUp => self.scroll_payload(false),
             Action::Top => self.move_selection(|_, _| 0),
             Action::Bottom => self.move_selection(|_, n| n - 1),
             Action::Expand => {
@@ -230,16 +278,49 @@ impl App {
                 }
             }
             Action::Collapse => self.collapse(),
-            // TODO(tasks 9-12): message pane, search, publish, help.
-            Action::Search
-            | Action::Publish
-            | Action::FocusNext
-            | Action::Select
-            | Action::ToggleDiff
-            | Action::Help
-            | Action::Cancel => {}
+            // TODO(tasks 10-12): search, publish, help.
+            Action::Search | Action::Publish | Action::Select | Action::Help | Action::Cancel => {}
         }
         Effect::None
+    }
+
+    fn history_len(&self) -> usize {
+        self.selected
+            .map_or(0, |id| self.tree.node(id).history.len())
+    }
+
+    /// `k` in the history list: towards older entries.
+    fn history_older(&mut self) {
+        let len = self.history_len();
+        let to = match self.history_sel {
+            None => len.checked_sub(2),
+            Some(i) => Some(i.saturating_sub(1)),
+        };
+        if let Some(i) = to {
+            self.history_sel = Some(i.min(len.saturating_sub(1)));
+            self.payload_scroll = 0;
+        }
+    }
+
+    /// `j` in the history list: towards newer entries; past the newest is live.
+    fn history_newer(&mut self) {
+        if let Some(i) = self.history_sel {
+            self.history_sel = (i + 1 < self.history_len()).then_some(i + 1);
+            self.payload_scroll = 0;
+        }
+    }
+
+    /// Half a page up or down, never past the end of the shown content.
+    fn scroll_payload(&mut self, down: bool) {
+        let height = self.payload_height.get();
+        let half = (height / 2).max(1);
+        let max = super::message_view::content_len(self).saturating_sub(height as usize);
+        let max = u16::try_from(max).unwrap_or(u16::MAX);
+        self.payload_scroll = if down {
+            self.payload_scroll.saturating_add(half).min(max)
+        } else {
+            self.payload_scroll.saturating_sub(half)
+        };
     }
 
     fn selected_row(&self) -> Option<Row> {
@@ -261,7 +342,16 @@ impl App {
             Some(i) => to(i, rows.len()),
             None => 0,
         };
-        self.selected = Some(rows[idx].id);
+        self.select(rows[idx].id);
+    }
+
+    /// Select a node; a different node starts with a live view at the top.
+    fn select(&mut self, id: NodeId) {
+        if self.selected != Some(id) {
+            self.history_sel = None;
+            self.payload_scroll = 0;
+        }
+        self.selected = Some(id);
     }
 
     /// Collapse an expanded node, otherwise move to its parent.
@@ -274,7 +364,7 @@ impl App {
         } else if let Some(parent) = self.tree.node(row.id).parent
             && parent != TopicTree::ROOT
         {
-            self.selected = Some(parent);
+            self.select(parent);
         }
     }
 }

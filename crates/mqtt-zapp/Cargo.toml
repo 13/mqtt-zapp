@@ -11,6 +11,7 @@ rpassword = "7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 ratatui = "0.29"
+chrono = "0.4"
 crossterm = { version = "0.28", features = ["event-stream"] }
 
 [features]

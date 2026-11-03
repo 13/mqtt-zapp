@@ -4,6 +4,7 @@
 
 mod app;
 mod keymap;
+mod message_view;
 mod rows;
 mod ui;
 

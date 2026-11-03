@@ -22,11 +22,13 @@ pub enum Action {
     Cancel,
     Top,
     Bottom,
+    ScrollDown,
+    ScrollUp,
 }
 
 impl Action {
     /// Every action with its settings name and default keys.
-    const DEFAULTS: [(Action, &'static str, &'static [&'static str]); 15] = [
+    const DEFAULTS: [(Action, &'static str, &'static [&'static str]); 17] = [
         (Action::Up, "up", &["k", "up"]),
         (Action::Down, "down", &["j", "down"]),
         (Action::Collapse, "collapse", &["h", "left"]),
@@ -42,6 +44,8 @@ impl Action {
         (Action::Cancel, "cancel", &["esc"]),
         (Action::Top, "top", &["g"]),
         (Action::Bottom, "bottom", &["G"]),
+        (Action::ScrollDown, "scroll_down", &["ctrl-d"]),
+        (Action::ScrollUp, "scroll_up", &["ctrl-u"]),
     ];
 
     fn from_name(name: &str) -> Option<Action> {
@@ -157,6 +161,9 @@ mod tests {
         let k = Keymap::from_settings(&Default::default()).unwrap();
         assert_eq!(k.lookup(key('j')), Some(Action::Down));
         assert_eq!(k.lookup(key('/')), Some(Action::Search));
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        assert_eq!(k.lookup(ctrl('d')), Some(Action::ScrollDown));
+        assert_eq!(k.lookup(ctrl('u')), Some(Action::ScrollUp));
     }
 
     #[test]
