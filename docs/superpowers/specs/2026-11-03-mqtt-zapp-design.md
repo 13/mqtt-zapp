@@ -1,7 +1,7 @@
 # mqtt-zapp — Design
 
 Date: 2026-11-03
-Status: draft, awaiting approval (builder-check questions resolved)
+Status: approved 2026-11-03
 
 ## 1. Intent
 
