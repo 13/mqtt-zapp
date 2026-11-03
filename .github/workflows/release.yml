@@ -48,7 +48,7 @@ jobs:
         run: |
           strip target/x86_64-unknown-linux-musl/release/mqtt-zapp
           cp target/x86_64-unknown-linux-musl/release/mqtt-zapp "$FILE"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: musl
           path: ${{ env.FILE }}
@@ -61,7 +61,7 @@ jobs:
       V: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: musl
           path: musl
@@ -73,7 +73,7 @@ jobs:
             "/p/mqtt-zapp-$V-x86_64.AppImage" --appimage-extract-and-run --version)
           echo "$out"
           test "$out" = "mqtt-zapp $V"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: appimage
           path: dist/mqtt-zapp-${{ env.V }}-x86_64.AppImage
@@ -100,7 +100,7 @@ jobs:
             "apt-get update -qq && apt-get install -y -qq /p/mqtt-zapp_${V}-1_amd64.deb >/dev/null && mqtt-zapp --version")
           echo "$out"
           test "$(tail -n1 <<<"$out")" = "mqtt-zapp $V"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: deb
           path: target/debian/mqtt-zapp_${{ env.V }}-1_amd64.deb
@@ -129,7 +129,7 @@ jobs:
           pacman -U --noconfirm "packaging/arch/mqtt-zapp-$V-1-x86_64.pkg.tar.zst"
           pacman -Qi mqtt-zapp
           test "$(mqtt-zapp --version)" = "mqtt-zapp $V"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: arch
           path: packaging/arch/mqtt-zapp-${{ env.V }}-1-x86_64.pkg.tar.zst
@@ -143,7 +143,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
