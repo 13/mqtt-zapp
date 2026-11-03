@@ -71,6 +71,9 @@ chmod +x mqtt-zapp-0.1.0-x86_64.AppImage
 ./mqtt-zapp-0.1.0-x86_64.AppImage
 ```
 
+Without FUSE (some containers and minimal hosts), add
+`--appimage-extract-and-run`.
+
 ### Static binary
 
 A single file you can copy to a headless host:
@@ -82,9 +85,15 @@ ssh user@host chmod +x mqtt-zapp
 
 ### From source
 
+You need a Rust toolchain, `pkg-config` and the dbus headers for the
+keyring: `libdbus-1-dev` on Debian/Ubuntu, `dbus` on Arch.
+
 ```sh
+git clone https://github.com/13/mqtt-zapp && cd mqtt-zapp
 cargo install --path crates/mqtt-zapp
 ```
+
+Add `--no-default-features` to build without the keyring and without dbus.
 
 > [!NOTE]
 > **Passwords are never stored in the config files.** The Arch, Debian and
@@ -208,7 +217,8 @@ keys too.
 | The broker name in the top bar | Switch brokers |
 | A tree row, with the right button | Copy its topic |
 
-The wheel scrolls the pane under the pointer. Copying uses OSC 52. Hold shift
+The wheel works on the pane under the pointer: it moves the selection in the
+tree, scrolls the payload and steps through the history. Copying uses OSC 52. Hold shift
 to select text with the mouse.
 
 ### ✉️ Publishing
