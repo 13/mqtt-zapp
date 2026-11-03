@@ -107,11 +107,10 @@ fn click_header_path_copies_topic() {
     let mut a = app_with(&[("dev/x", b"hello")]);
     a.selected = a.tree.find("dev/x");
     let b = draw(&mut a, 100, 24);
-    let (x, y) = find_at(&b, "│ dev /  x ");
-    // The copied text is the real topic, not the spaced display.
-    assert_eq!(copied(click(&mut a, x + 3, y)), ("topic", "dev/x".into()));
-    // The leaf badge is part of the path too.
-    assert_eq!(copied(click(&mut a, x + 9, y)).0, "topic");
+    let (x, y) = find_at(&b, "│ dev/x ");
+    // `d` and the leaf `x` both copy the topic.
+    assert_eq!(copied(click(&mut a, x + 2, y)), ("topic", "dev/x".into()));
+    assert_eq!(copied(click(&mut a, x + 6, y)), ("topic", "dev/x".into()));
 }
 
 #[test]
@@ -1203,10 +1202,7 @@ fn compact_header_has_copy_glyph() {
     let mut a = app_with(&[("dev/x", b"hello")]);
     a.selected = a.tree.find("dev/x");
     let b = draw(&mut a, 79, 24);
-    let row = text(&b)
-        .lines()
-        .position(|l| l.contains("dev /  x "))
-        .unwrap() as u16;
+    let row = text(&b).lines().position(|l| l.contains("dev/x")).unwrap() as u16;
     let line = text(&b)
         .lines()
         .nth(row as usize)

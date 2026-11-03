@@ -256,16 +256,16 @@ fn take_width(s: &str, max: usize, from_end: bool) -> String {
     out.into_iter().collect()
 }
 
-/// Split `topic` into (parents spaced as `a / b / `, leaf), fitted so that
-/// parents plus the padded leaf badge take at most `width` columns. Whole
-/// middle levels go first (`a / … / `), then all but `… / `; the leaf is cut
-/// (from the left) only once there is no room for any parent.
+/// Split `topic` into (parents with their trailing `/`, leaf), fitted so
+/// that both take at most `width` columns. Whole middle levels go first
+/// (`a/…/`), then all but `…/`; the leaf is cut (from the left) only once
+/// there is no room for any parent.
 fn fit_topic(topic: &str, width: usize) -> (String, String) {
     let topic = one_line(topic);
     let mut levels: Vec<&str> = topic.split('/').collect();
     let leaf = levels.pop().unwrap_or_default().to_owned();
-    let leaf_room = width.saturating_sub(2);
-    if leaf_room == 0 {
+    let leaf_room = width;
+    if width == 0 {
         return (String::new(), String::new());
     }
     if leaf.width() > leaf_room {
@@ -308,16 +308,14 @@ const COPY_LABEL: &str = " ⧉ copy ";
 /// The one-row header's copy button.
 const COMPACT_COPY: &str = " ⧉ ";
 
-/// Between topic levels in the header: `muh / wsr / json`.
-const SEP: &str = " / ";
+/// Between topic levels in the header: the topic as-is, `muh/wst/status`.
+const SEP: &str = "/";
 
-fn leaf_badge(leaf: &str) -> Span<'static> {
+/// The last topic level, right after its `/`: bold, in the accent colour.
+fn leaf_span(leaf: &str) -> Span<'static> {
     Span::styled(
-        format!(" {leaf} "),
-        Style::new()
-            .fg(Color::Black)
-            .bg(theme::ACCENT)
-            .add_modifier(Modifier::BOLD),
+        leaf.to_owned(),
+        Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
     )
 }
 
@@ -365,7 +363,7 @@ fn header_lines(
     let path = Line::from(vec![
         Span::raw(" "),
         Span::styled(parents, muted),
-        leaf_badge(&leaf),
+        leaf_span(&leaf),
     ]);
     let mut left = vec![Span::raw(" ")];
     left.extend(badges(s, kind));
@@ -383,7 +381,7 @@ fn header_lines(
     [path, Line::from(left)]
 }
 
-/// One row: path with the leaf badge, the badges, `time · age`.
+/// One row: path with the leaf highlighted, the badges, `time · age`.
 fn header_compact(
     s: &Shown,
     topic: &str,
@@ -396,7 +394,7 @@ fn header_compact(
     let (parents, leaf) = fit_topic(topic, (width as usize / 2).max(8));
     let mut spans = vec![
         Span::styled(parents, muted),
-        leaf_badge(&leaf),
+        leaf_span(&leaf),
         Span::raw(" "),
     ];
     spans.extend(badges(s, kind));
@@ -482,7 +480,7 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
         let [row_area, glyph] =
             Layout::horizontal([Constraint::Min(0), Constraint::Length(glyph_w)]).areas(meta);
         let row = header_compact(&s, &topic, kind, &app.timestamp_format, now, row_area.width);
-        // The path is the row's first two spans (parents, leaf badge).
+        // The path is the row's first two spans (parents, leaf).
         let path_w: usize = row.spans.iter().take(2).map(|s| s.content.width()).sum();
         app.hit.set(HitAreas {
             header_topic: Rect {
