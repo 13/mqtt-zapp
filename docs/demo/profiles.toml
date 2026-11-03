@@ -1,0 +1,11 @@
+[[profile]]
+name = "home-lab"
+host = "127.0.0.1"
+port = 18883
+protocol = "mqtt"
+ws_path = "/"
+password = "none"
+subscriptions = ["#"]
+
+[profile.tls]
+insecure = false

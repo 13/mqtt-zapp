@@ -1,29 +1,98 @@
-# mqtt-zapp
+<p align="center">
+  <img src="packaging/mqtt-zapp.svg" width="96" alt="mqtt-zapp logo">
+</p>
 
-A terminal MQTT explorer: browse a broker's topic tree, watch payloads update
-live, diff against the previous message, and publish. Inspired by the feature
-set of MQTT Explorer.
+<h1 align="center">mqtt-zapp</h1>
 
-The focus is a TUI that works well over SSH: a single static binary you can
-copy to a headless box and run there, next to the broker.
+<p align="center">
+  <b>A fast terminal MQTT explorer — browse, watch, diff, chart and publish, right next to your broker.</b>
+</p>
 
-## Install
+<p align="center">
+  <a href="https://github.com/13/mqtt-zapp/actions/workflows/ci.yml"><img src="https://github.com/13/mqtt-zapp/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/13/mqtt-zapp/releases/latest"><img src="https://img.shields.io/github/v/release/13/mqtt-zapp" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/rust-2024-orange" alt="Rust 2024">
+</p>
 
-Download the `x86_64-linux-musl` binary from the latest GitHub release, copy
-it to the host and make it executable:
+<p align="center">
+  <img src="docs/demo/demo.gif" alt="mqtt-zapp browsing a broker's topic tree, charting a field and diffing payloads">
+</p>
+
+mqtt-zapp is a TUI that works well over SSH: a single static binary you can
+copy to a headless box and run there, next to the broker. It is inspired by
+the feature set of MQTT Explorer.
+
+## ✨ Features
+
+- 🌳 **Live topic tree:** message and topic counts per level, retained markers, and natural, count or recent sorting.
+- 🔍 **Pretty payloads:** JSON is pretty-printed, and the diff shows what changed since the previous message, or since one you mark.
+- 📈 **Charts:** plot any numeric field from a topic's history. `c` cycles through the fields, or click a number to chart it.
+- ✉️ **Publish:** a form with your `$EDITOR` for the payload, and a per-topic recall of what you sent.
+- 🧹 **Retained housekeeping:** delete one retained message, clear a whole subtree, or delete a topic outright.
+- 🔐 **Every transport:** mqtt, mqtts with your own CA, websockets (ws and wss), MQTT 3.1.1 and 5, and passwords in the system keyring.
+- 🖱️ **Mouse and clipboard:** click to select, pin and expand, scroll with the wheel, and copy topics and payloads over OSC 52, even through SSH.
+- 📦 **Runs anywhere:** a static musl binary, an AppImage, an Arch package or a Debian package.
+
+## 🚀 Quick start
+
+```sh
+mqtt-zapp profile add --name home --host 192.168.1.10
+mqtt-zapp --profile home
+```
+
+Or just run `mqtt-zapp` and pick or add a profile in the picker.
+
+## 📥 Install
+
+Every [release](https://github.com/13/mqtt-zapp/releases/latest) carries
+these files, plus a `SHA256SUMS` list.
+
+### Arch Linux
+
+```sh
+sudo pacman -U ./mqtt-zapp-0.1.0-1-x86_64.pkg.tar.zst
+```
+
+### Debian / Ubuntu
+
+For Debian 12+ and Ubuntu 22.04+:
+
+```sh
+sudo apt install ./mqtt-zapp_0.1.0-1_amd64.deb
+```
+
+### AppImage
+
+For any x86_64 distro:
+
+```sh
+chmod +x mqtt-zapp-0.1.0-x86_64.AppImage
+./mqtt-zapp-0.1.0-x86_64.AppImage
+```
+
+### Static binary
+
+A single file you can copy to a headless host:
 
 ```sh
 scp mqtt-zapp-v0.1.0-x86_64-linux-musl user@host:mqtt-zapp
 ssh user@host chmod +x mqtt-zapp
 ```
 
-Or build from source:
+### From source
 
 ```sh
 cargo install --path crates/mqtt-zapp
 ```
 
-## Connecting
+> [!NOTE]
+> **Passwords are never stored in the config files.** The Arch, Debian and
+> source builds can keep them in the system keyring. The AppImage and the
+> static binary are built without keyring support, so they ask for the
+> password when they connect.
+
+## 🔌 Connecting
 
 ```sh
 mqtt-zapp                                  # profile picker
@@ -31,19 +100,22 @@ mqtt-zapp --profile home                   # saved profile
 mqtt-zapp --host 192.168.1.10              # ad-hoc, plain mqtt on 1883
 ```
 
-To switch brokers while connected, press `b` (or click the broker name in the
-top bar). The picker opens with the current profile marked `●`; the session
+To switch brokers while connected, press `b` or click the broker name in the
+top bar. The picker opens with the current profile marked `●`. The session
 keeps running until you pick another one, and `esc` goes back to it.
 
 ### Profiles
 
-In the picker, `a` adds a profile, `e` edits the selected one and `D` deletes
-it (after a yes/no). `J`/`K` move the selected profile down/up; the order is
-saved to `profiles.toml`. `s` sorts the picker by that custom order, by name or
-by last used, and the choice is remembered in `state.toml` (in
-`~/.local/state/mqtt-zapp/`, next to the last-used times). The form covers every field; `space` or `←`/`→` change the
-protocol and password source, and `ctrl-s` saves to `profiles.toml`. A keyring
-password typed there goes to the keyring, never the file. From the shell:
+In the picker:
+- `a` adds a profile, `e` edits the selected one, and `D` deletes it (after a yes/no).
+- `J`/`K` move the selected profile down/up, and the order is saved to `profiles.toml`.
+- `s` sorts the picker by that custom order, by name or by last used. The choice is remembered in `state.toml`, in `~/.local/state/mqtt-zapp/`, next to the last-used times.
+
+The form covers every field. `space` or `←`/`→` change the protocol and the
+password source, and `ctrl-s` saves to `profiles.toml`. A keyring password
+typed there goes to the keyring, never to the file.
+
+From the shell:
 
 ```sh
 # plain mqtt
@@ -65,14 +137,16 @@ mqtt-zapp profile add --name b --host h --user me --password-mode keyring
 ```
 
 The websocket path defaults to `/`. Set a different one in the picker's form,
-or edit `ws_path` in `profiles.toml` (for example `ws_path = "/mqtt"`).
+or edit `ws_path` in `profiles.toml`, for example `ws_path = "/mqtt"`.
 
-**Passwords are never stored in the config files.** With the default `keyring`
-build feature they can live in the system keyring. The static musl release is
-built without that feature, so there the password is prompted for at connect
-time.
+## ⌨️ Keys
 
-## Keys
+`?` shows the keys in effect, including your remaps. The publish form and the
+search input take typed text and do not use the keymap; the help lists their
+keys too.
+
+<details open>
+<summary><b>All keys</b></summary>
 
 | Key | Action | What it does |
 |---|---|---|
@@ -111,21 +185,45 @@ time.
 | `K` | `move_up` | In the picker: move the selected profile up (custom order) |
 | `J` | `move_down` | In the picker: move the selected profile down (custom order) |
 
-`?` shows the effective keys, including your remaps. The publish form and
-search input take typed text and do not use the keymap; the help lists their
-keys too.
+</details>
 
-### Search
+### 🔎 Search
 
-`/` filters the tree as you type. Every space-separated word must appear,
-case-insensitively, in the topic path or the latest payload (each word may be
-in either); `"quoted words"` match as one phrase. `ctrl-r` switches the input
-to a (case-insensitive) regular expression; an invalid one shows its error
-and keeps the last valid filter.
+`/` filters the tree as you type:
+- Every space-separated word must appear, case-insensitively, in the topic path or the latest payload. Each word may be in either.
+- `"quoted words"` match as one phrase.
+- `ctrl-r` switches the input to a case-insensitive regular expression. An invalid one shows its error and keeps the last valid filter.
 
-### Settings
+### 🖱️ Mouse
 
-`settings.toml` in the config directory:
+| Click | Does |
+|---|---|
+| A pane | Focus it |
+| A topic | Select it. Click the `▸` marker or the selected row again to expand it |
+| A history entry | Pin it |
+| A profile in the picker | Select it. Click again to connect |
+| The `⧉ copy` button or the topic path on the message header | Copy the topic |
+| The `⧉ copy` button or the title on the payload pane | Copy the shown payload |
+| A number in the payload | Chart it. Click it again to turn the chart off |
+| The broker name in the top bar | Switch brokers |
+| A tree row, with the right button | Copy its topic |
+
+The wheel scrolls the pane under the pointer. Copying uses OSC 52. Hold shift
+to select text with the mouse.
+
+### ✉️ Publishing
+
+In the publish form, `ctrl-e` opens the payload in `$VISUAL`/`$EDITOR` (or
+`vi`), and `ctrl-p`/`ctrl-n` recall payloads sent to that topic in this
+session.
+
+## ⚙️ Configuration
+
+`profiles.toml` and `settings.toml` live in `~/.config/mqtt-zapp/`, the XDG
+config dir. Set `MQTT_ZAPP_CONFIG_DIR` to use another directory.
+
+<details>
+<summary><b>settings.toml</b></summary>
 
 ```toml
 history_depth = 200      # messages kept per topic (default 100)
@@ -141,34 +239,16 @@ toggle_diff = "D"
 quit = "ctrl-q"
 ```
 
-Keys are a single character or a name (`esc`, `enter`, `tab`, `space`, `up`,
-`down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `backspace`,
-`delete`), optionally prefixed with `ctrl-` or `alt-`.
+A key is either a single character or a name: `esc`, `enter`, `tab`, `space`,
+`up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`,
+`backspace` or `delete`. Either can be prefixed with `ctrl-` or `alt-`.
 
-## Config files
+</details>
 
-`profiles.toml` and `settings.toml` live in `~/.config/mqtt-zapp/` (the XDG
-config dir). Set `MQTT_ZAPP_CONFIG_DIR` to use another directory.
-
-### Mouse
-
-Click a pane to focus it, a topic to select it (click the `▸` marker or the
-selected row again to expand it), a history entry to pin it, and a profile in
-the picker to select it (click again to connect). The wheel scrolls the pane
-under the pointer. Click `⧉ copy` (or the topic path) on the message header to
-copy the topic, `⧉ copy` on the payload pane to copy the shown payload, or
-right-click a tree row to copy its topic (all via OSC 52). Click the broker name
-in the top bar to switch brokers. Click a number in the payload to chart it
-(click it again to turn the chart off). Hold shift to select text with the mouse.
-
-### Publishing
-
-In the publish form, `ctrl-e` opens the payload in `$VISUAL`/`$EDITOR` (or
-`vi`), and `ctrl-p`/`ctrl-n` recall payloads sent to that topic in this
-session.
-
-## Not yet
-
-Planned for Phase 1.x:
+## 🗺️ Roadmap
 
 - Sparkplug B decoding
+
+## 📄 License
+
+[MIT](LICENSE)
