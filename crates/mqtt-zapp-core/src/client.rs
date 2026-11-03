@@ -38,6 +38,12 @@ pub enum ConnState {
     Disconnected { reason: String, retry_in_ms: u64 },
 }
 
+impl ConnState {
+    pub fn is_connected(&self) -> bool {
+        matches!(self, ConnState::Connected)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub enum CoreEvent {
     State(ConnState),
@@ -130,6 +136,16 @@ enum Polled {
 }
 
 impl Loop {
+    /// Forget the requests rumqttc kept across a failed connection (in flight
+    /// or queued), so a clear or publish made while disconnected is never
+    /// replayed on reconnect. Returns how many were dropped.
+    fn drop_pending(&mut self) -> usize {
+        match self {
+            Loop::V4(l) => l.pending.drain(..).count(),
+            Loop::V5(l) => l.pending.drain(..).count(),
+        }
+    }
+
     async fn poll(&mut self) -> Polled {
         let now = SystemTime::now;
         match self {
@@ -275,6 +291,12 @@ async fn run(
             Polled::OutgoingDisconnect | Polled::Other => {}
             Polled::Err(reason) => {
                 connected = false;
+                let dropped = eventloop.drop_pending();
+                let reason = if dropped > 0 {
+                    format!("{reason} · dropped {dropped} unsent")
+                } else {
+                    reason
+                };
                 emit!(CoreEvent::State(ConnState::Disconnected {
                     reason,
                     retry_in_ms: backoff,

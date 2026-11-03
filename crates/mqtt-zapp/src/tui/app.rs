@@ -533,7 +533,8 @@ impl App {
         }
     }
 
-    /// `y` or enter confirms; any other key cancels.
+    /// Only `y` confirms (enter is too easy to hit by reflex); any other key
+    /// cancels.
     fn on_confirm_key(&mut self, key: KeyEvent) -> Effect {
         self.dirty = true;
         let confirm = self.confirm.take();
@@ -545,7 +546,7 @@ impl App {
             _ => Mode::Browse,
         };
         match (key.code, confirm) {
-            (KeyCode::Char('y') | KeyCode::Enter, Some(c)) => match c.action {
+            (KeyCode::Char('y'), Some(c)) => match c.action {
                 ConfirmAction::ClearRetained(topics) => Effect::ClearRetained(topics),
                 ConfirmAction::DeleteProfile(name) => Effect::DeleteProfile(name),
                 ConfirmAction::DeleteTopic(topic) => self.delete_topic(&topic),

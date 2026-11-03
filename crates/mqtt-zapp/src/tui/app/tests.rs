@@ -95,9 +95,18 @@ fn delete_retained_needs_confirmation() {
     assert_eq!(a.note_at(Instant::now()), Some(&Note::info("cancelled")));
     a.handle_action(Action::DeleteRetained);
     assert!(matches!(
-        a.handle_key(key(KeyCode::Enter)),
+        a.handle_key(key(KeyCode::Char('y'))),
         Effect::ClearRetained(_)
     ));
+}
+
+#[test]
+fn enter_does_not_confirm_a_destructive_prompt() {
+    let mut a = browse(&["a/b"]);
+    a.selected = a.tree.find("a/b");
+    a.handle_action(Action::DeleteRetained);
+    assert!(matches!(a.handle_key(key(KeyCode::Enter)), Effect::None));
+    assert_eq!(a.note_at(Instant::now()), Some(&Note::info("cancelled")));
 }
 
 #[test]
@@ -1493,7 +1502,10 @@ fn delete_topic_without_retained_only_removes_from_list() {
         a.confirm.as_ref().unwrap().prompt,
         "remove live/t from the list? (nothing retained on the broker)"
     );
-    assert!(matches!(a.handle_key(key(KeyCode::Enter)), Effect::None));
+    assert!(matches!(
+        a.handle_key(key(KeyCode::Char('y'))),
+        Effect::None
+    ));
     assert_eq!(a.tree.find("live"), None, "empty parent pruned");
     assert_eq!(a.selected, None);
     // `$` topics are the broker's: only the list.

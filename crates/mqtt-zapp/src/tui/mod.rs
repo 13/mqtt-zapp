@@ -83,6 +83,10 @@ impl Session {
             // Handled by the event loop, which owns the terminal.
             Effect::EditPayload(_) => {}
             Effect::ClearRetained(topics) => match self.conn.clone() {
+                // A clear queued while disconnected must not go out later.
+                Some(_) if !app.conn_state.is_connected() => {
+                    app.set_note(Note::error("clear failed: not connected"), Instant::now())
+                }
                 Some(conn) => {
                     let notes = self.notes_tx.clone();
                     // Off the UI loop: each publish may wait for the broker.
@@ -176,6 +180,9 @@ impl Session {
             } => {
                 // Never await on the UI loop: publish can wait up to 5 s.
                 match self.conn.clone() {
+                    Some(_) if !app.conn_state.is_connected() => {
+                        app.set_note(Note::error("publish failed: not connected"), Instant::now())
+                    }
                     Some(conn) => {
                         let notes = self.notes_tx.clone();
                         tokio::spawn(async move {

@@ -202,6 +202,42 @@ async fn reconnects_after_broker_restart() {
     ready(&conn, &mut rx, "zapp/ready/again").await;
 }
 
+#[tokio::test]
+async fn clear_while_broker_down_is_not_replayed_after_reconnect() {
+    let ports = support::free_ports();
+    let data = tempfile::tempdir().unwrap();
+    let Some(b) = support::start_persistent_on(ports, data.path()) else {
+        return;
+    };
+    let mut p = profile("127.0.0.1", ports.0, Protocol::Mqtt);
+    p.subscriptions = vec!["x/#".into()];
+    let (conn, mut rx) = Connection::connect(&p, None).unwrap();
+    wait_for(&mut rx, is_connected, 5).await;
+    conn.publish("x/keep", b"v".to_vec(), 1, true)
+        .await
+        .unwrap();
+    wait_for(&mut rx, |e| is_message(e, "x/keep"), 5).await;
+    // Let the broker save its retained messages before it is killed.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+
+    // Freeze the broker: the client still looks connected, so the clear is
+    // accepted and sent, but never acknowledged. Then the broker dies.
+    b.pause();
+    let _ = conn.clear_retained(&["x/keep".into()]).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    drop(b);
+    wait_for(&mut rx, is_disconnected, 5).await;
+
+    let _b2 = support::start_persistent_on(ports, data.path()).unwrap();
+    wait_for(&mut rx, is_connected, 10).await;
+    // Give a replay time to happen if it were going to.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    let (other, mut rx_other) = Connection::connect(&p, None).unwrap();
+    wait_for(&mut rx_other, |e| is_message(e, "x/keep"), 5).await;
+    other.disconnect();
+}
+
 fn v5(mut p: Profile) -> Profile {
     p.mqtt_version = MqttVersion::V5;
     p

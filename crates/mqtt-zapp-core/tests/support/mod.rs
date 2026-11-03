@@ -25,6 +25,20 @@ impl Drop for Broker {
     }
 }
 
+impl Broker {
+    /// Freeze the broker (SIGSTOP): connections stay open but nothing is
+    /// answered, until it is killed on drop.
+    #[allow(dead_code)] // only some test binaries need it
+    pub fn pause(&self) {
+        let ok = Command::new("kill")
+            .args(["-STOP", &self.child.id().to_string()])
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "kill -STOP failed");
+    }
+}
+
 /// Start a broker on fresh ports; `None` (after printing SKIP) without mosquitto.
 pub fn start(auth: bool) -> Option<Broker> {
     let ports = free_ports();
@@ -33,7 +47,22 @@ pub fn start(auth: bool) -> Option<Broker> {
 
 /// Start a broker on the given `(port, ws_port, tls_port)`, retrying the bind for
 /// up to 5 s so a port freed by a just-killed broker can be reused.
-pub fn start_on(auth: bool, (port, ws_port, tls_port): (u16, u16, u16)) -> Option<Broker> {
+pub fn start_on(auth: bool, ports: (u16, u16, u16)) -> Option<Broker> {
+    start_with(auth, ports, None)
+}
+
+/// Like `start_on`, but the broker saves its retained messages under `data`
+/// (about once a second), so a later broker given the same `data` serves them.
+#[allow(dead_code)] // only some test binaries restart a broker with its data
+pub fn start_persistent_on(ports: (u16, u16, u16), data: &Path) -> Option<Broker> {
+    start_with(false, ports, Some(data))
+}
+
+fn start_with(
+    auth: bool,
+    (port, ws_port, tls_port): (u16, u16, u16),
+    data: Option<&Path>,
+) -> Option<Broker> {
     if Command::new("mosquitto")
         .arg("-h")
         .stdout(Stdio::null())
@@ -46,7 +75,7 @@ pub fn start_on(auth: bool, (port, ws_port, tls_port): (u16, u16, u16)) -> Optio
     }
     let dir = tempfile::tempdir().unwrap();
     let ca_pem_path = write_certs(dir.path());
-    let conf = write_conf(dir.path(), auth, port, ws_port, tls_port);
+    let conf = write_conf(dir.path(), auth, port, ws_port, tls_port, data);
 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -119,8 +148,21 @@ fn write_certs(dir: &Path) -> PathBuf {
     ca_path
 }
 
-fn write_conf(dir: &Path, auth: bool, port: u16, ws_port: u16, tls_port: u16) -> PathBuf {
+fn write_conf(
+    dir: &Path,
+    auth: bool,
+    port: u16,
+    ws_port: u16,
+    tls_port: u16,
+    data: Option<&Path>,
+) -> PathBuf {
     let mut conf = String::from("per_listener_settings false\n");
+    if let Some(data) = data {
+        conf += &format!(
+            "persistence true\npersistence_location {}/\nautosave_interval 1\n",
+            data.display()
+        );
+    }
     if auth {
         let pw = dir.join("passwd");
         let ok = Command::new("mosquitto_passwd")
