@@ -109,8 +109,7 @@ pub enum ProfileCmd {
     Remove { name: String },
 }
 
-// TODO(task 8): drop the allow once tui::run reads the profile.
-#[allow(dead_code, clippy::large_enum_variant)] // short-lived, built once per run
+#[allow(clippy::large_enum_variant)] // short-lived, built once per run
 pub enum Launch {
     Picker,
     Connect(Profile),
