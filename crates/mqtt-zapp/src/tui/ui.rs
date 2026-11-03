@@ -240,18 +240,16 @@ const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
         ],
     ),
     (
-        "retained",
+        "topics",
         1,
         &[
             Action::DeleteRetained,
             Action::ClearRetained,
             Action::DeleteTopic,
+            Action::CycleSort,
+            Action::ExpandAll,
+            Action::CollapseAll,
         ],
-    ),
-    (
-        "tree",
-        1,
-        &[Action::CycleSort, Action::ExpandAll, Action::CollapseAll],
     ),
     (
         "picker",

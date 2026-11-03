@@ -221,12 +221,9 @@ pub enum ConfirmAction {
     ClearRetained(Vec<String>),
     /// The profile to delete; asked from the picker.
     DeleteProfile(String),
-    /// Remove `topic` and its subtree from the list, clearing `retained`
-    /// on the broker first.
-    DeleteTopic {
-        topic: String,
-        retained: Vec<String>,
-    },
+    /// Remove `topic` and its subtree from the list, clearing what is
+    /// retained there on the broker (looked up again on confirm).
+    DeleteTopic(String),
 }
 
 const STORE_BROKEN: &str = "profiles.toml has errors – fix it by hand first";
@@ -550,9 +547,7 @@ impl App {
             (KeyCode::Char('y') | KeyCode::Enter, Some(c)) => match c.action {
                 ConfirmAction::ClearRetained(topics) => Effect::ClearRetained(topics),
                 ConfirmAction::DeleteProfile(name) => Effect::DeleteProfile(name),
-                ConfirmAction::DeleteTopic { topic, retained } => {
-                    self.delete_topic(&topic, retained)
-                }
+                ConfirmAction::DeleteTopic(topic) => self.delete_topic(&topic),
             },
             _ => {
                 self.set_note(Note::info("cancelled"), Instant::now());
@@ -594,17 +589,19 @@ impl App {
         };
         self.confirm = Some(Confirm {
             prompt,
-            action: ConfirmAction::DeleteTopic { topic, retained },
+            action: ConfirmAction::DeleteTopic(topic),
         });
         self.mode = Mode::Confirm;
     }
 
     /// Remove `topic` (and below) from the tree; the broker's echo of each
     /// cleared message (an empty payload) is dropped instead of re-adding it.
-    fn delete_topic(&mut self, topic: &str, retained: Vec<String>) -> Effect {
+    fn delete_topic(&mut self, topic: &str) -> Effect {
         let Some(id) = self.tree.find(topic) else {
             return Effect::None;
         };
+        // Again now: retained topics may have arrived while the prompt was up.
+        let retained = self.retained_under(id, true);
         self.tree.remove(id);
         self.cleared_echo.extend(retained.iter().cloned());
         // Select the nearest ancestor still in the tree, else nothing.
@@ -621,6 +618,9 @@ impl App {
                 self.history_sel = None;
                 self.payload_scroll = 0;
             }
+        }
+        if !self.search.is_empty() {
+            self.rebuild_filter();
         }
         self.set_note(Note::info(format!("deleted {topic}")), Instant::now());
         if retained.is_empty() {

@@ -1541,3 +1541,40 @@ fn delete_topic_clears_pinned_history_and_diff_base() {
     a.handle_key(key(KeyCode::Char('y')));
     assert_eq!((a.history_sel, a.diff_base), (None, None));
 }
+
+#[test]
+fn delete_topic_updates_an_active_filter() {
+    let mut a = browse(&["a/wzr1", "a/foo", "b/wzr2"]);
+    a.handle_action(Action::Search);
+    type_str(&mut a, "wzr");
+    a.handle_key(key(KeyCode::Enter));
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 2);
+    a.selected = a.tree.find("a/wzr1");
+    del_key(&mut a);
+    a.handle_key(key(KeyCode::Char('y')));
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 1);
+    assert!(
+        !row_names(&a).contains(&"a".to_string()),
+        "{:?}",
+        row_names(&a)
+    );
+    // And stays right after the next message triggers a rebuild.
+    a.apply_core_event(msg("c/other", "1"));
+    a.on_tick();
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 1);
+}
+
+#[test]
+fn retained_arriving_during_the_confirm_is_cleared_too() {
+    let mut a = browse(&["a/b"]);
+    a.selected = a.tree.find("a/b");
+    del_key(&mut a);
+    a.apply_core_event(msg("a/b/new", "v"));
+    match a.handle_key(key(KeyCode::Char('y'))) {
+        Effect::ClearRetained(mut t) => {
+            t.sort();
+            assert_eq!(t, ["a/b", "a/b/new"]);
+        }
+        e => panic!("{e:?}"),
+    }
+}

@@ -891,3 +891,35 @@ fn payload_copy_text_only_when_it_fits() {
         assert!(r.contains('⧉'), "{w}: {r}");
     }
 }
+
+#[test]
+fn no_copy_glyph_when_not_even_it_fits() {
+    // Card: `╭ …/leafname ─ ⧉ ╮` needs 2 + (8 + 2) + 1 + 3 = 16 columns.
+    assert!(card_row0("a/b/leafname", 16).contains('⧉'));
+    let r = card_row0("a/b/leafname", 15);
+    assert!(!r.contains('⧉') && r.contains("leafname"), "{r}");
+    // Payload: `╭ payload ─ ⧉ ╮` needs 2 + 9 + 1 + 3 = 15 columns.
+    let mut a = app_depth(10);
+    send(&mut a, T, b"x", false);
+    a.selected = a.tree.find(T);
+    for (w, glyph) in [(15u16, true), (14, false)] {
+        let mut t = Terminal::new(TestBackend::new(w, 30)).unwrap();
+        t.draw(|f| render_message(f, f.area(), &a, false)).unwrap();
+        let l = lines(t.backend().buffer());
+        let r = l.iter().find(|r| r.contains("payload")).unwrap();
+        assert_eq!(r.contains('⧉'), glyph, "{w}: {r}");
+        if !glyph {
+            assert_eq!(a.hit.get().payload_copy, Rect::default());
+        }
+    }
+    // One-row header: the glyph needs a row of at least 19 columns.
+    for (w, glyph) in [(19u16, true), (18, false)] {
+        let mut t = Terminal::new(TestBackend::new(w, 30)).unwrap();
+        t.draw(|f| render_message(f, f.area(), &a, true)).unwrap();
+        let l = lines(t.backend().buffer());
+        assert_eq!(l[0].contains('⧉'), glyph, "{w}: {}", l[0]);
+        if !glyph {
+            assert_eq!(a.hit.get().header_copy, Rect::default());
+        }
+    }
+}

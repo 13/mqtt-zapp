@@ -362,3 +362,48 @@ async fn subscribes_even_when_request_queue_is_full_at_connack() {
     wait_for(&mut rx, is_connected, 5).await;
     wait_for(&mut rx, |e| is_message(e, "zapp/kept"), 10).await;
 }
+
+#[tokio::test]
+async fn clear_retained_removes_each_topic_on_the_broker() {
+    let Some(b) = support::start(false) else {
+        return;
+    };
+    let p = profile("127.0.0.1", b.port, Protocol::Mqtt);
+    let (conn, mut rx) = Connection::connect(&p, None).unwrap();
+    ready(&conn, &mut rx, "zapp/ready/c").await;
+    for t in ["zapp/c/1", "zapp/c/2", "zapp/c/keep"] {
+        conn.publish(t, b"v".to_vec(), 1, true).await.unwrap();
+        wait_for(&mut rx, |e| is_message(e, t), 5).await;
+    }
+    let topics = vec!["zapp/c/1".to_string(), "zapp/c/2".to_string()];
+    assert_eq!(conn.clear_retained(&topics).await.unwrap(), 2);
+    // The echoes are empty payloads.
+    for t in &topics {
+        let CoreEvent::Message { msg, .. } = wait_for(&mut rx, |e| is_message(e, t), 5).await
+        else {
+            unreachable!()
+        };
+        assert!(msg.payload.is_empty());
+    }
+    // A fresh subscriber only gets the kept one, then our marker.
+    let (conn_b, mut rx_b) = Connection::connect(&p, None).unwrap();
+    wait_for(&mut rx_b, is_connected, 5).await;
+    conn_b
+        .publish("zapp/ready/d", b"x".to_vec(), 1, false)
+        .await
+        .unwrap();
+    let mut seen = vec![];
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(ev) = rx_b.recv().await {
+            if let CoreEvent::Message { topic, .. } = ev {
+                if topic == "zapp/ready/d" {
+                    break;
+                }
+                seen.push(topic);
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(seen, ["zapp/c/keep"]);
+}

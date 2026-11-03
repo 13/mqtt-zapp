@@ -140,7 +140,7 @@ pub fn filter(tree: &TopicTree, query: &str, mode: QueryMode) -> Result<Option<F
     };
     let mut matches = HashSet::new();
     let mut visible = HashSet::from([TopicTree::ROOT]);
-    for id in 1..tree.len() {
+    for id in (1..tree.len()).filter(|&id| tree.is_alive(id)) {
         let node = tree.node(id);
         let payload = node
             .latest

@@ -283,6 +283,12 @@ fn help_shows_every_action_at_80x24() {
     ] {
         assert!(s.contains(want), "{want}: {s}");
     }
+    // Every grouped action fits, none is cut off at the bottom border.
+    for (_, _, group) in HELP_GROUPS {
+        for action in *group {
+            assert!(s.contains(action.name()), "{}: {s}", action.name());
+        }
+    }
 }
 
 #[test]

@@ -27,6 +27,10 @@ const BACKOFF_MAX_MS: u64 = 30_000;
 /// the connection on big payloads.
 const MAX_PACKET: usize = 268_435_455;
 
+/// QoS of the empty retained publishes that clear a topic: at least once,
+/// so a clear is not silently lost the way a QoS 0 publish can be.
+pub const CLEAR_QOS: u8 = 1;
+
 #[derive(Debug, Clone, Serialize)]
 pub enum ConnState {
     Connecting,
@@ -211,6 +215,19 @@ impl Connection {
         .await
         .map_err(|_| anyhow!("publish timed out (not connected?)"))?
         .context("publish failed")
+    }
+
+    /// Clear the retained message of each topic: an empty retained publish,
+    /// the standard way in MQTT 3.1.1 and 5. Sent at QoS 1 ([`CLEAR_QOS`]) so
+    /// the client keeps retrying until the broker acknowledges it. Stops at
+    /// the first failure; returns how many were sent.
+    pub async fn clear_retained(&self, topics: &[String]) -> Result<usize> {
+        for (i, t) in topics.iter().enumerate() {
+            self.publish(t, Vec::new(), CLEAR_QOS, true)
+                .await
+                .with_context(|| format!("clear failed on {t} ({i} of {} done)", topics.len()))?;
+        }
+        Ok(topics.len())
     }
 
     /// Send DISCONNECT (best effort) and stop the background task.

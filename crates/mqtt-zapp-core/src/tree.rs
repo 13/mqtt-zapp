@@ -33,6 +33,9 @@ pub struct TopicNode {
     pub retained: bool,
     #[serde(skip)]
     pub last_update: Option<Instant>,
+    /// Taken out by `TopicTree::remove`; the slot stays so ids are stable.
+    #[serde(skip)]
+    removed: bool,
 }
 
 impl TopicNode {
@@ -49,6 +52,7 @@ impl TopicNode {
             topic_count: 0,
             retained: false,
             last_update: None,
+            removed: false,
         }
     }
 }
@@ -198,7 +202,12 @@ impl TopicTree {
     /// message were removed. The root stays. Removed ids are never reused;
     /// their queue slots go stale and are skipped like evicted ones.
     pub fn remove(&mut self, id: NodeId) -> u32 {
-        let Some(parent) = self.nodes.get(id).and_then(|n| n.parent) else {
+        let Some(parent) = self
+            .nodes
+            .get(id)
+            .filter(|n| !n.removed)
+            .and_then(|n| n.parent)
+        else {
             return 0;
         };
         let removed_msgs = self.nodes[id].msg_count;
@@ -217,6 +226,7 @@ impl TopicTree {
             node.parked = false;
             node.msg_count = 0;
             node.topic_count = 0;
+            node.removed = true;
         }
         let mut cur = Some(parent);
         while let Some(a) = cur {
@@ -233,12 +243,18 @@ impl TopicTree {
             let p = &self.nodes[up];
             match p.parent {
                 Some(next) if p.latest.is_none() && p.children.is_empty() => {
+                    self.nodes[up].removed = true;
                     (child, up) = (up, next);
                 }
                 _ => break,
             }
         }
         removed_topics
+    }
+
+    /// Still in the tree: not taken out by `remove`.
+    pub fn is_alive(&self, id: NodeId) -> bool {
+        self.nodes.get(id).is_some_and(|n| !n.removed)
     }
 
     pub fn node(&self, id: NodeId) -> &TopicNode {
@@ -271,7 +287,7 @@ impl TopicTree {
     }
 
     pub fn iter_with_message(&self) -> impl Iterator<Item = NodeId> + '_ {
-        (0..self.nodes.len()).filter(|&i| self.nodes[i].latest.is_some())
+        (0..self.nodes.len()).filter(|&i| self.nodes[i].latest.is_some() && !self.nodes[i].removed)
     }
 }
 
@@ -367,6 +383,28 @@ mod tests {
         assert!(t.node(TopicTree::ROOT).children.is_empty());
         assert_eq!(t.history_bytes(), 0);
         assert_eq!(t.remove(TopicTree::ROOT), 0, "the root stays");
+    }
+
+    #[test]
+    fn removed_nodes_are_gone_for_lookups_and_a_stale_remove_is_a_noop() {
+        let mut t = TopicTree::new(5);
+        t.insert("a/b", msg("1"));
+        t.insert("a/x", msg("2"));
+        let b = t.find("a/b").unwrap();
+        t.remove(b);
+        assert!(!t.is_alive(b));
+        assert!(t.is_alive(t.find("a/x").unwrap()));
+        assert!(t.is_alive(TopicTree::ROOT));
+        // The search filter must not see removed nodes.
+        let f = crate::search::filter(&t, "b", crate::search::QueryMode::Plain)
+            .unwrap()
+            .unwrap();
+        assert!(f.matches.is_empty(), "{:?}", f.matches);
+        // A second remove of the old id must not cut off the new `a/b`.
+        let b2 = t.insert("a/b", msg("3"));
+        assert_eq!(t.remove(b), 0);
+        assert_eq!(t.find("a/b"), Some(b2));
+        assert_eq!(t.node(TopicTree::ROOT).topic_count, 2);
     }
 
     #[test]

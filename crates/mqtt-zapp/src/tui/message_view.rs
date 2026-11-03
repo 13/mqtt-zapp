@@ -309,14 +309,35 @@ const COPY_LABEL: &str = " ⧉ copy ";
 /// not fit.
 const COMPACT_COPY: &str = " ⧉ ";
 
+/// The one-row header drops its ` ⧉ ` below this many columns.
+const COMPACT_COPY_MIN_WIDTH: u16 = 19;
+
 /// The copy button for a `width`-column border whose left title needs
-/// `title_w` columns: `⧉ copy` only when the whole title fits beside it
-/// (corners and one `─` between), else just `⧉`.
-fn copy_label(title_w: usize, width: u16) -> &'static str {
-    if 2 + title_w + 1 + COPY_LABEL.width() <= usize::from(width) {
+/// `title_w` columns and can shrink to `min_title_w`: `⧉ copy` when the
+/// whole title fits beside it (corners and one `─` between), else `⧉` when
+/// the shortest title does, else nothing (`""`): the title wins.
+fn copy_label(title_w: usize, min_title_w: usize, width: u16) -> &'static str {
+    let fits = |title: usize, label: &str| 2 + title + 1 + label.width() <= usize::from(width);
+    if fits(title_w, COPY_LABEL) {
         COPY_LABEL
-    } else {
+    } else if fits(min_title_w, COMPACT_COPY) {
         COMPACT_COPY
+    } else {
+        ""
+    }
+}
+
+/// Where a right-aligned `copy_w`-column label sits on the top border of
+/// `area`; nothing when there is no label.
+fn copy_rect(area: Rect, copy_w: u16) -> Rect {
+    if copy_w == 0 {
+        return Rect::default();
+    }
+    Rect {
+        x: (area.x + area.width).saturating_sub(1 + copy_w),
+        y: area.y,
+        width: copy_w.min(area.width.saturating_sub(2)),
+        height: 1,
     }
 }
 
@@ -484,7 +505,9 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
     let kind = body(app).map_or("", |(_, k)| k);
     let now = SystemTime::now();
     if card {
-        let label = copy_label(one_line(&topic).width() + 2, meta.width);
+        let full = one_line(&topic);
+        let leaf_w = full.rsplit('/').next().unwrap_or_default().width();
+        let label = copy_label(full.width() + 2, leaf_w + 2, meta.width);
         let copy_w = label.width() as u16;
         // Corners, one `─` between the two titles, the copy label.
         let room = usize::from(meta.width).saturating_sub(2 + 1 + usize::from(copy_w));
@@ -504,18 +527,18 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
                 width: title_w,
                 height: 1,
             },
-            header_copy: Rect {
-                x: (meta.x + meta.width).saturating_sub(1 + copy_w),
-                y: meta.y,
-                width: copy_w.min(meta.width.saturating_sub(2)),
-                height: 1,
-            },
+            header_copy: copy_rect(meta, copy_w),
             ..app.hit.get()
         });
         f.render_widget(Paragraph::new(row).block(block), meta);
     } else {
-        // ` ⧉ ` at the right end; the row is cut short of it.
-        let glyph_w = COMPACT_COPY.width() as u16;
+        // ` ⧉ ` at the right end; the row is cut short of it. Too narrow
+        // a row keeps all its columns for the path.
+        let glyph_w = if meta.width >= COMPACT_COPY_MIN_WIDTH {
+            COMPACT_COPY.width() as u16
+        } else {
+            0
+        };
         let [row_area, glyph] =
             Layout::horizontal([Constraint::Min(0), Constraint::Length(glyph_w)]).areas(meta);
         let row = header_compact(&s, &topic, kind, &app.timestamp_format, now, row_area.width);
@@ -526,7 +549,7 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
                 width: (path_w as u16).min(row_area.width),
                 ..row_area
             },
-            header_copy: glyph,
+            header_copy: if glyph_w == 0 { Rect::default() } else { glyph },
             ..app.hit.get()
         });
         f.render_widget(Paragraph::new(row), row_area);
@@ -665,7 +688,7 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
     let body = &*body;
     let focused = app.focus == Focus::Payload;
     let title_w = theme::pane_title_width(title, focused);
-    let label = copy_label(title_w, area.width);
+    let label = copy_label(title_w, title_w, area.width);
     let copy_w = label.width() as u16;
     block = block.title(
         Line::styled(
@@ -675,12 +698,7 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
         .right_aligned(),
     );
     app.hit.set(HitAreas {
-        payload_copy: Rect {
-            x: (area.x + area.width).saturating_sub(1 + copy_w),
-            y: area.y,
-            width: copy_w.min(area.width.saturating_sub(2)),
-            height: 1,
-        },
+        payload_copy: copy_rect(area, copy_w),
         payload_title: Rect {
             x: area.x + 1,
             y: area.y,
