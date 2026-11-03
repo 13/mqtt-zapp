@@ -270,6 +270,83 @@ fn click_closes_help_and_is_ignored_in_publish() {
     assert_eq!(a.selected, None);
 }
 
+fn help_app(query: &str) -> App {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut a = app_with(&[("a", b"1")]);
+    a.handle_action(Action::Help);
+    for c in query.chars() {
+        a.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    a
+}
+
+/// Style of the first cell of `needle` on the first line that has `row`.
+fn style_on_row(b: &Buffer, row: &str, needle: &str) -> ratatui::style::Style {
+    let w = b.area.width as usize;
+    for y in 0..b.area.height as usize {
+        let line: String = (0..w).map(|x| b[(x as u16, y as u16)].symbol()).collect();
+        if line.contains(row) {
+            let x = line.find(needle).expect(needle);
+            return b[(line[..x].chars().count() as u16, y as u16)].style();
+        }
+    }
+    panic!("no row {row}");
+}
+
+#[test]
+fn help_search_highlights_matching_row() {
+    let mut a = help_app("payload");
+    let b = draw(&mut a, 100, 30);
+    // copy_payload row: keys in accent bold, the match marked like search.
+    let keys = style_on_row(&b, "copy_payload", "Y");
+    assert_eq!(keys.fg, Some(theme::ACCENT), "{keys:?}");
+    assert!(keys.add_modifier.contains(Modifier::BOLD));
+    let m = style_on_row(&b, "copy_payload", "payload");
+    assert!(m.add_modifier.contains(Modifier::UNDERLINED), "{m:?}");
+    // A non-matching row is muted, keys included.
+    let quit = style_on_row(&b, "quit", "quit");
+    assert_eq!(quit.fg, Some(theme::MUTED));
+    let qk = style_on_row(&b, "quit", "q");
+    assert_eq!(qk.fg, Some(theme::MUTED));
+    // Without a query nothing is dimmed.
+    let mut a = help_app("");
+    let b = draw(&mut a, 100, 30);
+    assert_ne!(style_on_row(&b, "copy_payload", "Y").fg, Some(theme::MUTED));
+}
+
+#[test]
+fn help_search_matches_key_text() {
+    let mut a = help_app("ctrl-d");
+    let b = draw(&mut a, 100, 30);
+    let hit = style_on_row(&b, "scroll_down", "ctrl-d");
+    assert_eq!(hit.fg, Some(theme::ACCENT));
+    assert!(hit.add_modifier.contains(Modifier::UNDERLINED));
+    assert_eq!(
+        style_on_row(&b, "scroll_up", "scroll_up").fg,
+        Some(theme::MUTED)
+    );
+}
+
+#[test]
+fn help_title_shows_count() {
+    let s = text(&draw(&mut help_app(""), 100, 30));
+    assert!(s.contains("help · type to search · esc closes"), "{s}");
+    assert!(s.contains("f freezes") && s.contains("shift-drag"), "{s}");
+    let s = text(&draw(&mut help_app("ctrl-d"), 100, 30));
+    assert!(s.contains("help · /ctrl-d · 1 found · esc clears"), "{s}");
+    let s = text(&draw(&mut help_app("zzzz"), 100, 30));
+    assert!(s.contains("0 found"), "{s}");
+}
+
+#[test]
+fn help_search_no_match_does_not_panic_at_40x10() {
+    for q in ["zzzz", "é世界", "a", ""] {
+        let mut a = help_app(q);
+        let _ = draw(&mut a, 40, 10);
+        let _ = draw(&mut a, 80, 24);
+    }
+}
+
 #[test]
 fn help_shows_every_action_at_80x24() {
     let mut a = app_with(&[("a", b"1")]);

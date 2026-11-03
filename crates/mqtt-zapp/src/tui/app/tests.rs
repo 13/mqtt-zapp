@@ -1087,20 +1087,71 @@ fn status_note_is_set_and_expires() {
 }
 
 #[test]
-fn help_opens_on_question_mark_and_any_key_closes() {
+fn help_opens_on_question_mark_and_enter_closes() {
     let mut a = app();
     a.mode = Mode::Browse;
     let k = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
     a.handle_key(k('?'));
     assert_eq!(a.mode, Mode::Help);
-    // A key that is bound (q = quit) only closes the overlay.
-    assert!(matches!(a.handle_key(k('q')), Effect::None));
+    assert!(matches!(a.handle_key(key(KeyCode::Enter)), Effect::None));
     assert_eq!(a.mode, Mode::Browse);
     a.handle_key(k('?'));
     assert!(matches!(
         a.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
         Effect::Quit
     ));
+}
+
+#[test]
+fn help_typing_builds_query_and_esc_clears_then_closes() {
+    let mut a = app();
+    a.mode = Mode::Browse;
+    a.handle_action(Action::Help);
+    // Bound keys (q quit, f freeze) are typed, never dispatched.
+    type_str(&mut a, "qf");
+    assert_eq!(a.help_query, "qf");
+    assert_eq!(a.mode, Mode::Help);
+    assert!(!a.frozen);
+    a.handle_key(key(KeyCode::Backspace));
+    assert_eq!(a.help_query, "q");
+    a.handle_key(key(KeyCode::Esc));
+    assert_eq!(a.help_query, "");
+    assert_eq!(a.mode, Mode::Help);
+    a.handle_key(key(KeyCode::Esc));
+    assert_eq!(a.mode, Mode::Browse);
+    // A new session starts empty.
+    a.handle_action(Action::Help);
+    type_str(&mut a, "x");
+    a.handle_key(key(KeyCode::Enter));
+    assert_eq!(a.mode, Mode::Browse);
+    a.handle_action(Action::Help);
+    assert_eq!(a.help_query, "");
+}
+
+#[test]
+fn help_question_mark_closes_only_when_query_empty() {
+    let mut a = app();
+    a.mode = Mode::Browse;
+    a.handle_action(Action::Help);
+    type_str(&mut a, "a?");
+    assert_eq!(a.mode, Mode::Help);
+    assert_eq!(a.help_query, "a?");
+    a.handle_key(key(KeyCode::Esc));
+    a.handle_key(key(KeyCode::Char('?')));
+    assert_eq!(a.mode, Mode::Browse);
+}
+
+#[test]
+fn stats_any_key_still_closes() {
+    let mut a = app();
+    a.mode = Mode::Browse;
+    a.handle_action(Action::Stats);
+    assert_eq!(a.mode, Mode::Stats);
+    assert!(matches!(
+        a.handle_key(key(KeyCode::Char('x'))),
+        Effect::None
+    ));
+    assert_eq!(a.mode, Mode::Browse);
 }
 
 // --- diff base ---

@@ -371,9 +371,44 @@ fn render_help(f: &mut Frame, area: Rect, app: &App) {
     );
     theme::dim_backdrop(f, area);
     let area = theme::centered(area, 78, 22);
-    let block = theme::pane("help · any key closes", true).title_bottom(
+    let query = app.help_query.as_str();
+    let key_text = |action: &Action| -> String {
+        let keys = bindings
+            .iter()
+            .find(|(a, _)| a == action)
+            .map(|(_, k)| k.iter().map(|k| k.to_string()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        if keys.is_empty() {
+            "(unbound)".to_owned()
+        } else {
+            keys.join(", ")
+        }
+    };
+    let rows = HELP_GROUPS
+        .iter()
+        .flat_map(|(_, _, g)| g.iter().map(|a| (a.name(), key_text(a))))
+        .chain(
+            HELP_FIXED
+                .iter()
+                .flat_map(|(_, r)| r.iter().map(|(k, w)| (*k, (*w).to_owned()))),
+        );
+    let found = if query.is_empty() {
+        0
+    } else {
+        rows.filter(|(n, k)| !help_matches(query, n, k).is_empty())
+            .count()
+    };
+    let title = if query.is_empty() {
+        "help · type to search · esc closes".to_owned()
+    } else {
+        format!(
+            "help · /{} · {found} found · esc clears",
+            single_line(query)
+        )
+    };
+    let block = theme::pane(&title, true).title_bottom(
         Line::styled(
-            " shift-drag selects text · remap in settings.toml [keys] ",
+            " f freezes · shift-drag selects text · remap in settings.toml [keys] ",
             Style::new().fg(theme::MUTED),
         )
         .right_aligned(),
@@ -388,12 +423,30 @@ fn render_help(f: &mut Frame, area: Rect, app: &App) {
     ])
     .areas(inner);
     let heading = Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD);
-    let key_style = Style::new().add_modifier(Modifier::BOLD);
     let row = |name: &str, keys: String, pad: usize| {
-        Line::from(vec![
-            Span::styled(format!(" {name:<pad$}"), Style::new().fg(theme::MUTED)),
-            Span::styled(keys, key_style),
-        ])
+        let muted = Style::new().fg(theme::MUTED);
+        let mut spans = Vec::new();
+        if query.is_empty() {
+            spans.push(Span::styled(format!(" {name:<pad$}"), muted));
+            spans.push(Span::styled(
+                keys,
+                Style::new().add_modifier(Modifier::BOLD),
+            ));
+        } else if help_matches(query, name, &keys).is_empty() {
+            // Dimmed, but where it was.
+            spans.push(Span::styled(format!(" {name:<pad$}"), muted));
+            spans.push(Span::styled(keys, muted));
+        } else {
+            let accent = Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD);
+            spans.push(Span::styled(" ", muted));
+            highlight_ranges(&mut spans, name, &match_in(query, name), muted);
+            spans.push(Span::styled(
+                " ".repeat(pad.saturating_sub(name.chars().count())),
+                muted,
+            ));
+            highlight_ranges(&mut spans, &keys, &match_in(query, &keys), accent);
+        }
+        Line::from(spans)
     };
     // Longest action name plus a space, so names never run into keys.
     let name_w = bindings
@@ -409,17 +462,7 @@ fn render_help(f: &mut Frame, area: Rect, app: &App) {
         }
         lines.push(Line::styled(format!(" {title}"), heading));
         for action in *actions {
-            let keys = bindings
-                .iter()
-                .find(|(a, _)| a == action)
-                .map(|(_, k)| k.iter().map(|k| k.to_string()).collect::<Vec<_>>())
-                .unwrap_or_default();
-            let keys = if keys.is_empty() {
-                "(unbound)".to_owned()
-            } else {
-                keys.join(", ")
-            };
-            lines.push(row(action.name(), keys, name_w));
+            lines.push(row(action.name(), key_text(action), name_w));
         }
     }
     for (title, keys) in HELP_FIXED {
@@ -434,6 +477,47 @@ fn render_help(f: &mut Frame, area: Rect, app: &App) {
     }
     for (lines, col) in columns.into_iter().zip(cols) {
         f.render_widget(Paragraph::new(lines), col);
+    }
+}
+
+/// Non-overlapping byte ranges where `query` occurs in `text`, ignoring
+/// ASCII case. One literal substring: spaces are part of the query, unlike
+/// the multi-term tree search.
+fn match_in(query: &str, text: &str) -> Vec<std::ops::Range<usize>> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let (t, q) = (text.to_ascii_lowercase(), query.to_ascii_lowercase());
+    t.match_indices(&q).map(|(i, m)| i..i + m.len()).collect()
+}
+
+/// Ranges of a help row's name and keys that match; empty when neither does.
+fn help_matches(query: &str, name: &str, keys: &str) -> Vec<std::ops::Range<usize>> {
+    let mut r = match_in(query, name);
+    r.extend(match_in(query, keys));
+    r
+}
+
+/// Push `text` as spans, marking `ranges` with the search-match modifier.
+fn highlight_ranges<'a>(
+    out: &mut Vec<Span<'a>>,
+    text: &str,
+    ranges: &[std::ops::Range<usize>],
+    base: Style,
+) {
+    let mut at = 0;
+    for r in ranges {
+        if r.start > at {
+            out.push(Span::styled(text[at..r.start].to_owned(), base));
+        }
+        out.push(Span::styled(
+            text[r.clone()].to_owned(),
+            base.add_modifier(MATCH_MODIFIER),
+        ));
+        at = r.end;
+    }
+    if at < text.len() {
+        out.push(Span::styled(text[at..].to_owned(), base));
     }
 }
 

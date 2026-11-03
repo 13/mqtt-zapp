@@ -261,6 +261,8 @@ pub struct App {
     /// lines that live rows share survives (kitty clears it on any redraw of
     /// one of its lines).
     pub frozen: bool,
+    /// What the help overlay is searching for; empty when none.
+    pub help_query: String,
     /// Set when messages arrived since the last tick; gates the filter rebuild.
     tree_changed: bool,
     pub msg_rate: MsgRate,
@@ -392,6 +394,7 @@ impl App {
             conn_state,
             dirty: true,
             frozen: false,
+            help_query: String::new(),
             tree_changed: false,
             msg_rate: MsgRate::default(),
             dropped: 0,
@@ -683,13 +686,40 @@ impl App {
                 Effect::None
             }
             Mode::Publish => self.on_publish_key(key),
-            Mode::Help | Mode::Stats => {
+            Mode::Help => {
+                self.on_help_key(key);
+                Effect::None
+            }
+            Mode::Stats => {
                 self.mode = Mode::Browse;
                 self.dirty = true;
                 Effect::None
             }
             Mode::Confirm => self.on_confirm_key(key),
             Mode::ProfileForm => self.on_profile_form_key(key),
+        }
+    }
+
+    /// The help overlay types into its own query and never reaches the
+    /// keymap, so bound keys like `f` or `q` are just letters here.
+    fn on_help_key(&mut self, key: KeyEvent) {
+        self.dirty = true;
+        match key.code {
+            KeyCode::Enter => self.mode = Mode::Browse,
+            KeyCode::Esc if self.help_query.is_empty() => self.mode = Mode::Browse,
+            KeyCode::Esc => self.help_query.clear(),
+            KeyCode::Backspace => {
+                self.help_query.pop();
+            }
+            KeyCode::Char('?') if self.help_query.is_empty() => self.mode = Mode::Browse,
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.help_query.push(c);
+            }
+            _ => {}
         }
     }
 
@@ -1053,7 +1083,10 @@ impl App {
             Action::Search => self.mode = Mode::SearchInput,
             Action::Cancel => self.clear_search(),
             Action::Publish => self.open_publish(),
-            Action::Help => self.mode = Mode::Help,
+            Action::Help => {
+                self.help_query.clear();
+                self.mode = Mode::Help;
+            }
             Action::CycleSort => {
                 self.sort = self.sort.next();
                 self.set_note(
