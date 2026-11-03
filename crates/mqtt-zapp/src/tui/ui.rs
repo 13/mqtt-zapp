@@ -42,6 +42,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         Mode::Picker | Mode::Password => render_front(f, app, area),
         _ => render_browse(f, app, area),
     }
+    theme::apply(f.buffer_mut(), area, app.theme);
 }
 
 /// The picker and the password prompt: a centred card above the footer.
@@ -716,6 +717,7 @@ mod tests {
     use crate::tui::keymap::Action;
     use mqtt_zapp_core::Message;
     use mqtt_zapp_core::client::CoreEvent;
+    use mqtt_zapp_core::config::ThemeName;
     use mqtt_zapp_core::config::{ProfileStore, Settings};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1324,6 +1326,57 @@ mod tests {
         a.handle_action(Action::Stats);
         assert!(text(&draw(&mut a, 100, 24)).contains("no $SYS data"));
         let _ = draw(&mut a, 40, 10);
+    }
+
+    fn themed(theme: ThemeName) -> (App, Buffer) {
+        let mut a = app_with(&[("a", b"1"), ("b", b"2")]);
+        a.theme = theme;
+        a.handle_action(Action::Down);
+        a.history_sel = None;
+        let b = draw(&mut a, 100, 24);
+        (a, b)
+    }
+
+    #[test]
+    fn mono_strips_colours_keeps_selection_and_focus() {
+        let (_, b) = themed(ThemeName::Mono);
+        assert!(
+            b.content
+                .iter()
+                .all(|c| c.fg == Color::Reset && c.bg == Color::Reset),
+            "colour left"
+        );
+        let s = text(&b);
+        let y = s.lines().position(|l| l.contains("a  1")).unwrap() as u16;
+        assert!(b[(3, y)].modifier.contains(Modifier::REVERSED));
+        assert!(s.contains('┏'));
+    }
+
+    #[test]
+    fn light_theme_swaps_inactive_selection_bg() {
+        let mut a = app_with(&[("a", b"1"), ("a", b"2")]);
+        a.handle_action(Action::Down);
+        a.history_sel = Some(0);
+        a.theme = ThemeName::Light;
+        let b = draw(&mut a, 100, 24);
+        assert!(b.content.iter().all(|c| c.bg != Color::DarkGray));
+        assert!(b.content.iter().any(|c| c.bg == Color::Gray));
+        a.theme = ThemeName::Dark;
+        let b = draw(&mut a, 100, 24);
+        assert!(b.content.iter().any(|c| c.bg == Color::DarkGray));
+    }
+
+    #[test]
+    fn no_color_env_forces_mono() {
+        assert_eq!(theme::effective(ThemeName::Dark, None), ThemeName::Dark);
+        assert_eq!(
+            theme::effective(ThemeName::Light, Some("")),
+            ThemeName::Light
+        );
+        assert_eq!(
+            theme::effective(ThemeName::Dark, Some("1")),
+            ThemeName::Mono
+        );
     }
 
     #[test]

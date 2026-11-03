@@ -98,6 +98,9 @@ keys too.
 
 ```toml
 history_depth = 200      # messages kept per topic (default 100)
+sort = "name"            # tree order: name (natural), count, recent; `s` cycles
+theme = "dark"           # dark, light or mono; NO_COLOR forces mono
+timestamp_format = "%H:%M:%S%.3f"   # strftime for the message time
 
 [keys]                   # action name = key; replaces that action's defaults
 toggle_diff = "D"
@@ -113,15 +116,24 @@ Keys are a single character or a name (`esc`, `enter`, `tab`, `space`, `up`,
 `profiles.toml` and `settings.toml` live in `~/.config/mqtt-zapp/` (the XDG
 config dir). Set `MQTT_ZAPP_CONFIG_DIR` to use another directory.
 
+### Mouse
+
+Click a pane to focus it, a topic to select it (click the `▸` marker or the
+selected row again to expand it), a history entry to pin it, and a profile in
+the picker to select it (click again to connect). The wheel scrolls the pane
+under the pointer. Hold shift to select text with the mouse.
+
+### Publishing
+
+In the publish form, `ctrl-e` opens the payload in `$VISUAL`/`$EDITOR` (or
+`vi`), and `ctrl-p`/`ctrl-n` recall payloads sent to that topic in this
+session.
+
 ## Not yet
 
 Planned for Phase 1.x:
 
-- charts for numeric topics
 - Sparkplug B decoding
-- a `$SYS` stats view
-- clearing retained topics
-- sorting options
 - MQTT 5
 - copy to clipboard (OSC 52)
 - a profile editor in the TUI

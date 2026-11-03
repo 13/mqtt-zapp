@@ -127,12 +127,28 @@ impl SortOrder {
     }
 }
 
+/// Colour theme. `NO_COLOR` in the environment forces `Mono`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeName {
+    #[default]
+    Dark,
+    Light,
+    Mono,
+}
+
+/// The default `timestamp_format` (chrono strftime).
+pub const DEFAULT_TIMESTAMP_FORMAT: &str = "%H:%M:%S%.3f";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub history_depth: usize,
     pub keys: BTreeMap<String, String>,
     pub sort: SortOrder,
+    pub theme: ThemeName,
+    /// strftime format of the message time in the message view.
+    pub timestamp_format: String,
 }
 
 impl Default for Settings {
@@ -141,6 +157,8 @@ impl Default for Settings {
             history_depth: 100,
             keys: BTreeMap::new(),
             sort: SortOrder::Name,
+            theme: ThemeName::Dark,
+            timestamp_format: DEFAULT_TIMESTAMP_FORMAT.into(),
         }
     }
 }
@@ -204,6 +222,17 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_theme_and_timestamp_parse() {
+        let s: Settings = toml::from_str("theme = \"mono\"\ntimestamp_format = \"%H:%M\"").unwrap();
+        assert_eq!(s.theme, ThemeName::Mono);
+        assert_eq!(s.timestamp_format, "%H:%M");
+        let d = Settings::default();
+        assert_eq!(d.theme, ThemeName::Dark);
+        assert_eq!(d.timestamp_format, "%H:%M:%S%.3f");
+        assert!(toml::from_str::<Settings>("theme = \"pink\"").is_err());
+    }
 
     #[test]
     fn settings_sort_parses() {

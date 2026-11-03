@@ -10,7 +10,9 @@ use crate::cli::Launch;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use mqtt_zapp_core::client::{ConnState, CoreEvent};
-use mqtt_zapp_core::config::{PasswordSource, Profile, ProfileStore, Settings, SortOrder};
+use mqtt_zapp_core::config::{
+    DEFAULT_TIMESTAMP_FORMAT, PasswordSource, Profile, ProfileStore, Settings, SortOrder, ThemeName,
+};
 use mqtt_zapp_core::search::{self, Filter};
 use mqtt_zapp_core::secrets::load_password;
 use mqtt_zapp_core::{NodeId, TopicTree};
@@ -108,6 +110,17 @@ impl fmt::Debug for Effect {
 }
 
 /// How long a footer note (publish result) stays visible.
+/// `fmt` if chrono accepts it, else the default (a bad format would make
+/// formatting fail at draw time).
+fn valid_time_format(fmt: &str) -> String {
+    use chrono::format::{Item, StrftimeItems};
+    if StrftimeItems::new(fmt).any(|i| matches!(i, Item::Error)) {
+        DEFAULT_TIMESTAMP_FORMAT.to_owned()
+    } else {
+        fmt.to_owned()
+    }
+}
+
 /// Payloads remembered per topic for ctrl-p/ctrl-n in the publish form.
 const SENT_PER_TOPIC: usize = 20;
 pub const NOTE_TTL: Duration = Duration::from_secs(5);
@@ -226,6 +239,10 @@ pub struct App {
     /// The chart: `None` off, `Some(None)` the plain numeric payload,
     /// `Some(Some(path))` a JSON field. Reset when another topic is selected.
     pub chart: Option<Option<String>>,
+    /// Colour theme; `tui::run` applies `NO_COLOR`.
+    pub theme: ThemeName,
+    /// Validated strftime format for message times.
+    pub timestamp_format: String,
     /// Recently published payloads per topic, newest first (at most 20).
     pub sent: HashMap<String, VecDeque<String>>,
     /// While walking `sent` in the form: the index shown and the draft to
@@ -284,6 +301,8 @@ impl App {
             sort: settings.sort,
             chart: None,
             sent: HashMap::new(),
+            theme: settings.theme,
+            timestamp_format: valid_time_format(&settings.timestamp_format),
             sent_walk: None,
         })
     }
@@ -1163,6 +1182,22 @@ mod tests {
         assert_eq!(h.len(), 20);
         assert_eq!(h[0], "p10");
         assert_eq!(h.iter().filter(|p| *p == "p10").count(), 1);
+    }
+
+    #[test]
+    fn bad_timestamp_format_falls_back() {
+        let s = Settings {
+            timestamp_format: "%Q nope".into(),
+            ..Settings::default()
+        };
+        let a = App::new(Launch::Picker, ProfileStore::default(), s).unwrap();
+        assert_eq!(a.timestamp_format, "%H:%M:%S%.3f");
+        let s = Settings {
+            timestamp_format: "%H:%M".into(),
+            ..Settings::default()
+        };
+        let a = App::new(Launch::Picker, ProfileStore::default(), s).unwrap();
+        assert_eq!(a.timestamp_format, "%H:%M");
     }
 
     fn sel(a: &App) -> String {

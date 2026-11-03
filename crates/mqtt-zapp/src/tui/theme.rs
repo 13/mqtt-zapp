@@ -2,8 +2,10 @@
 //! overlay helpers. Only the 16 named ANSI colours are used, so the user's
 //! terminal palette (light or dark) decides the actual shades.
 
+use mqtt_zapp_core::config::ThemeName;
 use mqtt_zapp_core::payload::sanitize;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -71,6 +73,40 @@ pub fn centered(area: Rect, width: u16, height: u16) -> Rect {
 pub fn dim_backdrop(f: &mut Frame, area: Rect) {
     f.buffer_mut()
         .set_style(area, Style::new().add_modifier(Modifier::DIM));
+}
+
+/// The theme to use: `NO_COLOR` set to anything non-empty forces mono
+/// (no-color.org).
+pub fn effective(name: ThemeName, no_color: Option<&str>) -> ThemeName {
+    match no_color {
+        Some(v) if !v.is_empty() => ThemeName::Mono,
+        _ => name,
+    }
+}
+
+/// Adapt a drawn frame to the theme. Everything is drawn for dark; light
+/// lifts the grey selection background, mono drops all colour and shows
+/// any background as reverse video so selection and badges stay visible.
+pub fn apply(buf: &mut Buffer, area: Rect, theme: ThemeName) {
+    if theme == ThemeName::Dark {
+        return;
+    }
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buf[(x, y)];
+            match theme {
+                ThemeName::Light if cell.bg == SEL_BG_INACTIVE => cell.bg = Color::Gray,
+                ThemeName::Mono => {
+                    if cell.bg != Color::Reset {
+                        cell.modifier.insert(Modifier::REVERSED);
+                    }
+                    cell.fg = Color::Reset;
+                    cell.bg = Color::Reset;
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 /// The selected row: bright in the focused pane, grey elsewhere.

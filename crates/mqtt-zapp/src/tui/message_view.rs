@@ -206,7 +206,7 @@ fn human_bytes(n: usize) -> String {
 }
 
 /// `topic  QoS 1  RETAINED  JSON  5 B  12:00:00.000` as styled chips.
-fn metadata(s: &Shown, topic: &str, kind: &str) -> Line<'static> {
+fn metadata(s: &Shown, topic: &str, kind: &str, time_fmt: &str) -> Line<'static> {
     let muted = Style::new().fg(theme::MUTED);
     let chip = Style::new()
         .fg(theme::MUTED)
@@ -232,7 +232,7 @@ fn metadata(s: &Shown, topic: &str, kind: &str) -> Line<'static> {
         Span::raw(" "),
         Span::styled(human_bytes(s.msg.payload.len()), muted),
         Span::raw(" "),
-        Span::styled(clock(s.msg.received_at, "%H:%M:%S%.3f"), muted),
+        Span::styled(clock(s.msg.received_at, time_fmt), muted),
     ]);
     Line::from(spans)
 }
@@ -277,7 +277,10 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App) {
 
     let topic = app.tree.full_topic(app.selected.unwrap_or_default());
     let kind = body(app).map_or("", |(_, k)| k);
-    f.render_widget(Paragraph::new(metadata(&s, &topic, kind)), meta);
+    f.render_widget(
+        Paragraph::new(metadata(&s, &topic, kind, &app.timestamp_format)),
+        meta,
+    );
     let payload = match &app.chart {
         Some(series) => {
             let [chart, rest] =
@@ -707,6 +710,17 @@ mod tests {
         a.handle_action(Action::Chart);
         assert_eq!(a.chart, Some(None));
         assert!(text(&draw(&a)).contains("not enough numeric values"));
+    }
+
+    #[test]
+    fn meta_uses_timestamp_format() {
+        let mut a = app_with(&[b"x"]);
+        a.timestamp_format = "%H:%M".into();
+        let l = lines(&draw(&a));
+        let m = l.iter().find(|r| r.contains("dev/x")).unwrap();
+        let t = m.split(' ').rfind(|w| !w.is_empty()).unwrap();
+        assert_eq!(t.len(), 5, "{m}");
+        assert_eq!(&t[2..3], ":");
     }
 
     #[test]

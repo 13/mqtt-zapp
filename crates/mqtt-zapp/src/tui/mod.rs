@@ -38,6 +38,7 @@ const MAX_DRAIN: usize = 2000;
 pub async fn run(launch: Launch, store: ProfileStore, store_error: Option<String>) -> Result<()> {
     let mut app = App::new(launch, store, Settings::load()?)?;
     app.store_error = store_error;
+    app.theme = theme::effective(app.theme, std::env::var("NO_COLOR").ok().as_deref());
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
