@@ -357,7 +357,7 @@ fn card_title(topic: &str, room: usize) -> Line<'static> {
     let (parents, leaf) = fit_topic(topic, room - 2);
     Line::from(vec![
         Span::raw(" "),
-        Span::styled(parents, Style::new().fg(theme::MUTED)),
+        Span::styled(parents, theme::TEXT),
         leaf_span(&leaf),
         Span::raw(" "),
     ])
@@ -372,21 +372,31 @@ fn header_lines(
     width: u16,
 ) -> Line<'static> {
     let width = width as usize;
-    let muted = Style::new().fg(theme::MUTED);
     let mut left = vec![Span::raw(" ")];
     left.extend(badges(s, kind));
     let clock = clock(s.msg.received_at, time_fmt);
     let age = age(s.msg.received_at, now);
     // Right side: `time · age`, else just the age, else nothing.
     let used = width_of(&left);
-    let right = [format!("{clock} · {age} "), format!("{age} ")]
+    let right = [time_spans(&clock, &age), vec![Span::raw(age.clone())]]
         .into_iter()
-        .find(|r| used + 1 + r.width() <= width)
+        // A gap of at least one before it and the trailing space after it.
+        .find(|r| used + 1 + width_of(r) < width)
         .unwrap_or_default();
-    let gap = width.saturating_sub(used + right.width());
+    let gap = width.saturating_sub(used + width_of(&right) + 1);
     left.push(Span::raw(" ".repeat(gap)));
-    left.push(Span::styled(right, muted));
+    left.extend(right);
+    left.push(Span::raw(" "));
     Line::from(left)
+}
+
+/// `clock · age`: both in the text colour, the dot muted.
+fn time_spans(clock: &str, age: &str) -> Vec<Span<'static>> {
+    vec![
+        Span::raw(clock.to_owned()),
+        Span::styled(" · ", Style::new().fg(theme::MUTED)),
+        Span::raw(age.to_owned()),
+    ]
 }
 
 /// One row: path with the leaf highlighted, the badges, `time · age`.
@@ -406,13 +416,10 @@ fn header_compact(
         Span::raw(" "),
     ];
     spans.extend(badges(s, kind));
-    spans.push(Span::styled(
-        format!(
-            "  {} · {}",
-            clock(s.msg.received_at, time_fmt),
-            age(s.msg.received_at, now)
-        ),
-        muted,
+    spans.push(Span::raw("  "));
+    spans.extend(time_spans(
+        &clock(s.msg.received_at, time_fmt),
+        &age(s.msg.received_at, now),
     ));
     Line::from(spans)
 }

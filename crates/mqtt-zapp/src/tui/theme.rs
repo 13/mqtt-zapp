@@ -24,6 +24,13 @@ pub const SEL_BG_INACTIVE: Color = Color::DarkGray;
 
 /// A bordered pane. Focus shows without colour too: a thick border and a
 /// `●` in the title.
+/// Unfocused pane titles: bold, in the terminal's own text colour, so they
+/// stay readable on dark and light backgrounds alike.
+pub const TITLE: Style = Style::new().fg(Color::Reset).add_modifier(Modifier::BOLD);
+/// Text drawn on a muted border that should read in the text colour (the
+/// border's fg would otherwise show through spans without one).
+pub const TEXT: Style = Style::new().fg(Color::Reset);
+
 pub fn pane(title: &str, focused: bool) -> Block<'static> {
     let title = sanitize(title).replace('\n', " ");
     if focused {
@@ -41,10 +48,7 @@ pub fn pane(title: &str, focused: bool) -> Block<'static> {
         Block::bordered()
             .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(MUTED))
-            .title(Line::from(Span::styled(
-                format!(" {title} "),
-                Style::new().fg(MUTED),
-            )))
+            .title(Line::from(Span::styled(format!(" {title} "), TITLE)))
     }
 }
 
@@ -164,6 +168,18 @@ mod tests {
         let b = draw_pane(false);
         assert_eq!(b[(0, 0)].symbol(), "╭");
         assert!(!top_row(&b).contains('●'));
+    }
+
+    #[test]
+    fn unfocused_title_is_bold_in_the_text_colour() {
+        let b = draw_pane(false);
+        let x = top_row(&b).find("topics").unwrap() as u16;
+        let c = &b[(x - 2, 0)]; // `╭ ` is one char per cell
+        assert_eq!(c.symbol(), "t");
+        assert_eq!(c.fg, Color::Reset);
+        assert!(c.modifier.contains(Modifier::BOLD));
+        assert_eq!(b[(1, 1)].symbol(), " ");
+        assert_eq!(b[(0, 0)].fg, MUTED, "the border stays muted");
     }
 
     #[test]

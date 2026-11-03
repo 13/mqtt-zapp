@@ -223,7 +223,10 @@ fn header_card_draws_box_path_and_badges() {
     let x = l[0][..l[0].find("SENSOR").unwrap()].chars().count() as u16;
     assert_eq!(b[(x, 0)].fg, theme::ACCENT);
     assert!(b[(x, 0)].modifier.contains(Modifier::BOLD));
-    assert_eq!(b[(x - 1, 0)].fg, theme::MUTED);
+    // The path reads in the text colour; only the leaf is accented.
+    assert_eq!(b[(x - 1, 0)].fg, Color::Reset);
+    let copy = l[0][..l[0].find("⧉ copy").unwrap()].chars().count() as u16;
+    assert_eq!(b[(copy, 0)].fg, theme::MUTED, "copy keeps its colour");
     assert!(l[1].contains(" JSON "), "{}", l[1]);
     let jx = l[1][..l[1].find("JSON").unwrap()].chars().count() as u16;
     assert_eq!(b[(jx, 1)].bg, theme::ACCENT);
@@ -807,4 +810,34 @@ fn card_title_never_reaches_copy_button() {
 fn narrow_card_keeps_copy_button() {
     let r = card_row0("a/b/c", 12);
     assert!(r.contains("⧉ copy"), "{r}");
+}
+
+/// Cells of row `y` whose text starts at the first occurrence of `needle`.
+fn cell_at<'a>(b: &'a ratatui::buffer::Buffer, y: u16, needle: &str) -> &'a ratatui::buffer::Cell {
+    let row: String = (0..b.area.width).map(|x| b[(x, y)].symbol()).collect();
+    let x = row[..row
+        .find(needle)
+        .unwrap_or_else(|| panic!("{needle}: {row}"))]
+        .chars()
+        .count() as u16;
+    &b[(x, y)]
+}
+
+#[test]
+fn clock_and_age_read_in_the_text_colour() {
+    let mut a = app_depth(10);
+    send(&mut a, T, b"x", false);
+    a.selected = a.tree.find(T);
+    // Card (row 1 is the badge row) and compact (row 0).
+    let b = draw(&a);
+    let row = lines(&b)[1].clone();
+    let clock = clock_of(&row).to_owned();
+    assert_eq!(cell_at(&b, 1, &clock).fg, Color::Reset, "{row}");
+    assert_eq!(cell_at(&b, 1, "now").fg, Color::Reset, "{row}");
+    assert_eq!(cell_at(&b, 1, "·").fg, theme::MUTED, "{row}");
+    let mut t = Terminal::new(TestBackend::new(79, 24)).unwrap();
+    t.draw(|f| render_message(f, f.area(), &a, true)).unwrap();
+    let b = t.backend().buffer();
+    assert_eq!(cell_at(b, 0, &clock).fg, Color::Reset);
+    assert_eq!(cell_at(b, 0, "now").fg, Color::Reset);
 }
