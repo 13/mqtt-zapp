@@ -7,10 +7,11 @@ use super::rows::Row;
 use mqtt_zapp_core::TopicTree;
 use mqtt_zapp_core::client::ConnState;
 use mqtt_zapp_core::payload::{preview, sanitize};
+use mqtt_zapp_core::search::match_ranges;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use std::time::Instant;
 
@@ -21,6 +22,8 @@ pub const SELECTED_BG: Color = Color::DarkGray;
 pub const FLASH_MODIFIER: Modifier = Modifier::BOLD;
 const FLASH_FG: Color = Color::Yellow;
 const PREVIEW_CHARS: usize = 60;
+/// Search matches in tree rows.
+const MATCH_MODIFIER: Modifier = Modifier::BOLD.union(Modifier::UNDERLINED);
 
 /// Border of a pane: highlighted while it has focus.
 pub fn border_style(focused: bool) -> Style {
@@ -71,6 +74,7 @@ fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
     app.tree_offset = scroll_offset(app.tree_offset, selected, rows.len(), height);
 
     let now = Instant::now();
+    let query = app.filter.as_ref().map(|f| f.query.as_str());
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()
@@ -84,7 +88,7 @@ fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
             if Some(i) == selected {
                 style = style.bg(SELECTED_BG);
             }
-            Line::styled(row_text(&app.tree, row), style)
+            Line::from(row_spans(&app.tree, row, query)).style(style)
         })
         .collect();
     f.render_widget(Paragraph::new(lines).block(block), area);
@@ -103,8 +107,9 @@ fn scroll_offset(offset: usize, selected: Option<usize>, len: usize, height: usi
     offset.min(len.saturating_sub(height))
 }
 
-/// `▸ name = preview (count)`, indented by depth.
-fn row_text(tree: &TopicTree, row: &Row) -> String {
+/// `▸ name = preview (count)`, indented by depth; `query` matches in the
+/// name and the preview are highlighted.
+fn row_spans<'a>(tree: &TopicTree, row: &Row, query: Option<&str>) -> Vec<Span<'a>> {
     let node = tree.node(row.id);
     let marker = match (row.has_children, row.expanded) {
         (false, _) => ' ',
@@ -116,13 +121,36 @@ fn row_text(tree: &TopicTree, row: &Row) -> String {
     } else {
         single_line(&node.name)
     };
-    let mut s = format!("{}{marker} {name}", "  ".repeat(row.depth as usize));
+    let mut spans = vec![Span::raw(format!(
+        "{}{marker} ",
+        "  ".repeat(row.depth as usize)
+    ))];
+    highlight(&mut spans, name, query);
     if let Some(m) = &node.latest {
-        s.push_str(" = ");
-        s.push_str(&preview(&m.payload, PREVIEW_CHARS));
+        spans.push(Span::raw(" = "));
+        highlight(&mut spans, preview(&m.payload, PREVIEW_CHARS), query);
     }
-    s.push_str(&format!(" ({})", node.msg_count));
-    s
+    spans.push(Span::raw(format!(" ({})", node.msg_count)));
+    spans
+}
+
+/// Push `text` as spans, styling the byte ranges where `query` matches.
+fn highlight<'a>(out: &mut Vec<Span<'a>>, text: String, query: Option<&str>) {
+    let ranges = query.map(|q| match_ranges(&text, q)).unwrap_or_default();
+    let mut at = 0;
+    for r in ranges {
+        if r.start > at {
+            out.push(Span::raw(text[at..r.start].to_owned()));
+        }
+        out.push(Span::styled(
+            text[r.clone()].to_owned(),
+            Style::new().add_modifier(MATCH_MODIFIER),
+        ));
+        at = r.end;
+    }
+    if at < text.len() {
+        out.push(Span::raw(text[at..].to_owned()));
+    }
 }
 
 fn single_line(s: &str) -> String {
@@ -130,6 +158,16 @@ fn single_line(s: &str) -> String {
 }
 
 fn status_text(app: &App) -> String {
+    if app.mode == Mode::SearchInput {
+        return format!("/{}▏", single_line(&app.search));
+    }
+    if let Some(f) = &app.filter {
+        return format!(
+            "filter: {} ({} matches)",
+            single_line(&f.query),
+            f.matches.len()
+        );
+    }
     let state = match &app.conn_state {
         ConnState::Connecting => "connecting…".to_owned(),
         ConnState::Connected => "connected".to_owned(),
@@ -256,6 +294,45 @@ mod tests {
             "{last}"
         );
         assert!(last.contains("msg/s"), "{last}");
+    }
+
+    #[test]
+    fn search_highlights_matches_and_shows_status() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut a = app_with(&[("a/esp-WZR1", b"hello wzr"), ("b", b"1")]);
+        a.handle_action(Action::Search);
+        for c in "wzr".chars() {
+            a.on_search_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let b = draw(&mut a, 80, 24);
+        let s = text(&b);
+        assert_eq!(s.lines().last().unwrap().trim_end(), "/wzr▏");
+        assert!(!s.contains("= 1"), "non-matching row hidden: {s}");
+        let row = s.lines().position(|l| l.contains("esp-WZR1 =")).unwrap();
+        let line = s.lines().nth(row).unwrap();
+        let line = &line[..line.char_indices().nth(40).unwrap().0]; // tree pane
+        let col_of = |byte: usize| line[..byte].chars().count() as u16;
+        let (name, prev) = (line.find("WZR").unwrap(), line.rfind("wzr").unwrap());
+        let row = row as u16;
+        assert!(b[(col_of(name), row)].modifier.contains(MATCH_MODIFIER));
+        assert!(
+            !b[(col_of(name) - 1, row)]
+                .modifier
+                .contains(Modifier::UNDERLINED)
+        );
+        assert!(
+            b[(col_of(prev), row)].modifier.contains(MATCH_MODIFIER),
+            "preview"
+        );
+        a.on_search_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let s = text(&draw(&mut a, 80, 24));
+        assert!(
+            s.lines()
+                .last()
+                .unwrap()
+                .contains("filter: wzr (1 matches)"),
+            "{s}"
+        );
     }
 
     #[test]

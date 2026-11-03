@@ -26,7 +26,6 @@ pub enum Mode {
     #[allow(dead_code)] // TODO(task 11): password prompt
     Password,
     Browse,
-    #[allow(dead_code)] // TODO(task 10): search input
     SearchInput,
     #[allow(dead_code)] // TODO(task 12): publish form
     Publish,
@@ -98,6 +97,8 @@ pub struct App {
     pub mode: Mode,
     pub conn_state: ConnState,
     pub dirty: bool,
+    /// Set when messages arrived since the last tick; gates the filter rebuild.
+    tree_changed: bool,
     pub msg_rate: MsgRate,
     /// First visible row of the tree pane; maintained by the renderer.
     pub tree_offset: usize,
@@ -140,6 +141,7 @@ impl App {
             mode,
             conn_state,
             dirty: true,
+            tree_changed: false,
             msg_rate: MsgRate::default(),
             tree_offset: 0,
             focus: Focus::Tree,
@@ -171,6 +173,7 @@ impl App {
         self.history_sel = None;
         self.payload_scroll = 0;
         self.filter = None;
+        self.search.clear();
         self.tree_offset = 0;
         self.msg_rate = MsgRate::default();
         self.dirty = true;
@@ -193,6 +196,7 @@ impl App {
                     self.history_sel = self.history_sel.map(|i| i.saturating_sub(1));
                 }
                 self.msg_rate.record(Instant::now());
+                self.tree_changed = true;
             }
         }
         self.dirty = true;
@@ -201,8 +205,8 @@ impl App {
     /// Called every UI tick (100 ms): refresh the live filter so new messages
     /// show up in it, and keep redrawing while something is flashing.
     pub fn on_tick(&mut self) {
-        if !self.search.is_empty() {
-            self.filter = search::filter(&self.tree, &self.search);
+        if std::mem::take(&mut self.tree_changed) && !self.search.is_empty() {
+            self.rebuild_filter();
         }
         let now = Instant::now();
         // ROOT is touched by every insert, so it tells whether any row flashes.
@@ -241,7 +245,58 @@ impl App {
                 Some(Action::Quit | Action::Cancel) => Effect::Quit,
                 _ => Effect::None,
             },
+            Mode::SearchInput => {
+                self.on_search_key(key);
+                Effect::None
+            }
             _ => Effect::None,
+        }
+    }
+
+    /// Keys while typing a search. They bypass the keymap, so `q` and `j`
+    /// are just characters.
+    pub fn on_search_key(&mut self, key: KeyEvent) {
+        self.dirty = true;
+        match key.code {
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.search.push(c);
+                self.rebuild_filter();
+            }
+            KeyCode::Backspace => {
+                self.search.pop();
+                self.rebuild_filter();
+            }
+            KeyCode::Enter => self.mode = Mode::Browse,
+            KeyCode::Esc => {
+                self.clear_search();
+                self.mode = Mode::Browse;
+            }
+            _ => {}
+        }
+    }
+
+    fn clear_search(&mut self) {
+        self.search.clear();
+        self.filter = None;
+    }
+
+    /// Recompute the filter from `search`; if the selection is not shown,
+    /// move it to the first match.
+    fn rebuild_filter(&mut self) {
+        self.filter = search::filter(&self.tree, &self.search);
+        let Some(f) = &self.filter else {
+            return;
+        };
+        if self.selected.is_some_and(|s| f.visible.contains(&s)) {
+            return;
+        }
+        let first = self.rows().into_iter().find(|r| f.matches.contains(&r.id));
+        if let Some(row) = first {
+            self.select(row.id);
         }
     }
 
@@ -281,8 +336,10 @@ impl App {
                 }
             }
             Action::Collapse => self.collapse(),
-            // TODO(tasks 10-12): search, publish, help.
-            Action::Search | Action::Publish | Action::Select | Action::Help | Action::Cancel => {}
+            Action::Search => self.mode = Mode::SearchInput,
+            Action::Cancel => self.clear_search(),
+            // TODO(tasks 11-12): publish, help.
+            Action::Publish | Action::Select | Action::Help => {}
         }
         Effect::None
     }
@@ -515,6 +572,102 @@ mod tests {
         a.apply_core_event(CoreEvent::State(ConnState::Connected));
         assert!(matches!(a.conn_state, ConnState::Connected));
         assert!(a.dirty);
+    }
+
+    fn key(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    fn type_str(a: &mut App, s: &str) {
+        for c in s.chars() {
+            a.handle_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    fn row_names(a: &App) -> Vec<String> {
+        a.rows().iter().map(|r| a.tree.full_topic(r.id)).collect()
+    }
+
+    fn search_app() -> App {
+        browse(&[
+            "muh/esp/esp32-WZR1/LWT",
+            "tasmota/tele/x/STATE",
+            "other/thing",
+        ])
+    }
+
+    #[test]
+    fn typing_filters_each_keystroke() {
+        let mut a = search_app();
+        a.handle_key(key(KeyCode::Char('/')));
+        assert_eq!(a.mode, Mode::SearchInput);
+        type_str(&mut a, "wz");
+        assert!(a.filter.is_some());
+        assert!(row_names(&a).contains(&"muh/esp/esp32-WZR1".to_string()));
+        assert!(!row_names(&a).contains(&"other".to_string()));
+        type_str(&mut a, "r");
+        assert!(row_names(&a).contains(&"muh/esp/esp32-WZR1".to_string()));
+        a.handle_key(key(KeyCode::Backspace));
+        assert_eq!(a.search, "wz");
+    }
+
+    #[test]
+    fn payload_match_shows_topic() {
+        let mut a = search_app();
+        a.apply_core_event(msg("tasmota/tele/x/STATE", r#"{"DeviceName":"wzr-lamp"}"#));
+        a.handle_key(key(KeyCode::Char('/')));
+        type_str(&mut a, "wzr");
+        assert!(row_names(&a).contains(&"tasmota/tele/x/STATE".to_string()));
+    }
+
+    #[test]
+    fn new_matching_topic_appears_while_filtered() {
+        let mut a = search_app();
+        a.handle_key(key(KeyCode::Char('/')));
+        type_str(&mut a, "wzr");
+        a.handle_key(key(KeyCode::Enter));
+        assert_eq!(a.mode, Mode::Browse);
+        assert!(a.filter.is_some(), "enter keeps the filter");
+        a.apply_core_event(msg("new/wzr2", "v"));
+        a.on_tick();
+        assert!(row_names(&a).contains(&"new/wzr2".to_string()));
+    }
+
+    #[test]
+    fn esc_clears_filter() {
+        let mut a = search_app();
+        a.handle_key(key(KeyCode::Char('/')));
+        type_str(&mut a, "wzr");
+        a.handle_key(key(KeyCode::Esc));
+        assert_eq!(a.mode, Mode::Browse);
+        assert!(a.filter.is_none() && a.search.is_empty());
+        // In Browse, esc clears a kept filter too.
+        a.handle_key(key(KeyCode::Char('/')));
+        type_str(&mut a, "wzr");
+        a.handle_key(key(KeyCode::Enter));
+        a.handle_key(key(KeyCode::Esc));
+        assert!(a.filter.is_none() && a.search.is_empty());
+    }
+
+    #[test]
+    fn selection_jumps_to_first_match_when_hidden() {
+        let mut a = search_app();
+        let other = a.tree.find("other").unwrap();
+        a.selected = Some(other);
+        a.handle_key(key(KeyCode::Char('/')));
+        type_str(&mut a, "wzr");
+        assert_eq!(sel(&a), "muh/esp/esp32-WZR1");
+    }
+
+    #[test]
+    fn typing_q_in_search_does_not_quit() {
+        let mut a = search_app();
+        a.handle_key(key(KeyCode::Char('/')));
+        assert!(matches!(
+            a.handle_key(key(KeyCode::Char('q'))),
+            Effect::None
+        ));
+        assert_eq!(a.search, "q");
     }
 
     #[test]
