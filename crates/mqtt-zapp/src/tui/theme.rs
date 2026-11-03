@@ -41,6 +41,17 @@ pub fn pane(title: &str, focused: bool) -> Block<'static> {
     }
 }
 
+/// `key label` for the footer: the key in the accent colour, the label muted.
+pub fn key_hint(key: &str, label: &str) -> [Span<'static>; 2] {
+    [
+        Span::styled(
+            key.to_owned(),
+            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!(" {label}  "), Style::new().fg(MUTED)),
+    ]
+}
+
 /// The selected row: bright in the focused pane, grey elsewhere.
 pub fn selection(focused: bool) -> Style {
     if focused {

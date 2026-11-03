@@ -47,7 +47,7 @@ fn render_front(f: &mut Frame, app: &App, area: Rect) {
         (Mode::Password, Some(st)) => super::picker::render_password(f, main, st),
         _ => super::picker::render_picker(f, main, &app.picker, app.store_error.as_deref()),
     }
-    f.render_widget(Paragraph::new(status_line(app)), status);
+    f.render_widget(Paragraph::new(footer_line(app, area.width)), status);
 }
 
 fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
@@ -68,7 +68,7 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
     if app.mode == Mode::Help {
         render_help(f, main, app);
     }
-    f.render_widget(Paragraph::new(status_line(app)), status);
+    f.render_widget(Paragraph::new(footer_line(app, area.width)), status);
 }
 
 /// Effective keymap on the left; keys that bypass the keymap on the right.
@@ -212,55 +212,130 @@ fn single_line(s: &str) -> String {
     sanitize(s).replace('\n', "\u{23ce}")
 }
 
-/// First key bound to `action`, or `?` when the user unbound it.
+/// Shortest key bound to `action` (`j` over `down`), or `?` when unbound.
 fn key_for(app: &App, action: Action) -> String {
     app.keymap
         .bindings()
         .into_iter()
         .find(|(a, _)| *a == action)
-        .and_then(|(_, keys)| keys.first().map(ToString::to_string))
+        .and_then(|(_, keys)| {
+            keys.iter()
+                .map(ToString::to_string)
+                .min_by_key(|k| k.chars().count())
+        })
         .unwrap_or_else(|| "?".into())
 }
 
-fn mode_hint(app: &App) -> String {
-    match app.mode {
-        Mode::Browse => format!(
-            "{} search  {} publish  {} history  {} help",
-            key_for(app, Action::Search),
-            key_for(app, Action::Publish),
-            key_for(app, Action::FocusNext),
-            key_for(app, Action::Help),
-        ),
-        Mode::Picker => "enter connect  q quit".into(),
-        Mode::Password if app.picker.profiles.is_empty() => "enter connect  esc quit".into(),
-        Mode::Password => "enter connect  esc back".into(),
-        _ => String::new(),
+/// The context's key hints as `(key, label)`, most useful first. Keys come
+/// from the keymap, so remaps show up here.
+fn hints(app: &App) -> Vec<(String, &'static str)> {
+    let k = |a| key_for(app, a);
+    let jk = format!("{}/{}", k(Action::Down), k(Action::Up));
+    match (app.mode, app.focus) {
+        (Mode::Browse, Focus::Tree) => vec![
+            (k(Action::Search), "search"),
+            (k(Action::Publish), "publish"),
+            (k(Action::Select), "expand"),
+            (k(Action::FocusNext), "focus"),
+            (k(Action::Help), "help"),
+            (k(Action::Quit), "quit"),
+        ],
+        (Mode::Browse, Focus::Payload) => vec![
+            (jk, "scroll"),
+            (k(Action::ToggleDiff), "diff"),
+            (k(Action::FocusNext), "focus"),
+            (k(Action::Help), "help"),
+            (k(Action::Quit), "quit"),
+        ],
+        (Mode::Browse, Focus::History) => vec![
+            (jk, "history"),
+            (k(Action::ToggleDiff), "diff"),
+            (k(Action::FocusNext), "focus"),
+            (k(Action::Help), "help"),
+            (k(Action::Quit), "quit"),
+        ],
+        (Mode::Picker, _) => vec![
+            (k(Action::Select), "connect"),
+            (jk, "move"),
+            (k(Action::Quit), "quit"),
+        ],
+        (Mode::Password, _) if app.picker.profiles.is_empty() => {
+            vec![("enter".into(), "connect"), ("esc".into(), "quit")]
+        }
+        (Mode::Password, _) => vec![("enter".into(), "connect"), ("esc".into(), "back")],
+        _ => vec![],
     }
 }
 
-/// `● name  X.X msg/s  N topics  filter: q (N)  hint`. While typing a search,
-/// the search text replaces it. Before a connection exists (picker, password)
-/// only the hint is shown.
-fn status_line(app: &App) -> Line<'static> {
+/// Append whole hints while they fit in `width` columns.
+fn push_hints(spans: &mut Vec<Span<'static>>, hints: &[(String, &str)], width: usize) {
+    for (key, label) in hints {
+        let hint = theme::key_hint(key, label);
+        // The trailing gap of the last hint may be cut.
+        if spans_width(spans) + spans_width(&hint) - 2 > width {
+            break;
+        }
+        spans.extend(hint);
+    }
+}
+
+/// The footer: the search prompt while typing a search; otherwise the filter
+/// chip, then a note (red for errors) or the context's key hints.
+fn footer_line(app: &App, width: u16) -> Line<'static> {
+    let width = usize::from(width);
     if app.mode == Mode::SearchInput {
-        return Line::raw(format!("/{}▏", single_line(&app.search)));
+        let mut spans = vec![
+            Span::styled(
+                "/",
+                Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{}▏", single_line(&app.search))),
+        ];
+        let mut right = Vec::new();
+        push_hints(
+            &mut right,
+            &[("enter".into(), "keep"), ("esc".into(), "clear")],
+            width,
+        );
+        let right_w = spans_width(&right).saturating_sub(2);
+        let pad = width.saturating_sub(spans_width(&spans) + right_w);
+        if !right.is_empty() && pad > 0 {
+            spans.push(Span::raw(" ".repeat(pad)));
+            spans.extend(right);
+        }
+        return Line::from(spans);
     }
-    let note = app.note_at(Instant::now()).map(|n| {
-        single_line(n)
-            .chars()
-            .take(NOTE_MAX_CHARS)
-            .collect::<String>()
-    });
-    let hint = note.unwrap_or_else(|| mode_hint(app));
-    if matches!(app.mode, Mode::Picker | Mode::Password) {
-        return Line::raw(hint.to_owned());
-    }
-    let filter = app
+    let mut spans = Vec::new();
+    if let Some(f) = app
         .filter
         .as_ref()
-        .map(|f| format!("filter: {} ({})  ", single_line(&f.query), f.matches.len()))
-        .unwrap_or_default();
-    Line::raw(format!("{filter}{hint}"))
+        .filter(|_| !matches!(app.mode, Mode::Picker | Mode::Password))
+    {
+        let chip = format!(" filter: {} ({}) ", single_line(&f.query), f.matches.len());
+        spans.push(Span::styled(
+            ellipsize(&chip, width),
+            Style::new().fg(Color::Black).bg(theme::WARN),
+        ));
+        spans.push(Span::raw(" "));
+        push_hints(
+            &mut spans,
+            &[(key_for(app, Action::Cancel), "clear")],
+            width,
+        );
+    }
+    if let Some(note) = app.note_at(Instant::now()) {
+        let room = width
+            .saturating_sub(spans_width(&spans))
+            .min(NOTE_MAX_CHARS);
+        let color = if note.error { theme::ERR } else { theme::OK };
+        spans.push(Span::styled(
+            ellipsize(&single_line(&note.text), room),
+            Style::new().fg(color),
+        ));
+    } else {
+        push_hints(&mut spans, &hints(app), width);
+    }
+    Line::from(spans)
 }
 
 /// Width of `spans` in terminal columns.
@@ -368,7 +443,7 @@ fn header_line(app: &App, width: u16) -> Line<'static> {
 mod tests {
     use super::*;
     use crate::cli::Launch;
-    use crate::tui::app::{App, Mode, ServerInfo};
+    use crate::tui::app::{App, Mode, Note, ServerInfo};
     use crate::tui::keymap::Action;
     use mqtt_zapp_core::Message;
     use mqtt_zapp_core::client::CoreEvent;
@@ -503,7 +578,9 @@ mod tests {
         }
         let b = draw(&mut a, 80, 24);
         let s = text(&b);
-        assert_eq!(s.lines().last().unwrap().trim_end(), "/wzr▏");
+        let last = s.lines().last().unwrap().trim_end().to_owned();
+        assert!(last.starts_with("/wzr▏"), "{last}");
+        assert!(last.ends_with("enter keep  esc clear"), "{last}");
         assert!(!s.contains("= 1"), "non-matching row hidden: {s}");
         let row = s.lines().position(|l| l.contains("esp-WZR1 =")).unwrap();
         let line = s.lines().nth(row).unwrap();
@@ -533,7 +610,7 @@ mod tests {
             mqtt_zapp_core::client::ConnState::Connected,
         ));
         a.filter = mqtt_zapp_core::search::filter(&a.tree, "wzr");
-        a.set_note("published ok".into(), Instant::now());
+        a.set_note(Note::info("published ok"), Instant::now());
         let b = draw(&mut a, 100, 24);
         let last = last_line(&b);
         let top = first_line(&b);
@@ -549,7 +626,7 @@ mod tests {
         let mut a = app_with(&[("a", b"1")]);
         let last = last_line(&draw(&mut a, 100, 24));
         assert!(
-            last.contains("/ search  p publish  tab history  ? help"),
+            last.contains("/ search  p publish  enter expand  tab focus  ? help"),
             "{last}"
         );
         let mut s = Settings::default();
@@ -671,6 +748,72 @@ mod tests {
         assert!(b.content.iter().all(|c| !c.symbol().contains('\x07')));
     }
 
+    #[test]
+    fn search_footer_survives_long_query_at_40_cols() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut a = app_with(&[("a", b"1")]);
+        a.handle_action(Action::Search);
+        for c in "x".repeat(60).chars() {
+            a.on_search_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert!(last_line(&draw(&mut a, 40, 10)).starts_with("/xxx"));
+    }
+
+    #[test]
+    fn footer_hints_follow_focus() {
+        let mut a = app_with(&[("a", b"1")]);
+        let last = last_line(&draw(&mut a, 100, 24));
+        assert!(
+            last.contains("/ search") && last.contains("p publish"),
+            "{last}"
+        );
+        a.handle_action(Action::FocusNext);
+        let last = last_line(&draw(&mut a, 100, 24));
+        assert!(
+            last.contains("j/k scroll") && last.contains("d diff"),
+            "{last}"
+        );
+        assert!(!last.contains("p publish"), "{last}");
+    }
+
+    #[test]
+    fn footer_drops_hints_when_narrow() {
+        let mut a = app_with(&[("a", b"1")]);
+        let last = last_line(&draw(&mut a, 40, 10));
+        assert!(last.chars().count() <= 40, "{last}");
+        assert!(last.starts_with("/ search"), "{last}");
+        // Whole hints only: every key is followed by its label.
+        let words: Vec<&str> = last.split("  ").collect();
+        assert!(words.iter().all(|w| w.contains(' ')), "{last}");
+    }
+
+    #[test]
+    fn error_note_is_red() {
+        let mut a = app_with(&[("a", b"1")]);
+        a.set_note(Note::error("publish failed: x"), Instant::now());
+        let b = draw(&mut a, 100, 24);
+        let last = last_line(&b);
+        let col = last.find("publish failed").unwrap();
+        let col = last[..col].chars().count() as u16;
+        assert_eq!(b[(col, 23)].fg, theme::ERR);
+        a.set_note(Note::info("published a"), Instant::now());
+        let b = draw(&mut a, 100, 24);
+        let last = last_line(&b);
+        let col = last[..last.find("published").unwrap()].chars().count() as u16;
+        assert_eq!(b[(col, 23)].fg, theme::OK);
+    }
+
+    #[test]
+    fn filter_chip_is_highlighted() {
+        let mut a = app_with(&[("a/wzr", b"1")]);
+        a.filter = mqtt_zapp_core::search::filter(&a.tree, "wzr");
+        let b = draw(&mut a, 100, 24);
+        let last = last_line(&b);
+        assert!(last.starts_with(" filter: wzr (1) "), "{last}");
+        assert_eq!(b[(1, 23)].bg, theme::WARN);
+        assert!(last.contains("esc clear"), "{last}");
+    }
+
     fn last_line(b: &Buffer) -> String {
         text(b).lines().last().unwrap().trim_end().to_owned()
     }
@@ -706,7 +849,10 @@ mod tests {
         assert_eq!(b[(3, row)].bg, theme::SEL_BG);
         let other = s.lines().position(|l| l.contains("home  mqtts")).unwrap() as u16;
         assert_ne!(b[(3, other)].bg, theme::SEL_BG);
-        assert!(last_line(&b).contains("enter connect  q quit"), "{s}");
+        assert!(
+            last_line(&b).contains("enter connect  j/k move  q quit"),
+            "{s}"
+        );
     }
 
     #[test]
@@ -793,12 +939,12 @@ mod tests {
     #[test]
     fn status_note_is_sanitized_and_expires() {
         let mut a = app_with(&[]);
-        a.set_note("publish failed: \x1b[2Jboom".into(), Instant::now());
+        a.set_note(Note::error("publish failed: \x1b[2Jboom"), Instant::now());
         let b = draw(&mut a, 100, 24);
         assert!(b.content.iter().all(|c| !c.symbol().contains('\x1b')));
         assert!(last_line(&b).contains("publish failed: \u{fffd}[2Jboom"));
         a.status_note = Some((
-            "old".into(),
+            Note::info("old"),
             Instant::now() - std::time::Duration::from_secs(6),
         ));
         assert!(!last_line(&draw(&mut a, 100, 24)).contains("old"));

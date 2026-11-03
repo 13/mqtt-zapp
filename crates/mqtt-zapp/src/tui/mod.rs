@@ -13,7 +13,7 @@ mod ui;
 
 use crate::cli::Launch;
 use anyhow::{Context, Result};
-use app::{App, Effect};
+use app::{App, Effect, Note};
 use crossterm::cursor::Show;
 use crossterm::event::{Event, EventStream};
 use crossterm::execute;
@@ -53,11 +53,11 @@ struct Session {
     conn: Option<Connection>,
     rx: Option<Receiver<CoreEvent>>,
     /// Publish outcomes, sent by the spawned publish tasks.
-    notes_tx: UnboundedSender<String>,
+    notes_tx: UnboundedSender<Note>,
 }
 
 impl Session {
-    fn new() -> (Session, UnboundedReceiver<String>) {
+    fn new() -> (Session, UnboundedReceiver<Note>) {
         let (notes_tx, notes_rx) = unbounded_channel();
         let session = Session {
             conn: None,
@@ -104,13 +104,15 @@ impl Session {
                         let notes = self.notes_tx.clone();
                         tokio::spawn(async move {
                             let note = match conn.publish(&topic, payload, qos, retain).await {
-                                Ok(()) => format!("published {topic}"),
-                                Err(e) => format!("publish failed: {e:#}"),
+                                Ok(()) => Note::info(format!("published {topic}")),
+                                Err(e) => Note::error(format!("publish failed: {e:#}")),
                             };
                             let _ = notes.send(note);
                         });
                     }
-                    None => app.set_note("publish failed: not connected".into(), Instant::now()),
+                    None => {
+                        app.set_note(Note::error("publish failed: not connected"), Instant::now())
+                    }
                 }
             }
         }
@@ -129,7 +131,7 @@ async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
     session: &mut Session,
-    notes: &mut UnboundedReceiver<String>,
+    notes: &mut UnboundedReceiver<Note>,
 ) -> Result<()> {
     let mut input = EventStream::new();
     let mut tick = tokio::time::interval(TICK);

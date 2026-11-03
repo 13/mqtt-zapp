@@ -130,6 +130,29 @@ pub struct ServerInfo {
     pub subscriptions: Vec<String>,
 }
 
+/// A transient footer message, e.g. a publish result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Note {
+    pub text: String,
+    pub error: bool,
+}
+
+impl Note {
+    pub fn info(text: impl Into<String>) -> Note {
+        Note {
+            text: text.into(),
+            error: false,
+        }
+    }
+
+    pub fn error(text: impl Into<String>) -> Note {
+        Note {
+            text: text.into(),
+            error: true,
+        }
+    }
+}
+
 pub struct App {
     pub tree: TopicTree,
     pub expanded: HashSet<NodeId>,
@@ -167,7 +190,7 @@ pub struct App {
     /// Open while in `Mode::Publish`.
     pub publish: Option<PublishForm>,
     /// A transient status-bar message (publish result) and when it was set.
-    pub status_note: Option<(String, Instant)>,
+    pub status_note: Option<(Note, Instant)>,
 }
 
 impl App {
@@ -380,17 +403,17 @@ impl App {
         }
     }
 
-    pub fn set_note(&mut self, text: String, now: Instant) {
-        self.status_note = Some((text, now));
+    pub fn set_note(&mut self, note: Note, now: Instant) {
+        self.status_note = Some((note, now));
         self.dirty = true;
     }
 
     /// The note, unless it is older than `NOTE_TTL` at `now`.
-    pub fn note_at(&self, now: Instant) -> Option<&str> {
+    pub fn note_at(&self, now: Instant) -> Option<&Note> {
         self.status_note
             .as_ref()
             .filter(|(_, t)| now.saturating_duration_since(*t) < NOTE_TTL)
-            .map(|(s, _)| s.as_str())
+            .map(|(n, _)| n)
     }
 
     pub fn is_flashing(&self, id: NodeId, now: Instant) -> bool {
@@ -1208,10 +1231,10 @@ mod tests {
     fn status_note_is_set_and_expires() {
         let mut a = browse(&[]);
         let t0 = Instant::now();
-        a.set_note("published a/b".into(), t0);
+        a.set_note(Note::info("published a/b"), t0);
         assert_eq!(
             a.note_at(t0 + Duration::from_secs(4)),
-            Some("published a/b")
+            Some(&Note::info("published a/b"))
         );
         assert_eq!(a.note_at(t0 + Duration::from_secs(6)), None);
     }
