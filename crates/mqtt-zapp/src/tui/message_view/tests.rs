@@ -1181,3 +1181,20 @@ fn oversize_payload_is_not_charted_and_does_not_panic() {
     let s = text(&draw(&a));
     assert!(s.contains("not enough numeric values"), "{s}");
 }
+
+#[test]
+fn large_binary_hex_dump_is_capped() {
+    let mut p = vec![7u8; PRETTY_MAX * 3 / 2];
+    p[10] = 0;
+    let a = app_with(&[&p]);
+    let (b, label) = body(&a).unwrap();
+    assert_eq!(label, "BINARY");
+    let Body::Plain(l) = &*b else {
+        panic!("expected plain")
+    };
+    assert!(l.len() <= PRETTY_MAX / 16 + 2, "{}", l.len());
+    assert_eq!(
+        l.last().unwrap(),
+        &format!("… {} more bytes not shown", p.len() - PRETTY_MAX)
+    );
+}

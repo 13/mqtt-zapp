@@ -928,6 +928,16 @@ fn reset_tree_clears_body_cache() {
 }
 
 #[test]
+fn reset_tree_clears_chart_cache() {
+    let mut a = browse(&["a"]);
+    a.handle_action(Action::Down);
+    let _ = a.chart_series();
+    assert!(a.chart_cache.is_cached());
+    a.reset_tree();
+    assert!(!a.chart_cache.is_cached());
+}
+
+#[test]
 fn dropped_events_accumulate() {
     let mut a = browse(&["a"]);
     a.apply_core_event(CoreEvent::Dropped(3));

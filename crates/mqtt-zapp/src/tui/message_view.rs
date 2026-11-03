@@ -165,7 +165,19 @@ fn detect_capped(payload: &[u8]) -> PayloadKind {
 
 fn build_body(s: &Shown, kind: PayloadKind, show_diff: bool) -> Body {
     if !show_diff {
-        let mut lines = pretty_lines(&kind, &s.msg.payload);
+        let payload = &s.msg.payload;
+        // A hex dump is one string per 16 bytes: bound it like the rest.
+        let shown_len = match kind {
+            PayloadKind::Binary => payload.len().min(PRETTY_MAX),
+            _ => payload.len(),
+        };
+        let mut lines = pretty_lines(&kind, &payload[..shown_len]);
+        if shown_len < payload.len() {
+            lines.push(format!(
+                "… {} more bytes not shown",
+                payload.len() - shown_len
+            ));
+        }
         // `body` already made a cut JSON payload text; the marker is not JSON.
         return match (kind, s.msg.truncated_from) {
             (_, Some(n)) => {
@@ -666,6 +678,18 @@ fn chart_key(app: &App, s: &Shown) -> ChartKey {
         history_key(app, s),
         (s.msg.received_at, s.msg.payload.len()),
     )
+}
+
+impl ChartCache {
+    pub fn clear(&self) {
+        *self.slot.borrow_mut() = None;
+        *self.meta.borrow_mut() = None;
+    }
+
+    #[cfg(test)]
+    pub fn is_cached(&self) -> bool {
+        self.slot.borrow().is_some() || self.meta.borrow().is_some()
+    }
 }
 
 /// Series and highlight lines of the shown message, cached. A payload above

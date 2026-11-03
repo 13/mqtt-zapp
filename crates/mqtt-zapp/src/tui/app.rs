@@ -405,6 +405,7 @@ impl App {
         self.tree =
             TopicTree::with_limits(self.history_depth, self.max_history_bytes, self.max_topics);
         self.expanded.clear();
+        self.chart_cache.clear();
         self.selected = None;
         self.history_sel = None;
         self.diff_base = None;
