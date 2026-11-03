@@ -87,7 +87,8 @@ pub fn start_on(auth: bool, (port, ws_port, tls_port): (u16, u16, u16)) -> Optio
     }
 }
 
-fn free_ports() -> (u16, u16, u16) {
+/// Three ports that were free a moment ago (nothing listens on them yet).
+pub fn free_ports() -> (u16, u16, u16) {
     let ls: Vec<TcpListener> = (0..3)
         .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
         .collect();

@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 const CHANNEL_CAPACITY: usize = 10_000;
 const REQUEST_CAPACITY: usize = 100;
+const PUBLISH_TIMEOUT: Duration = Duration::from_secs(5);
 const BACKOFF_START_MS: u64 = 1_000;
 const BACKOFF_MAX_MS: u64 = 30_000;
 /// Largest packet MQTT 3.1.1 can encode; rumqttc's 10 KiB default would drop
@@ -75,10 +76,15 @@ impl Connection {
         retain: bool,
     ) -> Result<()> {
         let qos = rumqttc::qos(qos).map_err(|e| anyhow!("invalid qos {qos}: {e}"))?;
-        self.client
-            .publish(topic, qos, retain, payload)
-            .await
-            .context("publish failed")
+        // The request queue only drains while connected; don't hang the caller
+        // for a whole outage.
+        tokio::time::timeout(
+            PUBLISH_TIMEOUT,
+            self.client.publish(topic, qos, retain, payload),
+        )
+        .await
+        .map_err(|_| anyhow!("publish timed out (not connected?)"))?
+        .context("publish failed")
     }
 
     /// Send DISCONNECT (best effort) and stop the background task.
@@ -117,14 +123,7 @@ async fn run(
             Ok(Event::Incoming(Packet::ConnAck(_))) => {
                 connected = true;
                 backoff = BACKOFF_START_MS;
-                if !subscriptions.is_empty() {
-                    let filters = subscriptions
-                        .iter()
-                        .map(|t| SubscribeFilter::new(t.clone(), QoS::AtMostOnce));
-                    // Non-blocking: awaiting here could deadlock, since only
-                    // this loop drains the request channel.
-                    let _ = client.try_subscribe_many(filters);
-                }
+                subscribe(&client, &subscriptions, &tx, &cancel);
                 emit!(CoreEvent::State(ConnState::Connected));
             }
             Ok(Event::Incoming(Packet::Publish(p))) => {
@@ -170,6 +169,41 @@ async fn run(
     }
 }
 
+/// Subscribe to `topics` at QoS 0 without blocking the poll loop, which is the
+/// only thing draining the request channel. If the channel is full (requests
+/// queued during an outage), a spawned task waits for room while the loop keeps
+/// draining; if even that fails, the reason is reported as `Disconnected`.
+fn subscribe(
+    client: &AsyncClient,
+    topics: &[String],
+    tx: &mpsc::Sender<CoreEvent>,
+    cancel: &CancellationToken,
+) {
+    if topics.is_empty() {
+        return;
+    }
+    let filters: Vec<SubscribeFilter> = topics
+        .iter()
+        .map(|t| SubscribeFilter::new(t.clone(), QoS::AtMostOnce))
+        .collect();
+    if client.try_subscribe_many(filters.clone()).is_ok() {
+        return;
+    }
+    let (client, tx, cancel) = (client.clone(), tx.clone(), cancel.clone());
+    tokio::spawn(async move {
+        if let Err(e) = client.subscribe_many(filters).await
+            && !cancel.is_cancelled()
+        {
+            let _ = tx
+                .send(CoreEvent::State(ConnState::Disconnected {
+                    reason: format!("subscribe failed: {e}"),
+                    retry_in_ms: 0,
+                }))
+                .await;
+        }
+    });
+}
+
 pub(crate) fn mqtt_options(profile: &Profile, password: Option<String>) -> Result<MqttOptions> {
     let id = profile.effective_client_id();
     let host = &profile.host;
@@ -182,7 +216,7 @@ pub(crate) fn mqtt_options(profile: &Profile, password: Option<String>) -> Resul
             } else {
                 "ws"
             };
-            let host = if host.contains(':') {
+            let host = if host.contains(':') && !host.starts_with('[') {
                 format!("[{host}]") // IPv6 literal
             } else {
                 host.clone()
@@ -308,5 +342,73 @@ mod insecure {
         fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
             self.0.supported_schemes()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::PasswordSource;
+
+    fn profile(host: &str, protocol: Protocol, ws_path: &str) -> Profile {
+        Profile {
+            name: "t".into(),
+            host: host.into(),
+            port: 9001,
+            protocol,
+            ws_path: ws_path.into(),
+            client_id: Some("id".into()),
+            username: None,
+            password: PasswordSource::None,
+            tls: TlsConfig::default(),
+            subscriptions: vec![],
+        }
+    }
+
+    fn addr(p: &Profile) -> String {
+        mqtt_options(p, None).unwrap().broker_address().0
+    }
+
+    #[test]
+    fn ws_url_adds_missing_leading_slash() {
+        assert_eq!(
+            addr(&profile("host", Protocol::Ws, "mqtt")),
+            "ws://host:9001/mqtt"
+        );
+        assert_eq!(
+            addr(&profile("host", Protocol::Ws, "/mqtt")),
+            "ws://host:9001/mqtt"
+        );
+        let o = mqtt_options(&profile("host", Protocol::Ws, "/"), None).unwrap();
+        assert!(matches!(o.transport(), Transport::Ws));
+    }
+
+    #[test]
+    fn wss_selects_wss_transport() {
+        let mut p = profile("host", Protocol::Wss, "/mqtt");
+        p.tls.insecure = true; // avoid depending on system roots
+        let o = mqtt_options(&p, None).unwrap();
+        assert_eq!(o.broker_address().0, "wss://host:9001/mqtt");
+        assert!(matches!(o.transport(), Transport::Wss(_)));
+    }
+
+    #[test]
+    fn ipv6_host_bracketed_once() {
+        assert_eq!(addr(&profile("::1", Protocol::Ws, "/")), "ws://[::1]:9001/");
+        assert_eq!(
+            addr(&profile("[::1]", Protocol::Ws, "/")),
+            "ws://[::1]:9001/"
+        );
+    }
+
+    #[test]
+    fn plain_and_tls_use_bare_host() {
+        let o = mqtt_options(&profile("h", Protocol::Mqtt, "/"), None).unwrap();
+        assert_eq!(o.broker_address(), ("h".into(), 9001));
+        assert!(matches!(o.transport(), Transport::Tcp));
+        let mut p = profile("h", Protocol::Mqtts, "/");
+        p.tls.insecure = true;
+        let o = mqtt_options(&p, None).unwrap();
+        assert!(matches!(o.transport(), Transport::Tls(_)));
     }
 }

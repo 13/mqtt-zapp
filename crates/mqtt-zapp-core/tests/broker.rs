@@ -200,3 +200,38 @@ async fn reconnects_after_broker_restart() {
     // The subscription is re-sent on reconnect, so messages flow again.
     ready(&conn, &mut rx, "zapp/ready/again").await;
 }
+
+#[tokio::test]
+async fn subscribes_even_when_request_queue_is_full_at_connack() {
+    // No broker yet: the first attempt fails and the client backs off for 1 s.
+    let ports = support::free_ports();
+    let p = profile("127.0.0.1", ports.0, Protocol::Mqtt);
+    let (conn, mut rx) = Connection::connect(&p, None).unwrap();
+    wait_for(&mut rx, is_disconnected, 5).await;
+
+    // Queue more publishes than the request channel holds, so it is still
+    // full when the ConnAck arrives.
+    for i in 0..150 {
+        let c = conn.clone();
+        tokio::spawn(async move {
+            let _ = c.publish(&format!("q/{i}"), vec![], 0, false).await;
+        });
+    }
+    tokio::task::yield_now().await;
+
+    let Some(_b) = support::start_on(false, ports) else {
+        return;
+    };
+    // A retained message reaches us whenever our SUBSCRIBE is processed,
+    // however late, so this proves the subscribe was not dropped.
+    let (other, mut rx_other) = Connection::connect(&p, None).unwrap();
+    ready(&other, &mut rx_other, "zapp/ready/other").await;
+    other
+        .publish("zapp/kept", b"x".to_vec(), 1, true)
+        .await
+        .unwrap();
+    wait_for(&mut rx_other, |e| is_message(e, "zapp/kept"), 5).await;
+
+    wait_for(&mut rx, is_connected, 5).await;
+    wait_for(&mut rx, |e| is_message(e, "zapp/kept"), 10).await;
+}
