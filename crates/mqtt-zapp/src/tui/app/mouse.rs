@@ -24,6 +24,8 @@ pub struct HitAreas {
     pub picker_skip: usize,
     /// The message header's path row; a click copies the topic.
     pub header_topic: Rect,
+    /// The message header's `⧉ copy`; a click copies the topic.
+    pub header_copy: Rect,
     /// The payload pane's `⧉ copy` title; a click copies the payload.
     pub payload_copy: Rect,
     /// The broker name in the top bar; a click opens the picker.
@@ -94,7 +96,7 @@ impl App {
             return self.handle_action(Action::Brokers);
         }
         // The copy targets sit on top of the panes, so they go first.
-        if hit.header_topic.contains(at) {
+        if hit.header_copy.contains(at) || hit.header_topic.contains(at) {
             return self.copy(true);
         }
         if hit.payload_copy.contains(at) {

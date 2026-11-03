@@ -303,6 +303,11 @@ fn fit_topic(topic: &str, width: usize) -> (String, String) {
     (String::new(), leaf)
 }
 
+/// The copy buttons on the header card and the payload pane's title.
+const COPY_LABEL: &str = " ⧉ copy ";
+/// The one-row header's copy button.
+const COMPACT_COPY: &str = " ⧉ ";
+
 /// Between topic levels in the header: `muh / wsr / json`.
 const SEP: &str = " / ";
 
@@ -414,6 +419,7 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
         app.hit.set(HitAreas {
             payload: area,
             header_topic: Rect::default(),
+            header_copy: Rect::default(),
             payload_copy: Rect::default(),
             ..app.hit.get()
         });
@@ -452,28 +458,45 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
     let kind = body(app).map_or("", |(_, k)| k);
     let now = SystemTime::now();
     if card {
+        let copy_w = COPY_LABEL.width() as u16;
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(theme::MUTED));
+            .border_style(Style::new().fg(theme::MUTED))
+            .title(Line::styled(COPY_LABEL, Style::new().fg(theme::MUTED)).right_aligned());
         let inner = block.inner(meta);
         let rows = header_lines(&s, &topic, kind, &app.timestamp_format, now, inner.width);
         app.hit.set(HitAreas {
             header_topic: Rect { height: 1, ..inner },
+            header_copy: Rect {
+                x: (meta.x + meta.width).saturating_sub(1 + copy_w),
+                y: meta.y,
+                width: copy_w.min(meta.width.saturating_sub(2)),
+                height: 1,
+            },
             ..app.hit.get()
         });
         f.render_widget(Paragraph::new(rows.to_vec()).block(block), meta);
     } else {
-        let row = header_compact(&s, &topic, kind, &app.timestamp_format, now, meta.width);
+        // ` ⧉ ` at the right end; the row is cut short of it.
+        let glyph_w = COMPACT_COPY.width() as u16;
+        let [row_area, glyph] =
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(glyph_w)]).areas(meta);
+        let row = header_compact(&s, &topic, kind, &app.timestamp_format, now, row_area.width);
         // The path is the row's first two spans (parents, leaf badge).
         let path_w: usize = row.spans.iter().take(2).map(|s| s.content.width()).sum();
         app.hit.set(HitAreas {
             header_topic: Rect {
-                width: (path_w as u16).min(meta.width),
-                ..meta
+                width: (path_w as u16).min(row_area.width),
+                ..row_area
             },
+            header_copy: glyph,
             ..app.hit.get()
         });
-        f.render_widget(Paragraph::new(row), meta);
+        f.render_widget(Paragraph::new(row), row_area);
+        f.render_widget(
+            Paragraph::new(Span::styled(COMPACT_COPY, Style::new().fg(theme::MUTED))),
+            glyph,
+        );
     }
     let payload = match &app.chart {
         Some(series) => {
@@ -603,11 +626,10 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
     };
     let body = &*body;
     let focused = app.focus == Focus::Payload;
-    let copy_label = " ⧉ copy ";
-    let copy_w = copy_label.width() as u16;
+    let copy_w = COPY_LABEL.width() as u16;
     block = block.title(
         Line::styled(
-            copy_label,
+            COPY_LABEL,
             Style::new().fg(if focused { theme::ACCENT } else { theme::MUTED }),
         )
         .right_aligned(),

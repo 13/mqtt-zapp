@@ -78,6 +78,23 @@ fn find_at(b: &Buffer, needle: &str) -> (u16, u16) {
     panic!("{needle} not on screen: {t}");
 }
 
+/// Screen positions of every occurrence of `needle`, top to bottom.
+fn find_all(b: &Buffer, needle: &str) -> Vec<(u16, u16)> {
+    let t = text(b);
+    let mut v = vec![];
+    for (y, l) in t.lines().enumerate() {
+        for (i, _) in l.match_indices(needle) {
+            v.push((l[..i].chars().count() as u16, y as u16));
+        }
+    }
+    v
+}
+
+/// The payload pane's `⧉ copy` (the header's comes first).
+fn payload_copy_at(b: &Buffer) -> (u16, u16) {
+    *find_all(b, "⧉ copy").last().expect("payload copy button")
+}
+
 fn copied(e: Effect) -> (&'static str, String) {
     match e {
         Effect::Copy { what, text } => (what, text),
@@ -102,7 +119,7 @@ fn click_copy_button_copies_payload() {
     let mut a = app_with(&[("dev/x", b"hello")]);
     a.selected = a.tree.find("dev/x");
     let b = draw(&mut a, 100, 24);
-    let (x, y) = find_at(&b, "⧉ copy");
+    let (x, y) = payload_copy_at(&b);
     assert_eq!(copied(click(&mut a, x + 2, y)), ("payload", "hello".into()));
 }
 
@@ -112,7 +129,7 @@ fn click_copy_button_copies_pinned_history_entry() {
     a.selected = a.tree.find("dev/x");
     a.history_sel = Some(0);
     let b = draw(&mut a, 100, 24);
-    let (x, y) = find_at(&b, "⧉ copy");
+    let (x, y) = payload_copy_at(&b);
     assert_eq!(copied(click(&mut a, x, y)).1, "first");
 }
 
@@ -1149,4 +1166,54 @@ fn click_broker_name_opens_picker() {
     let _ = draw(&mut a, 120, 24);
     click(&mut a, 2, 0);
     assert_eq!(a.mode, Mode::Browse);
+}
+
+#[test]
+fn click_header_copy_copies_topic() {
+    let mut a = app_with(&[("dev/x", b"hello")]);
+    a.selected = a.tree.find("dev/x");
+    let b = draw(&mut a, 100, 24);
+    let (x, y) = find_all(&b, "⧉ copy")[0];
+    // On the card's top border, the first row of the message area.
+    assert_eq!(y, 1);
+    assert!(text(&b).lines().nth(1).unwrap().contains('╭'));
+    assert_eq!(copied(click(&mut a, x + 2, y)), ("topic", "dev/x".into()));
+}
+
+#[test]
+fn header_and_payload_copy_buttons_are_distinct() {
+    let mut a = app_with(&[("dev/x", b"hello")]);
+    a.selected = a.tree.find("dev/x");
+    let b = draw(&mut a, 100, 24);
+    let all = find_all(&b, "⧉ copy");
+    assert_eq!(all.len(), 2, "{}", text(&b));
+    assert_ne!(all[0].1, all[1].1);
+    assert_eq!(copied(click(&mut a, all[0].0, all[0].1)).0, "topic");
+    assert_eq!(copied(click(&mut a, all[1].0, all[1].1)).0, "payload");
+    // Nothing shown: neither old position copies.
+    a.selected = None;
+    let _ = draw(&mut a, 100, 24);
+    for (x, y) in all {
+        assert!(matches!(click(&mut a, x + 1, y), Effect::None));
+    }
+}
+
+#[test]
+fn compact_header_has_copy_glyph() {
+    let mut a = app_with(&[("dev/x", b"hello")]);
+    a.selected = a.tree.find("dev/x");
+    let b = draw(&mut a, 79, 24);
+    let row = text(&b)
+        .lines()
+        .position(|l| l.contains("dev /  x "))
+        .unwrap() as u16;
+    let line = text(&b)
+        .lines()
+        .nth(row as usize)
+        .unwrap()
+        .trim_end()
+        .to_owned();
+    assert!(line.ends_with('⧉'), "{line:?}");
+    let x = line.chars().count() as u16 - 1;
+    assert_eq!(copied(click(&mut a, x, row)), ("topic", "dev/x".into()));
 }

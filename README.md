@@ -154,10 +154,10 @@ config dir). Set `MQTT_ZAPP_CONFIG_DIR` to use another directory.
 Click a pane to focus it, a topic to select it (click the `▸` marker or the
 selected row again to expand it), a history entry to pin it, and a profile in
 the picker to select it (click again to connect). The wheel scrolls the pane
-under the pointer. Click the topic path in the message header to copy the
-topic, `⧉ copy` on the payload pane to copy the shown payload, or right-click a
-tree row to copy its topic (all via OSC 52). Hold shift to select text with the
-mouse.
+under the pointer. Click `⧉ copy` (or the topic path) on the message header to
+copy the topic, `⧉ copy` on the payload pane to copy the shown payload, or
+right-click a tree row to copy its topic (all via OSC 52). Click the broker name
+in the top bar to switch brokers. Hold shift to select text with the mouse.
 
 ### Publishing
 
