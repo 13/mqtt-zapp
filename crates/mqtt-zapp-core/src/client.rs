@@ -296,6 +296,14 @@ impl Connection {
     }
 }
 
+/// Report the messages dropped so far if the UI channel has room; a full
+/// (or closed) channel keeps the count pending for the next try.
+fn flush_dropped(tx: &mpsc::Sender<CoreEvent>, dropped: &mut u64) {
+    if *dropped > 0 && tx.try_send(CoreEvent::Dropped(*dropped)).is_ok() {
+        *dropped = 0;
+    }
+}
+
 async fn run(
     mut eventloop: Loop,
     client: Client,
@@ -332,16 +340,16 @@ async fn run(
             Polled::Publish { topic, msg } => {
                 // Never wait on a full UI channel: the loop must keep polling
                 // (keepalive pings, acks). Count what does not fit instead.
-                if dropped > 0 && tx.try_send(CoreEvent::Dropped(dropped)).is_ok() {
-                    dropped = 0;
-                }
+                flush_dropped(&tx, &mut dropped);
                 match tx.try_send(CoreEvent::Message { topic, msg }) {
                     Ok(()) => {}
                     Err(mpsc::error::TrySendError::Full(_)) => dropped += 1,
                     Err(mpsc::error::TrySendError::Closed(_)) => return,
                 }
             }
-            Polled::OutgoingDisconnect | Polled::Other => {}
+            // Pings and acks: a quiet broker still gets the count out.
+            Polled::Other => flush_dropped(&tx, &mut dropped),
+            Polled::OutgoingDisconnect => {}
             Polled::Err(reason) => {
                 connected = false;
                 let unsent = eventloop.drop_pending();
@@ -603,6 +611,22 @@ mod insecure {
 mod tests {
     use super::*;
     use crate::config::PasswordSource;
+
+    #[test]
+    fn flush_dropped_waits_for_room_then_resets() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut dropped = 0;
+        flush_dropped(&tx, &mut dropped);
+        assert!(rx.try_recv().is_err(), "nothing to report");
+        tx.try_send(CoreEvent::Dropped(0)).unwrap(); // fill the channel
+        dropped = 5;
+        flush_dropped(&tx, &mut dropped);
+        assert_eq!(dropped, 5, "a full channel keeps the count pending");
+        rx.try_recv().unwrap();
+        flush_dropped(&tx, &mut dropped);
+        assert_eq!(dropped, 0);
+        assert!(matches!(rx.try_recv(), Ok(CoreEvent::Dropped(5))));
+    }
 
     #[test]
     fn incoming_payload_does_not_alias_the_read_buffer() {

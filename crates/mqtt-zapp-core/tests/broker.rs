@@ -479,32 +479,46 @@ async fn slow_consumer_stays_connected() {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     let mut events = drain_idle(&mut rx).await;
-    // The count still pending is flushed by the next message that fits, so
-    // publish a marker and collect everything up to it.
-    flood.publish("x/marker", vec![1], 0, false).await.unwrap();
-    loop {
-        let ev = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .expect("marker never arrived")
-            .expect("event channel closed");
-        let done = is_message(&ev, "x/marker");
-        events.push(ev);
-        if done {
-            break;
+    // The count still pending goes out with the next poll of any kind, not
+    // only the next delivered message: publish to a topic the slow client
+    // does not subscribe to, so only its own outgoing publish and PUBACK
+    // wake the loop.
+    slow_conn
+        .publish("y/nudge", vec![1], 1, false)
+        .await
+        .unwrap();
+    let count = |events: &[CoreEvent]| {
+        let mut delivered = 0;
+        let mut dropped = 0;
+        for ev in events {
+            match ev {
+                CoreEvent::Message { topic, .. } if topic.starts_with("x/flood/") => delivered += 1,
+                CoreEvent::Dropped(n) => dropped += *n as usize,
+                _ => {}
+            }
+        }
+        (delivered, dropped)
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while count(&events).0 + count(&events).1 < N {
+        match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Ok(Some(ev)) => events.push(ev),
+            Ok(None) => panic!("event channel closed"),
+            Err(_) => break,
         }
     }
 
-    let mut delivered = 0;
-    let mut dropped = 0;
-    for ev in &events {
-        match ev {
-            CoreEvent::Message { topic, .. } if topic.starts_with("x/flood/") => delivered += 1,
-            CoreEvent::Dropped(n) => dropped += *n as usize,
-            _ => {}
-        }
-    }
-    assert!(dropped > 0, "the flood should overflow the channel");
-    assert_eq!(delivered + dropped, N, "every message accounted for once");
+    let (delivered, dropped) = count(&events);
+    assert!(
+        dropped > 0,
+        "the flood should overflow the channel and the count arrive \
+         ({delivered} delivered of {N})"
+    );
+    assert_eq!(
+        delivered + dropped,
+        N,
+        "every message accounted for once, without a later message"
+    );
     assert!(
         !events.iter().any(is_disconnected),
         "a slow consumer must not be disconnected"
