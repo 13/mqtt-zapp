@@ -72,18 +72,27 @@ pub struct TopicTree {
     next_seq: u64,
     /// History entries currently held (live slots in `order`).
     entries: usize,
+    /// Cap on topic levels, see `with_limits`.
+    max_topics: usize,
+    /// Messages refused because their topic would exceed `max_topics`.
+    dropped_topics: u64,
 }
 
 impl TopicTree {
     pub const ROOT: NodeId = 0;
 
     pub fn new(history_depth: usize) -> Self {
-        Self::with_limits(history_depth, usize::MAX)
+        Self::with_limits(history_depth, usize::MAX, usize::MAX)
     }
 
     /// `history_depth` messages per topic, and at most `max_bytes` of
     /// payload across all histories (each topic always keeps its latest).
-    pub fn with_limits(history_depth: usize, max_bytes: usize) -> Self {
+    ///
+    /// `max_topics` caps the nodes below the root: every topic level counts
+    /// (`a/b` is two), whether or not it holds a message, and so does a
+    /// removed one, whose slot stays allocated (ids are never reused).
+    /// A message whose topic needs more levels than are left is refused.
+    pub fn with_limits(history_depth: usize, max_bytes: usize, max_topics: usize) -> Self {
         Self {
             nodes: vec![TopicNode::new(String::new(), None)],
             history_depth,
@@ -92,7 +101,14 @@ impl TopicTree {
             order: VecDeque::new(),
             next_seq: 0,
             entries: 0,
+            max_topics,
+            dropped_topics: 0,
         }
+    }
+
+    /// Messages refused because the tree was at `max_topics`.
+    pub fn dropped_topics(&self) -> u64 {
+        self.dropped_topics
     }
 
     /// Payload bytes held in all histories.
@@ -141,18 +157,29 @@ impl TopicTree {
     }
 
     /// Store `msg` under `topic`, creating levels as needed. Empty levels are kept as nodes.
-    pub fn insert(&mut self, topic: &str, msg: Message) -> NodeId {
+    /// `None` (and nothing changed) when the new levels would pass `max_topics`.
+    pub fn insert(&mut self, topic: &str, msg: Message) -> Option<NodeId> {
+        // Walk the levels that exist; check the cap before creating any.
         let mut cur = Self::ROOT;
+        let mut found = 0;
         for level in topic.split('/') {
-            cur = match self.nodes[cur].children.get(level) {
-                Some(&id) => id,
-                None => {
-                    let id = self.nodes.len();
-                    self.nodes.push(TopicNode::new(level.to_owned(), Some(cur)));
-                    self.nodes[cur].children.insert(level.to_owned(), id);
-                    id
-                }
-            };
+            match self.nodes[cur].children.get(level) {
+                Some(&id) => (cur, found) = (id, found + 1),
+                None => break,
+            }
+        }
+        let missing = topic.split('/').count() - found;
+        if missing > 0 {
+            if (self.nodes.len() - 1).saturating_add(missing) > self.max_topics {
+                self.dropped_topics += 1;
+                return None;
+            }
+            for level in topic.split('/').skip(found) {
+                let id = self.nodes.len();
+                self.nodes.push(TopicNode::new(level.to_owned(), Some(cur)));
+                self.nodes[cur].children.insert(level.to_owned(), id);
+                cur = id;
+            }
         }
         let first = self.nodes[cur].latest.is_none();
         let now = Instant::now();
@@ -194,7 +221,7 @@ impl TopicTree {
         }
         self.enforce_cap();
         self.compact_order();
-        cur
+        Some(cur)
     }
 
     /// Forget `id` and everything below it, then the ancestors this leaves
@@ -351,10 +378,11 @@ mod tests {
 
     fn msg(p: &str) -> Message {
         Message {
-            payload: p.into(),
+            payload: Bytes::copy_from_slice(p.as_bytes()),
             qos: 0,
             retain: false,
             received_at: std::time::SystemTime::now(),
+            truncated_from: None,
         }
     }
 
@@ -401,7 +429,7 @@ mod tests {
             .unwrap();
         assert!(f.matches.is_empty(), "{:?}", f.matches);
         // A second remove of the old id must not cut off the new `a/b`.
-        let b2 = t.insert("a/b", msg("3"));
+        let b2 = t.insert("a/b", msg("3")).unwrap();
         assert_eq!(t.remove(b), 0);
         assert_eq!(t.find("a/b"), Some(b2));
         assert_eq!(t.node(TopicTree::ROOT).topic_count, 2);
@@ -409,7 +437,7 @@ mod tests {
 
     #[test]
     fn removed_topic_can_come_back_and_cap_still_works() {
-        let mut t = TopicTree::with_limits(10, 10);
+        let mut t = TopicTree::with_limits(10, 10, usize::MAX);
         for p in ["aaaa", "bbbb"] {
             t.insert("gone", msg(p));
         }
@@ -420,7 +448,7 @@ mod tests {
             t.insert("kept", msg(p));
         }
         assert!(t.history_bytes() <= 10, "{}", t.history_bytes());
-        let id = t.insert("gone", msg("new"));
+        let id = t.insert("gone", msg("new")).unwrap();
         assert_eq!(t.find("gone"), Some(id));
         assert_eq!(t.node(id).history.len(), 1);
         assert_eq!(t.node(TopicTree::ROOT).topic_count, 2);
@@ -429,13 +457,14 @@ mod tests {
     #[test]
     fn retained_flag_is_sticky() {
         let m = |p: &str, retain| Message {
-            payload: p.into(),
+            payload: Bytes::copy_from_slice(p.as_bytes()),
             qos: 0,
             retain,
             received_at: std::time::SystemTime::now(),
+            truncated_from: None,
         };
         let mut t = TopicTree::new(5);
-        let id = t.insert("a", m("1", true));
+        let id = t.insert("a", m("1", true)).unwrap();
         assert!(t.node(id).retained);
         // Live updates arrive with RETAIN=0 even when published retained.
         t.insert("a", m("2", false));
@@ -464,15 +493,16 @@ mod tests {
         v.sort_by(|a, b| natural_cmp(a, b));
         assert_eq!(v, vec!["s", "S1", "s1", "s01", "s9", "s10"]);
     }
-    use crate::Message;
+    use crate::{Bytes, Message};
     use std::time::SystemTime;
 
     fn m(p: &str) -> Message {
         Message {
-            payload: p.into(),
+            payload: Bytes::copy_from_slice(p.as_bytes()),
             qos: 0,
             retain: false,
             received_at: SystemTime::now(),
+            truncated_from: None,
         }
     }
 
@@ -486,7 +516,7 @@ mod tests {
 
     #[test]
     fn order_queue_stays_bounded_below_the_cap() {
-        let mut t = TopicTree::with_limits(1, usize::MAX);
+        let mut t = TopicTree::with_limits(1, usize::MAX, usize::MAX);
         for i in 0..10_000 {
             t.insert("x", m(&i.to_string()));
         }
@@ -498,7 +528,7 @@ mod tests {
     fn latest_only_entries_leave_the_queue() {
         // Over the cap with nothing evictable: no slot may be scanned again
         // on later inserts (that made every insert O(topics)).
-        let mut t = TopicTree::with_limits(100, 0);
+        let mut t = TopicTree::with_limits(100, 0, usize::MAX);
         for i in 0..2000 {
             t.insert(&format!("t{i}"), m("p"));
         }
@@ -514,7 +544,7 @@ mod tests {
 
     #[test]
     fn memory_cap_evicts_oldest_globally() {
-        let mut t = TopicTree::with_limits(100, 10);
+        let mut t = TopicTree::with_limits(100, 10, usize::MAX);
         t.insert("a", m("aaaa"));
         t.insert("b", m("bbbb"));
         t.insert("a", m("cccc"));
@@ -525,7 +555,7 @@ mod tests {
 
     #[test]
     fn memory_cap_keeps_latest_of_each_node() {
-        let mut t = TopicTree::with_limits(100, 5);
+        let mut t = TopicTree::with_limits(100, 5, usize::MAX);
         t.insert("a", m("aaaa"));
         t.insert("b", m("bbbb"));
         assert_eq!(t.history_bytes(), 8, "each node keeps its latest");
@@ -541,14 +571,14 @@ mod tests {
 
     #[test]
     fn history_bytes_tracks_depth_eviction() {
-        let mut t = TopicTree::with_limits(2, usize::MAX);
+        let mut t = TopicTree::with_limits(2, usize::MAX, usize::MAX);
         for p in ["1", "22", "333"] {
             t.insert("x", m(p));
         }
         assert_eq!(payloads(&t, "x"), ["22", "333"]);
         assert_eq!(t.history_bytes(), 5);
         // A depth-evicted entry's queue slot is stale and skipped later.
-        let mut t = TopicTree::with_limits(1, 4);
+        let mut t = TopicTree::with_limits(1, 4, usize::MAX);
         t.insert("x", m("111"));
         t.insert("x", m("22"));
         t.insert("y", m("33"));
@@ -556,9 +586,44 @@ mod tests {
         assert_eq!(t.history_bytes(), 4);
     }
     #[test]
+    fn latest_shares_history_buffer() {
+        let mut t = TopicTree::new(5);
+        let big = "x".repeat(1 << 20);
+        let id = t.insert("big", m(&big)).unwrap();
+        let n = t.node(id);
+        assert_eq!(
+            n.latest.as_ref().unwrap().payload.as_ptr(),
+            n.history.back().unwrap().payload.as_ptr(),
+            "latest and history must share one buffer"
+        );
+    }
+
+    #[test]
+    fn topic_cap_refuses_new_topics_keeps_updates() {
+        // Three levels below the root: `a`, `b`, `c`.
+        let mut t = TopicTree::with_limits(5, usize::MAX, 3);
+        assert!(t.insert("a/b", m("1")).is_some());
+        assert!(t.insert("a/c", m("2")).is_some());
+        let before = t.len();
+        assert_eq!(t.insert("a/d", m("3")), None);
+        assert_eq!(t.insert("x/y/z", m("3")), None);
+        assert_eq!(t.len(), before, "a refused insert creates no level");
+        assert_eq!(t.find("x"), None);
+        assert_eq!(t.dropped_topics(), 2);
+        assert!(t.insert("a/b", m("4")).is_some(), "updates still land");
+        assert_eq!(payloads(&t, "a/b"), ["1", "4"]);
+        assert_eq!(t.node(TopicTree::ROOT).msg_count, 3);
+        assert_eq!(t.dropped_topics(), 2);
+        // An existing intermediate level can still take a message.
+        assert!(t.insert("a", m("5")).is_some());
+    }
+
+    #[test]
     fn insert_builds_levels() {
         let mut t = TopicTree::new(10);
-        let id = t.insert("tasmota/tele/tasmota_0C6423/SENSOR", m("{}"));
+        let id = t
+            .insert("tasmota/tele/tasmota_0C6423/SENSOR", m("{}"))
+            .unwrap();
         assert_eq!(t.full_topic(id), "tasmota/tele/tasmota_0C6423/SENSOR");
         assert_eq!(t.len(), 5);
     }
@@ -582,14 +647,14 @@ mod tests {
         }
         let n = t.node(t.find("x").unwrap());
         assert_eq!(n.history.len(), 3);
-        assert_eq!(n.history.back().unwrap().payload, b"4");
-        assert_eq!(n.latest.as_ref().unwrap().payload, b"4");
+        assert_eq!(&n.history.back().unwrap().payload[..], b"4");
+        assert_eq!(&n.latest.as_ref().unwrap().payload[..], b"4");
     }
     #[test]
     fn odd_topics_round_trip() {
         let mut t = TopicTree::new(1);
         for s in ["a//b", "/lead", "trail/", "$SYS/broker/version"] {
-            let id = t.insert(s, m("v"));
+            let id = t.insert(s, m("v")).unwrap();
             assert_eq!(t.full_topic(id), s);
             assert_eq!(t.find(s), Some(id));
         }
@@ -604,8 +669,8 @@ mod tests {
     #[test]
     fn iter_with_message_lists_only_leaves_with_data() {
         let mut t = TopicTree::new(1);
-        let b = t.insert("a/b", m("1"));
-        let a = t.insert("a", m("2"));
+        let b = t.insert("a/b", m("1")).unwrap();
+        let a = t.insert("a", m("2")).unwrap();
         assert_eq!(t.iter_with_message().collect::<Vec<_>>(), vec![a, b]);
         assert_eq!(t.node(TopicTree::ROOT).topic_count, 2);
     }

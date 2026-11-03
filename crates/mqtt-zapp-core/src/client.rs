@@ -162,10 +162,11 @@ impl Loop {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => Polled::ConnAck,
                 Ok(Event::Incoming(Packet::Publish(p))) => Polled::Publish {
                     msg: Message {
-                        payload: p.payload.to_vec(),
+                        payload: p.payload,
                         qos: p.qos as u8,
                         retain: p.retain,
                         received_at: now(),
+                        truncated_from: None,
                     },
                     topic: p.topic,
                 },
@@ -177,10 +178,11 @@ impl Loop {
                 Ok(v5::Event::Incoming(v5::Incoming::ConnAck(_))) => Polled::ConnAck,
                 Ok(v5::Event::Incoming(v5::Incoming::Publish(p))) => Polled::Publish {
                     msg: Message {
-                        payload: p.payload.to_vec(),
+                        payload: p.payload,
                         qos: p.qos as u8,
                         retain: p.retain,
                         received_at: now(),
+                        truncated_from: None,
                     },
                     topic: String::from_utf8_lossy(&p.topic).into_owned(),
                 },

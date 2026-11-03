@@ -217,15 +217,16 @@ fn term_ranges(haystack: &str, term: &str) -> Vec<Range<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Message;
+    use crate::{Bytes, Message};
     use std::time::{Duration, Instant, SystemTime};
 
     fn m(s: &str) -> Message {
         Message {
-            payload: s.as_bytes().to_vec(),
+            payload: Bytes::copy_from_slice(s.as_bytes()),
             qos: 0,
             retain: false,
             received_at: SystemTime::now(),
+            truncated_from: None,
         }
     }
 
@@ -359,10 +360,11 @@ mod tests {
         t.insert(
             "bin",
             Message {
-                payload: vec![0xff, 0x00],
+                payload: Bytes::from_static(&[0xff, 0x00]),
                 qos: 0,
                 retain: false,
                 received_at: SystemTime::now(),
+                truncated_from: None,
             },
         );
         assert!(filter(&t, "zz").unwrap().matches.is_empty());

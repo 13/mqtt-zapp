@@ -71,16 +71,17 @@ mod tests {
     use super::*;
     use mqtt_zapp_core::config::SortOrder;
     use mqtt_zapp_core::search;
-    use mqtt_zapp_core::{Message, TopicTree};
+    use mqtt_zapp_core::{Bytes, Message, TopicTree};
     use std::collections::HashSet;
     use std::time::SystemTime;
 
     fn m(p: &str) -> Message {
         Message {
-            payload: p.into(),
+            payload: Bytes::copy_from_slice(p.as_bytes()),
             qos: 0,
             retain: false,
             received_at: SystemTime::now(),
+            truncated_from: None,
         }
     }
 

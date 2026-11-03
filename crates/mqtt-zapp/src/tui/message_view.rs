@@ -144,9 +144,14 @@ fn body(app: &App) -> Option<Built> {
 
 fn build_body(s: &Shown, kind: PayloadKind, show_diff: bool) -> Body {
     if !show_diff {
-        let lines = pretty_lines(&kind, &s.msg.payload);
-        return match kind {
-            PayloadKind::Json(_) => Body::Json(lines),
+        let mut lines = pretty_lines(&kind, &s.msg.payload);
+        // A cut payload shows as plain text: the marker is not JSON.
+        return match (kind, s.msg.truncated_from) {
+            (_, Some(n)) => {
+                lines.push(format!("… truncated ({n} bytes)"));
+                Body::Plain(lines)
+            }
+            (PayloadKind::Json(_), None) => Body::Json(lines),
             _ => Body::Plain(lines),
         };
     }

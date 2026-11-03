@@ -1,22 +1,23 @@
 use super::*;
 use crate::cli::Launch;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use mqtt_zapp_core::Message;
 use mqtt_zapp_core::client::{ConnState, CoreEvent};
 use mqtt_zapp_core::config::{
     PasswordSource, Profile, ProfileStore, Protocol, Settings, TlsConfig,
 };
 use mqtt_zapp_core::state::{AppState, PickerSort};
+use mqtt_zapp_core::{Bytes, Message};
 use std::time::{Duration, Instant, SystemTime};
 
 fn msg(topic: &str, p: &str) -> CoreEvent {
     CoreEvent::Message {
         topic: topic.into(),
         msg: Message {
-            payload: p.into(),
+            payload: Bytes::copy_from_slice(p.as_bytes()),
             qos: 0,
             retain: true,
             received_at: SystemTime::now(),
+            truncated_from: None,
         },
     }
 }

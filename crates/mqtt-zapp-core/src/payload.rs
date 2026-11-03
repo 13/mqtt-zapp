@@ -1,12 +1,28 @@
+use bytes::Bytes;
 use serde::Serialize;
 use std::time::SystemTime;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Message {
-    pub payload: Vec<u8>,
+    /// Shared buffer: clones (`latest`, history) point at the same bytes.
+    pub payload: Bytes,
     pub qos: u8,
     pub retain: bool,
     pub received_at: SystemTime,
+    /// The payload's length on the wire when `truncate_to` cut it.
+    pub truncated_from: Option<usize>,
+}
+
+impl Message {
+    /// Keep at most `max` payload bytes, recording the original length.
+    /// The kept bytes are copied so the large buffer is freed.
+    pub fn truncate_to(&mut self, max: usize) {
+        let len = self.payload.len();
+        if len > max {
+            self.truncated_from = Some(len);
+            self.payload = Bytes::copy_from_slice(&self.payload[..max]);
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -280,6 +296,25 @@ pub fn preview(payload: &[u8], max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncate_to_marks_original_len() {
+        let mut m = Message {
+            payload: Bytes::copy_from_slice(b"0123456789"),
+            qos: 0,
+            retain: false,
+            received_at: std::time::SystemTime::now(),
+            truncated_from: None,
+        };
+        m.truncate_to(10);
+        assert_eq!(
+            (&m.payload[..], m.truncated_from),
+            (&b"0123456789"[..], None)
+        );
+        m.truncate_to(4);
+        assert_eq!(&m.payload[..], b"0123");
+        assert_eq!(m.truncated_from, Some(10));
+    }
 
     #[test]
     fn sanitize_replaces_bidi_and_zero_width() {

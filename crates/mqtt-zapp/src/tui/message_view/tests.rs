@@ -2,9 +2,9 @@ use super::*;
 use crate::cli::Launch;
 use crate::tui::app::{App, Focus, Mode};
 use crate::tui::keymap::Action;
-use mqtt_zapp_core::Message;
 use mqtt_zapp_core::client::CoreEvent;
 use mqtt_zapp_core::config::{ProfileStore, Settings};
+use mqtt_zapp_core::{Bytes, Message};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -28,10 +28,11 @@ fn send(a: &mut App, topic: &str, payload: &[u8], retain: bool) {
     a.apply_core_event(CoreEvent::Message {
         topic: topic.into(),
         msg: Message {
-            payload: payload.to_vec(),
+            payload: Bytes::copy_from_slice(payload),
             qos: 1,
             retain,
             received_at: SystemTime::now(),
+            truncated_from: None,
         },
     });
 }
@@ -1060,4 +1061,34 @@ fn diff_view_has_no_highlight() {
     assert_eq!(a.chart_line(), None);
     let b = draw(&a);
     assert!(!(0..b.area.height).any(|y| highlighted(&b, y)));
+}
+
+#[test]
+fn truncated_json_renders_as_text_with_marker() {
+    let settings = Settings {
+        max_payload_kb: 1,
+        ..Settings::default()
+    };
+    let mut a = App::new(Launch::Picker, ProfileStore::default(), settings).unwrap();
+    a.mode = Mode::Browse;
+    // 2048 bytes of valid JSON: cut at 1 KiB it no longer parses.
+    let fill = "1,".repeat(1019);
+    let json = format!(r#"{{"vv":[{fill}1]}}"#);
+    assert_eq!(json.len(), 2048);
+    send(&mut a, T, json.as_bytes(), false);
+    a.selected = a.tree.find(T);
+    let m = a.tree.node(a.selected.unwrap()).latest.as_ref().unwrap();
+    assert_eq!((m.payload.len(), m.truncated_from), (1024, Some(2048)));
+    let (body, kind) = body(&a).unwrap();
+    assert_eq!(kind, "TEXT");
+    let Body::Plain(l) = &*body else {
+        panic!("not plain text");
+    };
+    assert_eq!(l.last().unwrap(), "… truncated (2048 bytes)");
+    // The marker is part of what the pane scrolls over.
+    assert_eq!(content_len(&a), l.len());
+    for _ in 0..3 {
+        a.handle_action(Action::Chart);
+        let _ = draw(&a);
+    }
 }

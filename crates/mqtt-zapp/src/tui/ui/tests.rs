@@ -2,10 +2,10 @@ use super::*;
 use crate::cli::Launch;
 use crate::tui::app::{App, Effect, Mode, Note, ServerInfo};
 use crate::tui::keymap::Action;
-use mqtt_zapp_core::Message;
 use mqtt_zapp_core::client::CoreEvent;
 use mqtt_zapp_core::config::ThemeName;
 use mqtt_zapp_core::config::{ProfileStore, Settings};
+use mqtt_zapp_core::{Bytes, Message};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -18,10 +18,11 @@ fn app_with(items: &[(&str, &[u8])]) -> App {
         a.apply_core_event(CoreEvent::Message {
             topic: (*topic).into(),
             msg: Message {
-                payload: payload.to_vec(),
+                payload: Bytes::copy_from_slice(payload),
                 qos: 0,
                 retain: false,
                 received_at: SystemTime::now(),
+                truncated_from: None,
             },
         });
     }
@@ -618,6 +619,40 @@ fn header_shows_dropped_badge() {
 }
 
 #[test]
+fn header_shows_topics_refused_badge() {
+    let settings = Settings {
+        max_topics: 2,
+        ..Settings::default()
+    };
+    let mut a = App::new(Launch::Picker, ProfileStore::default(), settings).unwrap();
+    a.mode = Mode::Browse;
+    a.server = Some(home());
+    for t in ["a", "b", "c", "d"] {
+        a.apply_core_event(CoreEvent::Message {
+            topic: t.into(),
+            msg: Message {
+                payload: Bytes::copy_from_slice(b"1"),
+                qos: 0,
+                retain: false,
+                received_at: SystemTime::now(),
+                truncated_from: None,
+            },
+        });
+    }
+    a.dropped = 5;
+    let b = draw(&mut a, 160, 24);
+    let top = first_line(&b);
+    assert!(top.contains("⚠ 5 dropped · ⚠ 2 topics refused"), "{top}");
+    let col = top.find("2 topics refused").unwrap();
+    let col = top[..col].chars().count() as u16;
+    assert_eq!(b[(col, 0)].fg, theme::WARN);
+    // A new connection starts a fresh tree, and a fresh count.
+    a.reset_tree();
+    let top = first_line(&draw(&mut a, 160, 24));
+    assert!(!top.contains("refused"), "{top}");
+}
+
+#[test]
 fn header_drops_dropped_badge_first_when_narrow() {
     let mut a = app_with(&[("a", b"1")]);
     a.server = Some(home());
@@ -710,10 +745,11 @@ fn retained(a: &mut App, topic: &str, payload: &[u8]) {
     a.apply_core_event(CoreEvent::Message {
         topic: topic.into(),
         msg: Message {
-            payload: payload.to_vec(),
+            payload: Bytes::copy_from_slice(payload),
             qos: 0,
             retain: true,
             received_at: SystemTime::now(),
+            truncated_from: None,
         },
     });
 }
@@ -735,10 +771,11 @@ fn retained_marker_on_row() {
     a.apply_core_event(CoreEvent::Message {
         topic: "kept".into(),
         msg: Message {
-            payload: b"2".to_vec(),
+            payload: Bytes::from_static(b"2"),
             qos: 0,
             retain: false,
             received_at: SystemTime::now(),
+            truncated_from: None,
         },
     });
     let s = text(&draw(&mut a, 100, 24));

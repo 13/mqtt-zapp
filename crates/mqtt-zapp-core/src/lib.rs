@@ -8,5 +8,6 @@ pub mod state;
 pub mod stats;
 pub mod tree;
 
+pub use bytes::Bytes;
 pub use payload::Message;
 pub use tree::{NodeId, TopicNode, TopicTree};

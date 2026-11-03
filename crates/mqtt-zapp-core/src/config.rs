@@ -179,6 +179,10 @@ pub struct Settings {
     pub timestamp_format: String,
     /// Cap on payload bytes kept in all topics' history together, in MiB.
     pub max_history_mb: usize,
+    /// Payloads longer than this many KiB are cut and marked truncated.
+    pub max_payload_kb: usize,
+    /// Cap on topic levels in the tree; messages that need more are refused.
+    pub max_topics: usize,
     /// New topics this many levels deep or less open expanded (0: none).
     pub auto_expand: usize,
 }
@@ -192,6 +196,8 @@ impl Default for Settings {
             theme: ThemeName::Dark,
             timestamp_format: DEFAULT_TIMESTAMP_FORMAT.into(),
             max_history_mb: 256,
+            max_payload_kb: 16384,
+            max_topics: 200_000,
             auto_expand: 0,
         }
     }
@@ -396,6 +402,9 @@ mod tests {
         assert_eq!((d.max_history_mb, d.auto_expand), (256, 0));
         let s: Settings = toml::from_str("max_history_mb = 8\nauto_expand = 2").unwrap();
         assert_eq!((s.max_history_mb, s.auto_expand), (8, 2));
+        assert_eq!((d.max_payload_kb, d.max_topics), (16384, 200_000));
+        let s: Settings = toml::from_str("max_payload_kb = 4\nmax_topics = 10").unwrap();
+        assert_eq!((s.max_payload_kb, s.max_topics), (4, 10));
     }
 
     #[test]

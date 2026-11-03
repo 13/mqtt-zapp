@@ -35,17 +35,18 @@ pub fn broker_stats(tree: &TopicTree) -> Vec<(&'static str, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Message;
+    use crate::{Bytes, Message};
     use std::time::SystemTime;
 
     fn put(t: &mut TopicTree, topic: &str, p: &str) {
         t.insert(
             topic,
             Message {
-                payload: p.into(),
+                payload: Bytes::copy_from_slice(p.as_bytes()),
                 qos: 0,
                 retain: true,
                 received_at: SystemTime::now(),
+                truncated_from: None,
             },
         );
     }

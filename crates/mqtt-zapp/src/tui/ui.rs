@@ -858,6 +858,9 @@ fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16, u16)>) {
     if app.dropped > 0 {
         warnings.push(format!("⚠ {} dropped", app.dropped));
     }
+    if app.tree.dropped_topics() > 0 {
+        warnings.push(format!("⚠ {} topics refused", app.tree.dropped_topics()));
+    }
     let mut warn = (!warnings.is_empty()).then(|| {
         Span::styled(
             format!(" · {}", warnings.join(" · ")),

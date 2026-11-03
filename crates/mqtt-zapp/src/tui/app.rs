@@ -271,6 +271,9 @@ pub struct App {
     pub keymap: Keymap,
     history_depth: usize,
     max_history_bytes: usize,
+    /// Payloads are cut to this many bytes on arrival.
+    max_payload_bytes: usize,
+    max_topics: usize,
     /// New nodes at this depth or less start expanded.
     auto_expand: usize,
     pending_connect: Option<Profile>,
@@ -333,6 +336,7 @@ impl App {
             tree: TopicTree::with_limits(
                 settings.history_depth,
                 settings.max_history_mb.saturating_mul(1024 * 1024),
+                settings.max_topics,
             ),
             expanded: HashSet::new(),
             selected: None,
@@ -359,6 +363,8 @@ impl App {
             keymap: Keymap::from_settings(&settings.keys)?,
             history_depth: settings.history_depth,
             max_history_bytes: settings.max_history_mb.saturating_mul(1024 * 1024),
+            max_payload_bytes: settings.max_payload_kb.saturating_mul(1024),
+            max_topics: settings.max_topics,
             auto_expand: settings.auto_expand,
             pending_connect,
             picker: PickerState::new(store.profiles, &Default::default()),
@@ -392,7 +398,8 @@ impl App {
 
     /// Forget all topics, e.g. when switching connections.
     pub fn reset_tree(&mut self) {
-        self.tree = TopicTree::with_limits(self.history_depth, self.max_history_bytes);
+        self.tree =
+            TopicTree::with_limits(self.history_depth, self.max_history_bytes, self.max_topics);
         self.expanded.clear();
         self.selected = None;
         self.history_sel = None;
@@ -412,7 +419,8 @@ impl App {
         match ev {
             CoreEvent::State(s) => self.conn_state = s,
             CoreEvent::Dropped(n) => self.dropped += n,
-            CoreEvent::Message { topic, msg } => {
+            CoreEvent::Message { topic, mut msg } => {
+                msg.truncate_to(self.max_payload_bytes);
                 if self.cleared_echo.remove(&topic) && msg.payload.is_empty() {
                     return;
                 }
@@ -424,7 +432,11 @@ impl App {
                     .zip(self.history_sel)
                     .and_then(|(s, i)| self.tree.node(s).history.get(i).map(stamp));
                 let first_new = self.tree.len();
-                self.tree.insert(&topic, msg);
+                if self.tree.insert(&topic, msg).is_none() {
+                    // Refused at `max_topics`: only the header count changed.
+                    self.dirty = true;
+                    return;
+                }
                 // Only nodes this message created; a hand-collapsed one stays.
                 for new in first_new..self.tree.len() {
                     if self.depth(new) <= self.auto_expand {

@@ -87,7 +87,7 @@ async fn receives_published_message_plain() {
         unreachable!()
     };
     assert_eq!(topic, "zapp/t");
-    assert_eq!(msg.payload, b"hi");
+    assert_eq!(&msg.payload[..], b"hi");
 }
 
 #[tokio::test]
@@ -111,7 +111,7 @@ async fn retained_message_delivered_on_subscribe_with_retain_flag() {
         unreachable!()
     };
     assert!(msg.retain);
-    assert_eq!(msg.payload, b"kept");
+    assert_eq!(&msg.payload[..], b"kept");
 }
 
 #[tokio::test]
@@ -181,7 +181,7 @@ async fn websocket() {
     else {
         unreachable!()
     };
-    assert_eq!(msg.payload, b"over ws");
+    assert_eq!(&msg.payload[..], b"over ws");
 }
 
 #[tokio::test]
@@ -264,7 +264,7 @@ async fn receives_published_message_v5() {
     else {
         unreachable!()
     };
-    assert_eq!(msg.payload, b"from v4");
+    assert_eq!(&msg.payload[..], b"from v4");
     conn_b
         .publish("zapp/t5", b"from v5".to_vec(), 2, false)
         .await
@@ -273,7 +273,7 @@ async fn receives_published_message_v5() {
     else {
         unreachable!()
     };
-    assert_eq!(msg.payload, b"from v5");
+    assert_eq!(&msg.payload[..], b"from v5");
 }
 
 #[tokio::test]
