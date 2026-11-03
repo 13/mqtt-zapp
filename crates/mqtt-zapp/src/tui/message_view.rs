@@ -219,7 +219,7 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App) {
 
 fn render_payload(f: &mut Frame, area: Rect, app: &App) {
     let title = if app.show_diff { "diff" } else { "payload" };
-    let block = Block::bordered().title(title);
+    let block = theme::pane(title, app.focus == Focus::Payload);
     let height = block.inner(area).height;
     app.payload_height.set(height);
     let Some(body) = body(app) else { return };
@@ -582,14 +582,57 @@ mod tests {
     #[test]
     fn focus_next_toggles_and_diff_toggles() {
         let mut a = app_with(&[b"a"]);
-        a.handle_action(Action::FocusNext);
-        assert_eq!(a.focus, Focus::History);
-        a.handle_action(Action::FocusNext);
-        assert_eq!(a.focus, Focus::Tree);
         a.handle_action(Action::ToggleDiff);
         assert!(a.show_diff);
         a.handle_action(Action::ToggleDiff);
         assert!(!a.show_diff);
+    }
+
+    #[test]
+    fn focus_cycles_tree_payload_history() {
+        let mut a = app_with(&[b"a"]);
+        a.handle_action(Action::FocusNext);
+        assert_eq!(a.focus, Focus::Payload);
+        a.handle_action(Action::FocusNext);
+        assert_eq!(a.focus, Focus::History);
+        a.handle_action(Action::FocusNext);
+        assert_eq!(a.focus, Focus::Tree);
+    }
+
+    #[test]
+    fn payload_focus_jk_scrolls_one_line() {
+        let body = (0..50)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut a = app_with(&[body.as_bytes()]);
+        let sel = a.selected;
+        a.payload_height.set(10);
+        a.focus = Focus::Payload;
+        a.handle_action(Action::Down);
+        a.handle_action(Action::Down);
+        assert_eq!(a.payload_scroll, 2);
+        a.handle_action(Action::Up);
+        assert_eq!(a.payload_scroll, 1);
+        a.handle_action(Action::Bottom);
+        assert_eq!(a.payload_scroll, 40);
+        a.handle_action(Action::Down);
+        assert_eq!(a.payload_scroll, 40);
+        a.handle_action(Action::Top);
+        assert_eq!(a.payload_scroll, 0);
+        assert_eq!(a.selected, sel);
+    }
+
+    #[test]
+    fn payload_focus_keys_noop_without_message() {
+        let mut a = app_depth(10);
+        a.payload_height.set(10);
+        a.focus = Focus::Payload;
+        for x in [Action::Down, Action::Up, Action::Top, Action::Bottom] {
+            a.handle_action(x);
+            assert_eq!(a.payload_scroll, 0);
+        }
+        assert_eq!(a.selected, None);
     }
 
     #[test]

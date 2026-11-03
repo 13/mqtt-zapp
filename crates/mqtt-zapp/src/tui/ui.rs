@@ -348,6 +348,7 @@ mod tests {
         assert!(x < 50, "tree focused: {x}");
         assert_eq!(b[(x, y)].symbol(), "┏");
         a.handle_action(Action::FocusNext);
+        a.handle_action(Action::FocusNext);
         let b = draw(&mut a, 100, 24);
         let (x, _) = first_thick(&b);
         assert!(x >= 50, "history focused: {x}");

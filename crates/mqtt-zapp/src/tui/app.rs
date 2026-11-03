@@ -38,6 +38,7 @@ pub enum Mode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Tree,
+    Payload,
     History,
 }
 
@@ -526,11 +527,16 @@ impl App {
             Action::Quit => return Effect::Quit,
             Action::Up if self.focus == Focus::History => self.history_older(),
             Action::Down if self.focus == Focus::History => self.history_newer(),
+            Action::Up if self.focus == Focus::Payload => self.scroll_payload_by(-1),
+            Action::Down if self.focus == Focus::Payload => self.scroll_payload_by(1),
+            Action::Top if self.focus == Focus::Payload => self.payload_scroll = 0,
+            Action::Bottom if self.focus == Focus::Payload => self.scroll_payload_by(isize::MAX),
             Action::Up => self.move_selection(|i, _| i.saturating_sub(1)),
             Action::Down => self.move_selection(|i, n| (i + 1).min(n - 1)),
             Action::FocusNext => {
                 self.focus = match self.focus {
-                    Focus::Tree => Focus::History,
+                    Focus::Tree => Focus::Payload,
+                    Focus::Payload => Focus::History,
                     Focus::History => Focus::Tree,
                 }
             }
@@ -591,14 +597,15 @@ impl App {
 
     /// Half a page up or down, never past the end of the shown content.
     fn scroll_payload(&mut self, down: bool) {
-        let height = self.payload_height.get();
-        let half = usize::from((height / 2).max(1));
-        let max = super::message_view::content_len(self).saturating_sub(height as usize);
-        self.payload_scroll = if down {
-            self.payload_scroll.saturating_add(half).min(max)
-        } else {
-            self.payload_scroll.saturating_sub(half)
-        };
+        let half = (self.payload_height.get() / 2).max(1) as isize;
+        self.scroll_payload_by(if down { half } else { -half });
+    }
+
+    /// Scroll the payload by `delta` lines, clamped to the shown content.
+    fn scroll_payload_by(&mut self, delta: isize) {
+        let height = usize::from(self.payload_height.get());
+        let max = super::message_view::content_len(self).saturating_sub(height);
+        self.payload_scroll = self.payload_scroll.saturating_add_signed(delta).min(max);
     }
 
     fn selected_row(&self) -> Option<Row> {
