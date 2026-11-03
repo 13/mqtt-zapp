@@ -150,8 +150,7 @@ fn render_help(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(keys, key_style),
         ])
     };
-    let mut lines = Vec::new();
-    for (title, actions) in HELP_GROUPS {
+    let group = |lines: &mut Vec<Line<'static>>, title: &str, actions: &[Action]| {
         lines.push(Line::styled(format!(" {title}"), heading));
         for action in actions {
             let keys = bindings
@@ -166,9 +165,18 @@ fn render_help(f: &mut Frame, area: Rect, app: &App) {
             };
             lines.push(row(action.name(), keys));
         }
-    }
+    };
+    // navigate + view on the left; actions on the right above the keys that
+    // bypass the keymap, so every row fits at 80x24.
+    let [(t0, g0), (t1, g1), (t2, g2)] = HELP_GROUPS;
+    let mut lines = Vec::new();
+    group(&mut lines, t0, g0);
+    group(&mut lines, t1, g1);
     f.render_widget(Paragraph::new(lines), left);
-    let mut lines = vec![Line::styled(" publish form", heading)];
+    let mut lines = Vec::new();
+    group(&mut lines, t2, g2);
+    lines.push(Line::default());
+    lines.push(Line::styled(" publish form", heading));
     for (k, what) in [
         ("ctrl-s", "send"),
         ("ctrl-f", "format json"),
@@ -397,6 +405,12 @@ fn hints(app: &App) -> Vec<(String, &'static str)> {
             vec![("enter".into(), "connect"), ("esc".into(), "quit")]
         }
         (Mode::Password, _) => vec![("enter".into(), "connect"), ("esc".into(), "back")],
+        (Mode::Publish, _) => vec![
+            ("ctrl-s".into(), "send"),
+            ("ctrl-f".into(), "format json"),
+            ("tab".into(), "next"),
+            ("esc".into(), "close"),
+        ],
         _ => vec![],
     }
 }
@@ -617,6 +631,56 @@ mod tests {
             .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn help_shows_every_action_at_80x24() {
+        let mut a = app_with(&[("a", b"1")]);
+        a.handle_action(Action::Help);
+        let s = text(&draw(&mut a, 80, 24));
+        for want in [
+            "quit",
+            "cancel",
+            "up",
+            "toggle_diff",
+            "ctrl-s",
+            "keep filter",
+        ] {
+            assert!(s.contains(want), "{want}: {s}");
+        }
+    }
+
+    #[test]
+    fn stacked_payload_keeps_room_at_79x24() {
+        let body = (0..20)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let items: Vec<(&str, &[u8])> = (0..6).map(|_| ("a", body.as_bytes())).collect();
+        let mut a = app_with(&items);
+        a.handle_action(Action::Down);
+        let s = text(&draw(&mut a, 79, 24));
+        // Payload lines sit right after a border; history rows start with a time.
+        for want in ["│l0 ", "│l1 ", "│l2 ", "│l3 "] {
+            assert!(s.contains(want), "{want}: {s}");
+        }
+    }
+
+    #[test]
+    fn history_focus_visible_at_40x10() {
+        let mut a = app_with(&[("a", b"1"), ("a", b"2")]);
+        a.handle_action(Action::Down);
+        a.focus = Focus::History;
+        let b = draw(&mut a, 40, 10);
+        assert!(b.content.iter().any(|c| c.symbol() == "┏"), "{}", text(&b));
+    }
+
+    #[test]
+    fn publish_keys_in_footer() {
+        let mut a = app_with(&[("a", b"1")]);
+        a.handle_action(Action::Publish);
+        let last = last_line(&draw(&mut a, 40, 10));
+        assert!(last.starts_with("ctrl-s send"), "{last}");
     }
 
     #[test]

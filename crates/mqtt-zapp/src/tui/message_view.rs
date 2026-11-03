@@ -250,11 +250,19 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(hint, mid);
         return;
     };
-    let hist_rows = s.node.history.len().min(HISTORY_ROWS) as u16;
+    // History takes at most half of what the meta line leaves, so the
+    // payload keeps room in short (stacked) layouts; with history focused it
+    // keeps at least one row so the focus stays visible.
+    let half = area.height.saturating_sub(1) / 2;
+    let mut hist_rows = (s.node.history.len().min(HISTORY_ROWS) as u16).min(half.saturating_sub(2));
+    if app.focus == Focus::History {
+        hist_rows = hist_rows.max(1);
+    }
+    let hist_height = if hist_rows == 0 { 0 } else { hist_rows + 2 };
     let [meta, payload, history] = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Min(3),
-        Constraint::Length(hist_rows + 2),
+        Constraint::Min(0),
+        Constraint::Length(hist_height),
     ])
     .areas(area);
 
