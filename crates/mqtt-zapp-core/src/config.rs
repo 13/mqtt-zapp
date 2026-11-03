@@ -5,7 +5,8 @@ use anyhow::{Context, Result};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -206,6 +207,54 @@ pub fn config_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".mqtt-zapp"))
 }
 
+/// Create `dir` if missing; a directory created here is made 0700 (an
+/// existing one keeps whatever mode the user gave it).
+pub(crate) fn create_private_dir(dir: &Path) -> Result<()> {
+    let existed = dir.exists();
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    #[cfg(unix)]
+    if !existed {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("setting permissions on {}", dir.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = existed;
+    Ok(())
+}
+
+/// Write `contents` to `path` atomically (temp file in the same directory,
+/// fsync, rename), with mode 0600 on unix.
+pub fn write_private(path: &Path, contents: &str) -> Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().context("path has no file name")?;
+    let n: u32 = rand::thread_rng().r#gen();
+    let tmp = dir.join(format!(
+        ".{}.{}.{n}.tmp",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+    let result = (|| -> std::io::Result<()> {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
+        f.write_all(contents.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)
+    })();
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("writing {}", path.display()));
+    }
+    Ok(())
+}
+
 fn read_or_default<T: Default + serde::de::DeserializeOwned>(file: &str) -> Result<T> {
     let path = config_dir().join(file);
     match std::fs::read_to_string(&path) {
@@ -222,10 +271,8 @@ impl ProfileStore {
 
     pub fn save(&self) -> Result<()> {
         let dir = config_dir();
-        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        let path = dir.join("profiles.toml");
-        std::fs::write(&path, toml::to_string_pretty(self)?)
-            .with_context(|| format!("writing {}", path.display()))
+        create_private_dir(&dir)?;
+        write_private(&dir.join("profiles.toml"), &toml::to_string_pretty(self)?)
     }
 
     pub fn get(&self, name: &str) -> Option<&Profile> {
@@ -488,5 +535,47 @@ mod tests {
         assert_eq!(Protocol::Ws.default_port(), 80);
         assert_eq!(Protocol::Wss.default_port(), 443);
         assert!(Protocol::Wss.is_tls() && !Protocol::Ws.is_tls());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_private_is_0600_and_replaces() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("f.toml");
+        write_private(&path, "one").unwrap();
+        write_private(&path, "two").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn write_private_leaves_no_temp_files() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("f.toml");
+        write_private(&path, "x").unwrap();
+        let names: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("f.toml")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn profiles_saved_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tempfile::tempdir().unwrap();
+        let sub = d.path().join("cfg");
+        // SAFETY: env mutation is serialized by LOCK.
+        unsafe { std::env::set_var("MQTT_ZAPP_CONFIG_DIR", &sub) };
+        let mut s = ProfileStore::default();
+        s.upsert(sample("home"));
+        s.save().unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&sub.join("profiles.toml")), 0o600);
+        assert_eq!(mode(&sub), 0o700);
     }
 }

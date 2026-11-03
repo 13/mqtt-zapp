@@ -140,6 +140,8 @@ mod tests {
 
     impl Drop for ConfigDir {
         fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
@@ -282,11 +284,11 @@ mod tests {
         assert_eq!(k.snapshot(), [("a".into(), "pw".into())], "old secret kept");
     }
 
-    /// Make `profiles.toml` unwritable, so `save` fails after `load`.
+    /// Make the config dir unwritable (saves are atomic renames, so the file's
+    /// own mode no longer matters), so `save` fails after `load`.
     fn read_only(d: &ConfigDir) {
         use std::os::unix::fs::PermissionsExt;
-        let f = d.0.join("profiles.toml");
-        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(&d.0, std::fs::Permissions::from_mode(0o555)).unwrap();
     }
 
     #[test]

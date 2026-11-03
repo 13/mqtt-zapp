@@ -3,8 +3,8 @@
 //! never in the user's config files, and is best effort: a missing or broken
 //! file means defaults.
 
-use crate::config::config_dir;
-use anyhow::{Context, Result};
+use crate::config::{config_dir, create_private_dir, write_private};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -74,12 +74,8 @@ impl AppState {
     /// Write atomically (temp file + rename), creating the directory.
     pub fn save(&self) -> Result<()> {
         let dir = state_dir();
-        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        let path = dir.join("state.toml");
-        let tmp = dir.join("state.toml.tmp");
-        std::fs::write(&tmp, toml::to_string_pretty(self)?)
-            .with_context(|| format!("writing {}", tmp.display()))?;
-        std::fs::rename(&tmp, &path).with_context(|| format!("writing {}", path.display()))
+        create_private_dir(&dir)?;
+        write_private(&dir.join("state.toml"), &toml::to_string_pretty(self)?)
     }
 
     pub fn touch(&mut self, name: &str, now: i64) {
