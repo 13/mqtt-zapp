@@ -262,6 +262,9 @@ pub struct App {
     pub payload_height: Cell<u16>,
     pub keymap: Keymap,
     history_depth: usize,
+    max_history_bytes: usize,
+    /// New nodes at this depth or less start expanded.
+    auto_expand: usize,
     pending_connect: Option<Profile>,
     pub picker: PickerState,
     /// Set while in `Mode::Password`.
@@ -310,7 +313,10 @@ impl App {
             Launch::Connect(p) => (Mode::Browse, Some(p), ConnState::Connecting),
         };
         Ok(App {
-            tree: TopicTree::new(settings.history_depth),
+            tree: TopicTree::with_limits(
+                settings.history_depth,
+                settings.max_history_mb.saturating_mul(1024 * 1024),
+            ),
             expanded: HashSet::new(),
             selected: None,
             filter: None,
@@ -334,6 +340,8 @@ impl App {
             payload_height: Cell::new(0),
             keymap: Keymap::from_settings(&settings.keys)?,
             history_depth: settings.history_depth,
+            max_history_bytes: settings.max_history_mb.saturating_mul(1024 * 1024),
+            auto_expand: settings.auto_expand,
             pending_connect,
             picker: PickerState::new(store.profiles, &Default::default()),
             password: None,
@@ -363,7 +371,7 @@ impl App {
 
     /// Forget all topics, e.g. when switching connections.
     pub fn reset_tree(&mut self) {
-        self.tree = TopicTree::new(self.history_depth);
+        self.tree = TopicTree::with_limits(self.history_depth, self.max_history_bytes);
         self.expanded.clear();
         self.selected = None;
         self.history_sel = None;
@@ -385,7 +393,14 @@ impl App {
                     .tree
                     .find(&topic)
                     .map(|id| self.tree.node(id).history.len());
+                let first_new = self.tree.len();
                 let id = self.tree.insert(&topic, msg);
+                // Only nodes this message created; a hand-collapsed one stays.
+                for new in first_new..self.tree.len() {
+                    if self.depth(new) <= self.auto_expand {
+                        self.expanded.insert(new);
+                    }
+                }
                 // A full ring drops its oldest entry, shifting every index down
                 // by one; keep a frozen selection on its entry (or the oldest).
                 if before.is_some_and(|n| n > 0 && n == self.tree.node(id).history.len())
@@ -937,6 +952,16 @@ impl App {
     }
 
     /// Select a node; a different node starts with a live view at the top.
+    /// Levels below ROOT: a top-level node is 1.
+    fn depth(&self, mut id: NodeId) -> usize {
+        let mut d = 0;
+        while let Some(p) = self.tree.node(id).parent {
+            d += 1;
+            id = p;
+        }
+        d
+    }
+
     /// `m`: compare against the shown entry, or stop when it already is the base.
     fn mark_diff_base(&mut self) {
         let Some(m) = super::message_view::shown_message(self) else {

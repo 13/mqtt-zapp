@@ -6,6 +6,9 @@ use std::time::Instant;
 
 pub type NodeId = usize;
 
+/// Stale queue slots tolerated before `order` is compacted.
+const COMPACT_SLACK: usize = 4096;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TopicNode {
     pub name: String,
@@ -14,6 +17,9 @@ pub struct TopicNode {
     pub latest: Option<Message>,
     /// Newest at the back, includes `latest`.
     pub history: VecDeque<Message>,
+    /// Insertion sequence number of each `history` entry (same order).
+    #[serde(skip)]
+    history_seq: VecDeque<u64>,
     /// Messages received in this subtree.
     pub msg_count: u64,
     /// Descendants that have received at least one message.
@@ -33,6 +39,7 @@ impl TopicNode {
             children: BTreeMap::new(),
             latest: None,
             history: VecDeque::new(),
+            history_seq: VecDeque::new(),
             msg_count: 0,
             topic_count: 0,
             retained: false,
@@ -45,16 +52,84 @@ impl TopicNode {
 pub struct TopicTree {
     nodes: Vec<TopicNode>,
     history_depth: usize,
+    /// Cap on the payload bytes held in all histories together.
+    max_bytes: usize,
+    /// Payload bytes currently held in all histories.
+    bytes: usize,
+    /// Every history entry in arrival order, as (node, seq). Entries already
+    /// dropped by the per-topic depth are stale and skipped.
+    #[serde(skip)]
+    order: VecDeque<(NodeId, u64)>,
+    next_seq: u64,
+    /// History entries currently held (live slots in `order`).
+    entries: usize,
 }
 
 impl TopicTree {
     pub const ROOT: NodeId = 0;
 
     pub fn new(history_depth: usize) -> Self {
+        Self::with_limits(history_depth, usize::MAX)
+    }
+
+    /// `history_depth` messages per topic, and at most `max_bytes` of
+    /// payload across all histories (each topic always keeps its latest).
+    pub fn with_limits(history_depth: usize, max_bytes: usize) -> Self {
         Self {
             nodes: vec![TopicNode::new(String::new(), None)],
             history_depth,
+            max_bytes,
+            bytes: 0,
+            order: VecDeque::new(),
+            next_seq: 0,
+            entries: 0,
         }
+    }
+
+    /// Payload bytes held in all histories.
+    pub fn history_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Drop the globally oldest history entries until under `max_bytes`,
+    /// never a node's last one. Bounded by the queue length, so a queue of
+    /// nothing but latest entries cannot spin.
+    fn enforce_cap(&mut self) {
+        let mut budget = self.order.len();
+        while self.bytes > self.max_bytes && budget > 0 {
+            budget -= 1;
+            let Some((id, seq)) = self.order.pop_front() else {
+                break;
+            };
+            let node = &mut self.nodes[id];
+            if node.history_seq.front() != Some(&seq) {
+                continue; // already gone (depth eviction)
+            }
+            if node.history.len() == 1 {
+                // The latest message stays; it becomes evictable again only
+                // when a newer one arrives, so keep its slot for later.
+                self.order.push_back((id, seq));
+                continue;
+            }
+            node.history_seq.pop_front();
+            if let Some(m) = node.history.pop_front() {
+                self.bytes -= m.payload.len();
+                self.entries -= 1;
+            }
+        }
+    }
+
+    /// Drop the stale slots that depth eviction leaves in `order`, once they
+    /// outnumber the live ones; amortized O(1) per insert.
+    fn compact_order(&mut self) {
+        if self.order.len() <= 2 * self.entries + COMPACT_SLACK {
+            return;
+        }
+        let nodes = &self.nodes;
+        // A node's seqs ascend, so a slot is live iff it is not older than
+        // the node's oldest remaining entry.
+        self.order
+            .retain(|(id, seq)| nodes[*id].history_seq.front().is_some_and(|f| seq >= f));
     }
 
     /// Store `msg` under `topic`, creating levels as needed. Empty levels are kept as nodes.
@@ -80,9 +155,18 @@ impl TopicTree {
             node.retained = true;
         }
         node.latest = Some(msg.clone());
+        self.bytes += msg.payload.len();
         node.history.push_back(msg);
+        node.history_seq.push_back(self.next_seq);
+        self.order.push_back((cur, self.next_seq));
+        self.next_seq += 1;
+        self.entries += 1;
         while node.history.len() > self.history_depth {
-            node.history.pop_front();
+            node.history_seq.pop_front();
+            if let Some(m) = node.history.pop_front() {
+                self.bytes -= m.payload.len();
+                self.entries -= 1;
+            }
         }
         node.last_update = Some(now);
         let mut id = Some(cur);
@@ -95,6 +179,8 @@ impl TopicTree {
             n.last_update = Some(now);
             id = n.parent;
         }
+        self.enforce_cap();
+        self.compact_order();
         cur
     }
 
@@ -238,6 +324,68 @@ mod tests {
             retain: false,
             received_at: SystemTime::now(),
         }
+    }
+
+    fn payloads(t: &TopicTree, topic: &str) -> Vec<String> {
+        t.node(t.find(topic).unwrap())
+            .history
+            .iter()
+            .map(|m| String::from_utf8_lossy(&m.payload).into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn order_queue_stays_bounded_below_the_cap() {
+        let mut t = TopicTree::with_limits(1, usize::MAX);
+        for i in 0..10_000 {
+            t.insert("x", m(&i.to_string()));
+        }
+        assert_eq!(t.node(t.find("x").unwrap()).history.len(), 1);
+        assert!(t.order.len() <= 2 + COMPACT_SLACK, "{}", t.order.len());
+    }
+
+    #[test]
+    fn memory_cap_evicts_oldest_globally() {
+        let mut t = TopicTree::with_limits(100, 10);
+        t.insert("a", m("aaaa"));
+        t.insert("b", m("bbbb"));
+        t.insert("a", m("cccc"));
+        assert_eq!(payloads(&t, "a"), ["cccc"]);
+        assert_eq!(payloads(&t, "b"), ["bbbb"]);
+        assert_eq!(t.history_bytes(), 8);
+    }
+
+    #[test]
+    fn memory_cap_keeps_latest_of_each_node() {
+        let mut t = TopicTree::with_limits(100, 5);
+        t.insert("a", m("aaaa"));
+        t.insert("b", m("bbbb"));
+        assert_eq!(t.history_bytes(), 8, "each node keeps its latest");
+        t.insert("a", m("cc"));
+        assert_eq!(payloads(&t, "a"), ["cc"]);
+        assert_eq!(payloads(&t, "b"), ["bbbb"]);
+        assert_eq!(t.history_bytes(), 6);
+        // Later entries still evict once older ones are gone.
+        t.insert("b", m("d"));
+        assert_eq!(payloads(&t, "b"), ["d"]);
+        assert_eq!(t.history_bytes(), 3);
+    }
+
+    #[test]
+    fn history_bytes_tracks_depth_eviction() {
+        let mut t = TopicTree::with_limits(2, usize::MAX);
+        for p in ["1", "22", "333"] {
+            t.insert("x", m(p));
+        }
+        assert_eq!(payloads(&t, "x"), ["22", "333"]);
+        assert_eq!(t.history_bytes(), 5);
+        // A depth-evicted entry's queue slot is stale and skipped later.
+        let mut t = TopicTree::with_limits(1, 4);
+        t.insert("x", m("111"));
+        t.insert("x", m("22"));
+        t.insert("y", m("33"));
+        assert_eq!(payloads(&t, "x"), ["22"]);
+        assert_eq!(t.history_bytes(), 4);
     }
     #[test]
     fn insert_builds_levels() {

@@ -254,10 +254,7 @@ const HELP_FIXED: &[(&str, &[(&str, &str)])] = &[
     ),
     (
         "search",
-        &[
-            ("ctrl-r", "regex on/off"),
-            ("enter", "keep filter"),
-        ],
+        &[("ctrl-r", "regex on/off"), ("enter", "keep filter")],
     ),
 ];
 

@@ -1141,3 +1141,66 @@ fn multi_term_search_filters_rows() {
     type_str(&mut a, "muh LWT");
     assert_eq!(a.filter.as_ref().unwrap().matches.len(), 1);
 }
+
+// --- auto_expand / memory cap ---
+
+fn expand_app(levels: usize) -> App {
+    let s = Settings {
+        auto_expand: levels,
+        ..Settings::default()
+    };
+    let mut a = App::new(Launch::Picker, ProfileStore::default(), s).unwrap();
+    a.mode = Mode::Browse;
+    a
+}
+
+#[test]
+fn auto_expand_opens_new_nodes_to_depth() {
+    let mut a = expand_app(1);
+    a.apply_core_event(msg("a/b/c", "v"));
+    assert!(a.expanded.contains(&a.tree.find("a").unwrap()));
+    assert!(!a.expanded.contains(&a.tree.find("a/b").unwrap()));
+    let mut a = expand_app(2);
+    a.apply_core_event(msg("a/b/c", "v"));
+    assert!(a.expanded.contains(&a.tree.find("a/b").unwrap()));
+    assert!(!a.expanded.contains(&a.tree.find("a/b/c").unwrap()));
+    let mut a = expand_app(0);
+    a.apply_core_event(msg("a/b/c", "v"));
+    assert!(a.expanded.is_empty());
+}
+
+#[test]
+fn auto_expand_respects_manual_collapse() {
+    let mut a = expand_app(1);
+    a.apply_core_event(msg("a/b", "v"));
+    let id = a.tree.find("a").unwrap();
+    a.expanded.remove(&id);
+    a.apply_core_event(msg("a/c", "v"));
+    assert!(!a.expanded.contains(&id));
+}
+
+#[test]
+fn memory_cap_comes_from_settings() {
+    let s = Settings {
+        max_history_mb: 1,
+        ..Settings::default()
+    };
+    let mut a = App::new(Launch::Picker, ProfileStore::default(), s).unwrap();
+    let big = "x".repeat(600 * 1024);
+    for _ in 0..3 {
+        a.apply_core_event(msg("t", &big));
+    }
+    assert!(
+        a.tree.history_bytes() <= 1024 * 1024,
+        "{}",
+        a.tree.history_bytes()
+    );
+    a.reset_tree();
+    for _ in 0..3 {
+        a.apply_core_event(msg("t", &big));
+    }
+    assert!(
+        a.tree.history_bytes() <= 1024 * 1024,
+        "cap survives reset_tree"
+    );
+}

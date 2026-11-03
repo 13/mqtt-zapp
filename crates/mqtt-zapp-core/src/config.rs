@@ -176,6 +176,10 @@ pub struct Settings {
     pub theme: ThemeName,
     /// strftime format of the message time in the message view.
     pub timestamp_format: String,
+    /// Cap on payload bytes kept in all topics' history together, in MiB.
+    pub max_history_mb: usize,
+    /// New topics this many levels deep or less open expanded (0: none).
+    pub auto_expand: usize,
 }
 
 impl Default for Settings {
@@ -186,6 +190,8 @@ impl Default for Settings {
             sort: SortOrder::Name,
             theme: ThemeName::Dark,
             timestamp_format: DEFAULT_TIMESTAMP_FORMAT.into(),
+            max_history_mb: 256,
+            auto_expand: 0,
         }
     }
 }
@@ -293,6 +299,14 @@ mod tests {
         assert_eq!(d.theme, ThemeName::Dark);
         assert_eq!(d.timestamp_format, "%H:%M:%S%.3f");
         assert!(toml::from_str::<Settings>("theme = \"pink\"").is_err());
+    }
+
+    #[test]
+    fn settings_limits_parse_and_default() {
+        let d = Settings::default();
+        assert_eq!((d.max_history_mb, d.auto_expand), (256, 0));
+        let s: Settings = toml::from_str("max_history_mb = 8\nauto_expand = 2").unwrap();
+        assert_eq!((s.max_history_mb, s.auto_expand), (8, 2));
     }
 
     #[test]

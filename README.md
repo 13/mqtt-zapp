@@ -123,6 +123,9 @@ and keeps the last valid filter.
 
 ```toml
 history_depth = 200      # messages kept per topic (default 100)
+max_history_mb = 256     # payload bytes kept across all topics' history; each
+                         # topic always keeps its latest message (default 256)
+auto_expand = 1          # new topics this many levels deep start expanded (default 0)
 sort = "name"            # tree order: name (natural), count, recent; `s` cycles
 theme = "dark"           # dark, light or mono; NO_COLOR forces mono
 timestamp_format = "%H:%M:%S%.3f"   # strftime for the message time
