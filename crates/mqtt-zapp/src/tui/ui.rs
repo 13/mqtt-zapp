@@ -207,6 +207,8 @@ const HELP_FIXED: &[(&str, &[(&str, &str)])] = &[
         "publish form",
         &[
             ("ctrl-s", "send"),
+            ("ctrl-e", "$EDITOR"),
+            ("ctrl-p/n", "history"),
             ("ctrl-f", "format json"),
             ("tab", "next field"),
             ("esc", "close"),
@@ -515,6 +517,8 @@ fn hints(app: &App) -> Vec<(String, &'static str)> {
         (Mode::Confirm, _) => vec![("y".into(), "confirm"), ("esc".into(), "cancel")],
         (Mode::Publish, _) => vec![
             ("ctrl-s".into(), "send"),
+            ("ctrl-e".into(), "editor"),
+            ("ctrl-p/n".into(), "history"),
             ("ctrl-f".into(), "format json"),
             ("tab".into(), "next"),
             ("esc".into(), "close"),
@@ -1566,7 +1570,7 @@ mod tests {
             "topic: ",
             "payload",
             "QoS: [0] 1 2   Retain: [ ]",
-            "ctrl-s send  ctrl-f format json  tab next  esc close",
+            "ctrl-s send  ctrl-e editor  ctrl-p/n history",
             "topics",
         ] {
             assert!(s.contains(want), "{want}: {s}");

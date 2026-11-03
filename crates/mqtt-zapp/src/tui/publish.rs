@@ -12,7 +12,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use tui_textarea::TextArea;
 
 const INVALID_TOPIC: &str = "invalid topic";
-pub const HINT: &str = "ctrl-s send  ctrl-f format json  tab next  esc close";
+pub const HINT: &str =
+    "ctrl-s send  ctrl-e editor  ctrl-p/n history  ctrl-f json  tab next  esc close";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
@@ -35,6 +36,8 @@ impl Field {
 pub enum FormOutcome {
     Continue,
     Cancel,
+    /// Open the payload (given) in `$EDITOR`.
+    Edit(String),
     Send {
         topic: String,
         payload: Vec<u8>,
@@ -78,6 +81,7 @@ impl PublishForm {
         match key.code {
             KeyCode::Esc => return FormOutcome::Cancel,
             KeyCode::Char('s') if ctrl => return self.send(),
+            KeyCode::Char('e') if ctrl => return FormOutcome::Edit(self.payload_text()),
             KeyCode::Char('f') if ctrl => {
                 if let Err(e) = self.format_json() {
                     self.error = Some(e);
@@ -110,6 +114,20 @@ impl PublishForm {
             },
         }
         FormOutcome::Continue
+    }
+
+    /// The payload as one string, lines joined by `\n`.
+    pub fn payload_text(&self) -> String {
+        self.payload.lines().join("\n")
+    }
+
+    /// Replace the payload text (from the editor or the history).
+    pub fn set_payload(&mut self, text: &str) {
+        let mut ta = TextArea::new(text.split('\n').map(str::to_owned).collect());
+        ta.move_cursor(tui_textarea::CursorMove::Bottom);
+        ta.move_cursor(tui_textarea::CursorMove::End);
+        self.payload = ta;
+        self.sync_focus();
     }
 
     fn focus(&mut self, delta: isize) {
@@ -304,6 +322,21 @@ mod tests {
             };
             f.on_key(k);
         }
+    }
+
+    #[test]
+    fn ctrl_e_returns_edit_outcome() {
+        let mut f = PublishForm::new("t");
+        f.on_key(key(KeyCode::Tab));
+        type_str(&mut f, "a");
+        f.on_key(key(KeyCode::Enter));
+        type_str(&mut f, "b");
+        match f.on_key(ctrl('e')) {
+            FormOutcome::Edit(text) => assert_eq!(text, "a\nb"),
+            _ => panic!("expected edit"),
+        }
+        f.set_payload("x\ny");
+        assert_eq!(f.payload_text(), "x\ny");
     }
 
     #[test]

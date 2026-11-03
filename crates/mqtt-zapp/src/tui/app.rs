@@ -4,7 +4,7 @@
 
 use super::keymap::{Action, Keymap};
 use super::picker::{PasswordState, PickerState};
-use super::publish::{FormOutcome, PublishForm};
+use super::publish::{Field, FormOutcome, PublishForm};
 use super::rows::{Row, visible_rows};
 use crate::cli::Launch;
 use anyhow::Result;
@@ -15,7 +15,7 @@ use mqtt_zapp_core::search::{self, Filter};
 use mqtt_zapp_core::secrets::load_password;
 use mqtt_zapp_core::{NodeId, TopicTree};
 use std::cell::Cell;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -60,6 +60,9 @@ pub enum Effect {
         retain: bool,
     },
     Connect(Profile, Option<String>),
+    /// Open the publish payload in `$EDITOR`; the result comes back through
+    /// `App::set_publish_payload`.
+    EditPayload(String),
     /// Publish an empty retained message to each topic (clears it).
     ClearRetained(Vec<String>),
     /// Put `text` on the clipboard (OSC 52); `what` names it in the note.
@@ -87,6 +90,7 @@ impl fmt::Debug for Effect {
                 .field("qos", qos)
                 .field("retain", retain)
                 .finish(),
+            Effect::EditPayload(t) => write!(f, "EditPayload(<{} bytes>)", t.len()),
             Effect::ClearRetained(t) => write!(f, "ClearRetained({} topics)", t.len()),
             Effect::Copy { what, text } => {
                 write!(f, "Copy({what}, <{} bytes>)", text.len())
@@ -104,6 +108,8 @@ impl fmt::Debug for Effect {
 }
 
 /// How long a footer note (publish result) stays visible.
+/// Payloads remembered per topic for ctrl-p/ctrl-n in the publish form.
+const SENT_PER_TOPIC: usize = 20;
 pub const NOTE_TTL: Duration = Duration::from_secs(5);
 
 /// Messages per second over a sliding 10 s window, counted in 1 s buckets so
@@ -220,6 +226,11 @@ pub struct App {
     /// The chart: `None` off, `Some(None)` the plain numeric payload,
     /// `Some(Some(path))` a JSON field. Reset when another topic is selected.
     pub chart: Option<Option<String>>,
+    /// Recently published payloads per topic, newest first (at most 20).
+    pub sent: HashMap<String, VecDeque<String>>,
+    /// While walking `sent` in the form: the index shown and the draft to
+    /// restore past the newest.
+    sent_walk: Option<(usize, String)>,
     /// Order of sibling topics; `s` cycles it.
     pub sort: SortOrder,
     /// Set while in `Mode::Confirm`.
@@ -272,6 +283,8 @@ impl App {
             confirm: None,
             sort: settings.sort,
             chart: None,
+            sent: HashMap::new(),
+            sent_walk: None,
         })
     }
 
@@ -555,8 +568,21 @@ impl App {
             self.mode = Mode::Browse;
             return Effect::None;
         };
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && form.field == Field::Payload {
+            match key.code {
+                KeyCode::Char('p') => return self.walk_sent(true),
+                KeyCode::Char('n') => return self.walk_sent(false),
+                _ => {}
+            }
+        }
+        self.sent_walk = None;
+        let Some(form) = self.publish.as_mut() else {
+            return Effect::None;
+        };
         match form.on_key(key) {
             FormOutcome::Continue => Effect::None,
+            FormOutcome::Edit(text) => Effect::EditPayload(text),
             FormOutcome::Cancel => {
                 self.publish = None;
                 self.mode = Mode::Browse;
@@ -567,13 +593,59 @@ impl App {
                 payload,
                 qos,
                 retain,
-            } => Effect::Publish {
-                topic,
-                payload,
-                qos,
-                retain,
-            },
+            } => {
+                self.remember_sent(&topic, &payload);
+                Effect::Publish {
+                    topic,
+                    payload,
+                    qos,
+                    retain,
+                }
+            }
         }
+    }
+
+    /// Replace the publish form's payload (the editor's result).
+    pub fn set_publish_payload(&mut self, text: &str) {
+        if let Some(form) = self.publish.as_mut() {
+            form.set_payload(text);
+            self.dirty = true;
+        }
+    }
+
+    fn remember_sent(&mut self, topic: &str, payload: &[u8]) {
+        let text = String::from_utf8_lossy(payload).into_owned();
+        let list = self.sent.entry(topic.to_owned()).or_default();
+        list.retain(|p| *p != text);
+        list.push_front(text);
+        list.truncate(SENT_PER_TOPIC);
+    }
+
+    /// ctrl-p (`older`) / ctrl-n in the payload: walk the payloads sent to
+    /// the topic in the form; past the newest the draft comes back.
+    fn walk_sent(&mut self, older: bool) -> Effect {
+        let Some(form) = self.publish.as_mut() else {
+            return Effect::None;
+        };
+        let topic = form.topic.lines().join("");
+        let Some(list) = self.sent.get(&topic).filter(|l| !l.is_empty()) else {
+            return Effect::None;
+        };
+        let next = match (self.sent_walk.take(), older) {
+            (None, true) => Some((0, form.payload_text())),
+            (None, false) => None,
+            (Some((i, d)), true) => Some(((i + 1).min(list.len() - 1), d)),
+            (Some((0, d)), false) => {
+                form.set_payload(&d);
+                None
+            }
+            (Some((i, d)), false) => Some((i - 1, d)),
+        };
+        if let Some((i, _)) = &next {
+            form.set_payload(&list[*i]);
+        }
+        self.sent_walk = next;
+        Effect::None
     }
 
     fn open_publish(&mut self) {
@@ -582,6 +654,7 @@ impl App {
             .map(|id| self.tree.full_topic(id))
             .unwrap_or_default();
         self.publish = Some(PublishForm::new(&topic));
+        self.sent_walk = None;
         self.mode = Mode::Publish;
     }
 
@@ -1024,6 +1097,72 @@ mod tests {
         a.expanded.insert(a.tree.find("z").unwrap());
         a.handle_action(Action::CollapseAll);
         assert_eq!(a.expanded, ids(&a, &["z"]));
+    }
+
+    fn ctrl_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn payload_of(a: &App) -> String {
+        a.publish.as_ref().unwrap().payload_text()
+    }
+
+    /// Open the form on `topic`, focus the payload, type `p`, send.
+    fn publish_one(a: &mut App, topic: &str, p: &str) {
+        a.selected = a.tree.find(topic);
+        a.handle_action(Action::Publish);
+        a.handle_key(key(KeyCode::Tab));
+        type_str(a, p);
+        assert!(matches!(
+            a.handle_key(ctrl_key('s')),
+            Effect::Publish { .. }
+        ));
+        a.handle_key(key(KeyCode::Esc));
+    }
+
+    #[test]
+    fn set_publish_payload_replaces_text() {
+        let mut a = browse(&["t"]);
+        a.handle_action(Action::Publish);
+        match a.handle_key(ctrl_key('e')) {
+            Effect::EditPayload(t) => assert_eq!(t, ""),
+            e => panic!("{e:?}"),
+        }
+        a.set_publish_payload("from\neditor");
+        assert_eq!(payload_of(&a), "from\neditor");
+    }
+
+    #[test]
+    fn payload_history_walk_and_restore_draft() {
+        let mut a = browse(&["t"]);
+        publish_one(&mut a, "t", "one");
+        publish_one(&mut a, "t", "two");
+        a.handle_action(Action::Publish);
+        a.handle_key(key(KeyCode::Tab));
+        type_str(&mut a, "draft");
+        a.handle_key(ctrl_key('p'));
+        assert_eq!(payload_of(&a), "two");
+        a.handle_key(ctrl_key('p'));
+        assert_eq!(payload_of(&a), "one");
+        a.handle_key(ctrl_key('p'));
+        assert_eq!(payload_of(&a), "one", "stops at the oldest");
+        a.handle_key(ctrl_key('n'));
+        assert_eq!(payload_of(&a), "two");
+        a.handle_key(ctrl_key('n'));
+        assert_eq!(payload_of(&a), "draft", "past the newest: the draft");
+    }
+
+    #[test]
+    fn history_dedups_and_caps_at_20() {
+        let mut a = browse(&["t"]);
+        for i in 0..25 {
+            publish_one(&mut a, "t", &format!("p{i}"));
+        }
+        publish_one(&mut a, "t", "p10");
+        let h = &a.sent["t"];
+        assert_eq!(h.len(), 20);
+        assert_eq!(h[0], "p10");
+        assert_eq!(h.iter().filter(|p| *p == "p10").count(), 1);
     }
 
     fn sel(a: &App) -> String {

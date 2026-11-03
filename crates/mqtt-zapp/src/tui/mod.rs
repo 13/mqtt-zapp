@@ -75,6 +75,8 @@ impl Session {
         match effect {
             Effect::None => {}
             Effect::Quit => return true,
+            // Handled by the event loop, which owns the terminal.
+            Effect::EditPayload(_) => {}
             Effect::ClearRetained(topics) => match self.conn.clone() {
                 Some(conn) => {
                     let notes = self.notes_tx.clone();
@@ -176,6 +178,13 @@ async fn event_loop(
             ev = input.next() => match ev {
                 Some(Ok(Event::Key(key))) => {
                     let effect = app.handle_key(key);
+                    if let Effect::EditPayload(text) = effect {
+                        // A fresh input stream afterwards: the old reader
+                        // must not compete with the editor for stdin.
+                        input = EventStream::new();
+                        run_editor(terminal, app, &text)?;
+                        continue;
+                    }
                     if session.apply(effect, app) {
                         return Ok(());
                     }
@@ -258,4 +267,68 @@ fn install_panic_hook() {
         restore_terminal();
         previous(info);
     }));
+}
+
+/// Leave the TUI, edit `text` in the user's editor, and come back; the
+/// result (or an error note) goes to the publish form.
+fn run_editor(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut App,
+    text: &str,
+) -> Result<()> {
+    let cmd = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .ok()
+        .filter(|c| !c.trim().is_empty())
+        .unwrap_or_else(|| "vi".into());
+    restore_terminal();
+    let result = edit_text(text, &cmd);
+    enable_raw_mode().context("enabling raw mode")?;
+    execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)
+        .context("entering alternate screen")?;
+    terminal.clear()?;
+    match result {
+        Ok(new) => app.set_publish_payload(&new),
+        Err(e) => app.set_note(Note::error(format!("editor failed: {e:#}")), Instant::now()),
+    }
+    app.dirty = true;
+    Ok(())
+}
+
+/// Write `initial` to a temp file, run `cmd "<file>"` through `sh` (so the
+/// editor command may carry arguments) and read the file back. One trailing
+/// newline, as editors add, is dropped.
+fn edit_text(initial: &str, cmd: &str) -> Result<String> {
+    let path = std::env::temp_dir().join(format!("mqtt-zapp-{}.txt", std::process::id()));
+    std::fs::write(&path, initial).context("writing temp file")?;
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{cmd} \"$1\""))
+        .arg("mqtt-zapp")
+        .arg(&path)
+        .status();
+    let read = std::fs::read_to_string(&path);
+    let _ = std::fs::remove_file(&path);
+    let status = status.with_context(|| format!("running {cmd}"))?;
+    anyhow::ensure!(status.success(), "{cmd} exited with {status}");
+    let mut text = read.context("reading temp file")?;
+    if text.ends_with('\n') {
+        text.pop();
+    }
+    Ok(text)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::edit_text;
+
+    #[test]
+    fn editor_failure_keeps_payload() {
+        assert!(edit_text("x", "false").is_err());
+        assert_eq!(edit_text("x", "printf hi >").unwrap(), "hi");
+        // One trailing newline (as editors add) is dropped.
+        assert_eq!(edit_text("x", "printf 'a\\nb\\n' >").unwrap(), "a\nb");
+        // The initial text reaches the editor.
+        assert_eq!(edit_text("keep", "true").unwrap(), "keep");
+    }
 }
