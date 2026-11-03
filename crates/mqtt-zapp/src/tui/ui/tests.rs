@@ -476,7 +476,9 @@ fn filter_segment_coexists_with_state_and_note() {
     a.apply_core_event(CoreEvent::State(
         mqtt_zapp_core::client::ConnState::Connected,
     ));
-    a.filter = mqtt_zapp_core::search::filter(&a.tree, "wzr");
+    a.filter =
+        mqtt_zapp_core::search::filter(&a.tree, "wzr", mqtt_zapp_core::search::QueryMode::Plain)
+            .unwrap();
     a.set_note(Note::info("published ok"), Instant::now());
     let b = draw(&mut a, 100, 24);
     let last = last_line(&b);
@@ -642,7 +644,9 @@ fn tree_empty_state_lists_subscriptions() {
 #[test]
 fn tree_filter_no_match_message() {
     let mut a = app_with(&[("a", b"1")]);
-    a.filter = mqtt_zapp_core::search::filter(&a.tree, "zzz");
+    a.filter =
+        mqtt_zapp_core::search::filter(&a.tree, "zzz", mqtt_zapp_core::search::QueryMode::Plain)
+            .unwrap();
     let s = text(&draw(&mut a, 100, 24));
     assert!(s.contains("no topics match \"zzz\""), "{s}");
 }
@@ -861,12 +865,28 @@ fn error_note_is_red() {
 #[test]
 fn filter_chip_is_highlighted() {
     let mut a = app_with(&[("a/wzr", b"1")]);
-    a.filter = mqtt_zapp_core::search::filter(&a.tree, "wzr");
+    a.filter =
+        mqtt_zapp_core::search::filter(&a.tree, "wzr", mqtt_zapp_core::search::QueryMode::Plain)
+            .unwrap();
     let b = draw(&mut a, 100, 24);
     let last = last_line(&b);
     assert!(last.starts_with(" filter: wzr (1) "), "{last}");
     assert_eq!(b[(1, 23)].bg, theme::WARN);
     assert!(last.contains("esc clear"), "{last}");
+}
+
+#[test]
+fn regex_chip_and_error_chip() {
+    use mqtt_zapp_core::search::QueryMode;
+    let mut a = app_with(&[("a/wzr", b"1")]);
+    a.filter = mqtt_zapp_core::search::filter(&a.tree, "w.r", QueryMode::Regex).unwrap();
+    let last = last_line(&draw(&mut a, 100, 24));
+    assert!(last.starts_with(" regex: w.r (1) "), "{last}");
+    a.search_error = Some("unclosed group".into());
+    let b = draw(&mut a, 100, 24);
+    let last = last_line(&b);
+    assert!(last.starts_with(" regex error: unclosed group "), "{last}");
+    assert_eq!(b[(1, 23)].bg, theme::ERR);
 }
 
 #[test]

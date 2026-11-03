@@ -125,7 +125,9 @@ mod tests {
         let mut t = TopicTree::new(1);
         t.insert("a/wzr", m("1"));
         t.insert("b/c", m("2"));
-        let f = search::filter(&t, "wzr").unwrap();
+        let f = search::filter(&t, "wzr", search::QueryMode::Plain)
+            .unwrap()
+            .unwrap();
         let rows = visible_rows(&t, &HashSet::new(), Some(&f), SortOrder::Name);
         assert_eq!(names(&t, &rows), ["a", "wzr"]);
         assert!(rows[0].expanded);

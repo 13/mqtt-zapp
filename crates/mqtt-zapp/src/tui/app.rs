@@ -231,6 +231,10 @@ pub struct App {
     pub selected: Option<NodeId>,
     pub filter: Option<Filter>,
     pub search: String,
+    /// `ctrl-r` in the search input: the query is a regex.
+    pub search_regex: bool,
+    /// The current (invalid) regex's error; the last valid filter stays.
+    pub search_error: Option<String>,
     pub mode: Mode,
     pub conn_state: ConnState,
     pub dirty: bool,
@@ -311,6 +315,8 @@ impl App {
             selected: None,
             filter: None,
             search: String::new(),
+            search_regex: false,
+            search_error: None,
             mode,
             conn_state,
             dirty: true,
@@ -658,6 +664,10 @@ impl App {
     pub fn on_search_key(&mut self, key: KeyEvent) {
         self.dirty = true;
         match key.code {
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.search_regex = !self.search_regex;
+                self.rebuild_filter();
+            }
             KeyCode::Char(c)
                 if !key
                     .modifiers
@@ -685,6 +695,7 @@ impl App {
     fn clear_search(&mut self) {
         self.reveal_selected();
         self.search.clear();
+        self.search_error = None;
         self.filter = None;
     }
 
@@ -701,7 +712,19 @@ impl App {
     /// Recompute the filter from `search`; if the selection is not shown,
     /// move it to the first match.
     fn rebuild_filter(&mut self) {
-        self.filter = search::filter(&self.tree, &self.search);
+        let mode = if self.search_regex {
+            search::QueryMode::Regex
+        } else {
+            search::QueryMode::Plain
+        };
+        match search::filter(&self.tree, &self.search, mode) {
+            Ok(f) => {
+                self.filter = f;
+                self.search_error = None;
+            }
+            // Keep the last valid filter while the regex is being typed.
+            Err(e) => self.search_error = Some(e),
+        }
         let Some(f) = &self.filter else {
             return;
         };

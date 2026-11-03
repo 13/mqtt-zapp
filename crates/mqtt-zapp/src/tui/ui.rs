@@ -9,7 +9,7 @@ use super::theme;
 use mqtt_zapp_core::TopicTree;
 use mqtt_zapp_core::client::ConnState;
 use mqtt_zapp_core::payload::{preview, sanitize};
-use mqtt_zapp_core::search::match_ranges;
+use mqtt_zapp_core::search::{Filter, QueryMode};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -255,9 +255,8 @@ const HELP_FIXED: &[(&str, &[(&str, &str)])] = &[
     (
         "search",
         &[
-            ("type", "filter topics"),
+            ("ctrl-r", "regex on/off"),
             ("enter", "keep filter"),
-            ("esc", "clear"),
         ],
     ),
 ];
@@ -361,7 +360,7 @@ fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let now = Instant::now();
     let width = block.inner(area).width as usize;
-    let query = app.filter.as_ref().map(|f| f.query.as_str());
+    let query = app.filter.as_ref();
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()
@@ -427,7 +426,7 @@ fn scroll_offset(offset: usize, selected: Option<usize>, len: usize, height: usi
 fn row_spans<'a>(
     tree: &TopicTree,
     row: &Row,
-    query: Option<&str>,
+    query: Option<&Filter>,
     width: usize,
     flash: bool,
 ) -> Vec<Span<'a>> {
@@ -481,8 +480,8 @@ fn row_spans<'a>(
 }
 
 /// Push `text` as spans, styling the byte ranges where `query` matches.
-fn highlight<'a>(out: &mut Vec<Span<'a>>, text: String, query: Option<&str>, base: Style) {
-    let ranges = query.map(|q| match_ranges(&text, q)).unwrap_or_default();
+fn highlight<'a>(out: &mut Vec<Span<'a>>, text: String, query: Option<&Filter>, base: Style) {
+    let ranges = query.map(|f| f.ranges(&text)).unwrap_or_default();
     let mut at = 0;
     for r in ranges {
         if r.start > at {
@@ -601,7 +600,7 @@ fn footer_line(app: &App, width: u16) -> Line<'static> {
     if app.mode == Mode::SearchInput {
         let mut spans = vec![
             Span::styled(
-                "/",
+                if app.search_regex { "regex/" } else { "/" },
                 Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!("{}▏", single_line(&app.search))),
@@ -609,7 +608,14 @@ fn footer_line(app: &App, width: u16) -> Line<'static> {
         let mut right = Vec::new();
         push_hints(
             &mut right,
-            &[("enter".into(), "keep"), ("esc".into(), "clear")],
+            &[
+                (
+                    "ctrl-r".into(),
+                    if app.search_regex { "plain" } else { "regex" },
+                ),
+                ("enter".into(), "keep"),
+                ("esc".into(), "clear"),
+            ],
             width,
         );
         let right_w = spans_width(&right).saturating_sub(2);
@@ -621,12 +627,20 @@ fn footer_line(app: &App, width: u16) -> Line<'static> {
         return Line::from(spans);
     }
     let mut spans = Vec::new();
-    if let Some(f) = app
-        .filter
-        .as_ref()
-        .filter(|_| !matches!(app.mode, Mode::Picker | Mode::Password))
-    {
-        let chip = format!(" filter: {} ({}) ", single_line(&f.query), f.matches.len());
+    let front = matches!(app.mode, Mode::Picker | Mode::Password);
+    if let Some(e) = app.search_error.as_ref().filter(|_| !front) {
+        let chip = format!(" regex error: {} ", single_line(e));
+        spans.push(Span::styled(
+            ellipsize(&chip, width),
+            Style::new().fg(Color::Black).bg(theme::ERR),
+        ));
+        spans.push(Span::raw(" "));
+    } else if let Some(f) = app.filter.as_ref().filter(|_| !front) {
+        let label = match f.mode {
+            QueryMode::Plain => "filter",
+            QueryMode::Regex => "regex",
+        };
+        let chip = format!(" {label}: {} ({}) ", single_line(&f.query), f.matches.len());
         spans.push(Span::styled(
             ellipsize(&chip, width),
             Style::new().fg(Color::Black).bg(theme::WARN),

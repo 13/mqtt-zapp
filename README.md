@@ -109,6 +109,14 @@ time.
 search input take typed text and do not use the keymap; the help lists their
 keys too.
 
+### Search
+
+`/` filters the tree as you type. Every space-separated word must appear,
+case-insensitively, in the topic path or the latest payload (each word may be
+in either); `"quoted words"` match as one phrase. `ctrl-r` switches the input
+to a (case-insensitive) regular expression; an invalid one shows its error
+and keeps the last valid filter.
+
 ### Settings
 
 `settings.toml` in the config directory:

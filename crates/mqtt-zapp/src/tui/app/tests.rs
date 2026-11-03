@@ -1092,3 +1092,52 @@ fn base_kept_when_other_topics_arrive() {
     a.apply_core_event(msg("other", "x"));
     assert!(a.diff_base.is_some());
 }
+
+// --- search modes ---
+
+fn ctrl_r() -> KeyEvent {
+    KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)
+}
+
+#[test]
+fn ctrl_r_toggles_regex() {
+    let mut a = search_app();
+    a.handle_key(key(KeyCode::Char('/')));
+    type_str(&mut a, "esp32-wzr\\d");
+    assert!(
+        a.filter.as_ref().unwrap().matches.is_empty(),
+        "plain: literal \\d"
+    );
+    a.handle_key(ctrl_r());
+    assert!(a.search_regex);
+    let f = a.filter.as_ref().unwrap();
+    assert_eq!(f.mode, mqtt_zapp_core::search::QueryMode::Regex);
+    // esp32-WZR1 and its LWT child both have the match in their path.
+    assert_eq!(f.matches.len(), 2);
+    a.handle_key(ctrl_r());
+    assert!(!a.search_regex);
+}
+
+#[test]
+fn invalid_regex_keeps_last_filter() {
+    let mut a = search_app();
+    a.handle_key(key(KeyCode::Char('/')));
+    a.handle_key(ctrl_r());
+    type_str(&mut a, "LWT");
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 1);
+    type_str(&mut a, "(");
+    assert!(a.search_error.is_some());
+    assert_eq!(a.filter.as_ref().unwrap().query, "LWT");
+    a.handle_key(key(KeyCode::Backspace));
+    assert!(a.search_error.is_none());
+    a.handle_key(key(KeyCode::Esc));
+    assert!(a.search_error.is_none() && a.filter.is_none());
+}
+
+#[test]
+fn multi_term_search_filters_rows() {
+    let mut a = search_app();
+    a.handle_key(key(KeyCode::Char('/')));
+    type_str(&mut a, "muh LWT");
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 1);
+}
