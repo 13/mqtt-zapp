@@ -49,8 +49,8 @@ pub fn diff(prev: &[u8], cur: &[u8]) -> Diff {
             Diff::Json(out)
         }
         _ => {
-            let a = pretty_lines(&pk, prev).join("\n");
-            let b = pretty_lines(&ck, cur).join("\n");
+            let a = joined(&pk, prev);
+            let b = joined(&ck, cur);
             let lines = TextDiff::from_lines(&a, &b)
                 .iter_all_changes()
                 .map(|ch| LineChange {
@@ -64,6 +64,22 @@ pub fn diff(prev: &[u8], cur: &[u8]) -> Diff {
                 .collect();
             Diff::Text(lines)
         }
+    }
+}
+
+/// Lines each terminated by `\n`, so a trailing line compares equal on both sides.
+fn joined(kind: &PayloadKind, payload: &[u8]) -> String {
+    pretty_lines(kind, payload)
+        .iter()
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+fn child(path: &str, key: &str) -> String {
+    if path.is_empty() {
+        key.to_string()
+    } else {
+        format!("{path}.{key}")
     }
 }
 
@@ -172,6 +188,16 @@ mod tests {
                 .count(),
             1
         );
+    }
+    #[test]
+    fn appended_line_has_no_false_removal() {
+        let Diff::Text(l) = diff(b"a", b"a\nb") else {
+            panic!()
+        };
+        let n = |t| l.iter().filter(|x| x.tag == t).count();
+        assert_eq!(n(LineTag::Removed), 0);
+        assert_eq!(n(LineTag::Added), 1);
+        assert_eq!(n(LineTag::Same), 1);
     }
     #[test]
     fn mixed_json_and_text_falls_back_to_text() {
