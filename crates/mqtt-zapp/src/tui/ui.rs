@@ -93,10 +93,12 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(footer_line(app, area.width)), status);
 }
 
-/// The help overlay's groups; every action is in exactly one.
-const HELP_GROUPS: [(&str, &[Action]); 3] = [
+/// The help overlay's groups and the column (0 or 1) each goes in; every
+/// action is in exactly one group.
+const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
     (
         "navigate",
+        0,
         &[
             Action::Up,
             Action::Down,
@@ -110,6 +112,7 @@ const HELP_GROUPS: [(&str, &[Action]); 3] = [
     ),
     (
         "view",
+        0,
         &[
             Action::FocusNext,
             Action::ScrollDown,
@@ -119,9 +122,12 @@ const HELP_GROUPS: [(&str, &[Action]); 3] = [
     ),
     (
         "actions",
+        1,
         &[
             Action::Search,
             Action::Publish,
+            Action::CopyTopic,
+            Action::CopyPayload,
             Action::Help,
             Action::Cancel,
             Action::Quit,
@@ -129,17 +135,38 @@ const HELP_GROUPS: [(&str, &[Action]); 3] = [
     ),
 ];
 
-/// Effective keymap, grouped, on the left; keys that bypass the keymap on
-/// the right.
+/// Keys that bypass the keymap, shown in the third help column.
+const HELP_FIXED: &[(&str, &[(&str, &str)])] = &[
+    (
+        "publish form",
+        &[
+            ("ctrl-s", "send"),
+            ("ctrl-f", "format json"),
+            ("tab", "next field"),
+            ("esc", "close"),
+        ],
+    ),
+    (
+        "search",
+        &[
+            ("type", "filter topics"),
+            ("enter", "keep filter"),
+            ("esc", "clear"),
+        ],
+    ),
+];
+
+/// Effective keymap, grouped, in two columns; keys that bypass the keymap
+/// in a third.
 fn render_help(f: &mut Frame, area: Rect, app: &App) {
     let bindings = app.keymap.bindings();
     debug_assert!(
         bindings
             .iter()
-            .all(|(a, _)| { HELP_GROUPS.iter().filter(|(_, g)| g.contains(a)).count() == 1 })
+            .all(|(a, _)| { HELP_GROUPS.iter().filter(|(_, _, g)| g.contains(a)).count() == 1 })
     );
     theme::dim_backdrop(f, area);
-    let area = theme::centered(area, 76, 22);
+    let area = theme::centered(area, 78, 22);
     let block = theme::pane("help · any key closes", true).title_bottom(
         Line::styled(
             " shift-drag selects text · remap in settings.toml [keys] ",
@@ -150,19 +177,28 @@ fn render_help(f: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     f.render_widget(Clear, area);
     f.render_widget(block, area);
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(inner);
+    let cols: [Rect; 3] = Layout::horizontal([
+        Constraint::Ratio(1, 3),
+        Constraint::Ratio(1, 3),
+        Constraint::Ratio(1, 3),
+    ])
+    .areas(inner);
     let heading = Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD);
     let key_style = Style::new().add_modifier(Modifier::BOLD);
-    let row = |name: &str, keys: String| {
+    let row = |name: &str, keys: String, pad: usize| {
         Line::from(vec![
-            Span::styled(format!(" {name:<14}"), Style::new().fg(theme::MUTED)),
+            Span::styled(format!(" {name:<pad$}"), Style::new().fg(theme::MUTED)),
             Span::styled(keys, key_style),
         ])
     };
-    let group = |lines: &mut Vec<Line<'static>>, title: &str, actions: &[Action]| {
+    let mut columns: [Vec<Line>; 3] = Default::default();
+    for (title, col, actions) in HELP_GROUPS {
+        let lines = &mut columns[*col];
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
         lines.push(Line::styled(format!(" {title}"), heading));
-        for action in actions {
+        for action in *actions {
             let keys = bindings
                 .iter()
                 .find(|(a, _)| a == action)
@@ -173,38 +209,22 @@ fn render_help(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 keys.join(", ")
             };
-            lines.push(row(action.name(), keys));
+            lines.push(row(action.name(), keys, 15));
         }
-    };
-    // navigate + view on the left; actions on the right above the keys that
-    // bypass the keymap, so every row fits at 80x24.
-    let [(t0, g0), (t1, g1), (t2, g2)] = HELP_GROUPS;
-    let mut lines = Vec::new();
-    group(&mut lines, t0, g0);
-    group(&mut lines, t1, g1);
-    f.render_widget(Paragraph::new(lines), left);
-    let mut lines = Vec::new();
-    group(&mut lines, t2, g2);
-    lines.push(Line::default());
-    lines.push(Line::styled(" publish form", heading));
-    for (k, what) in [
-        ("ctrl-s", "send"),
-        ("ctrl-f", "format json"),
-        ("tab", "next field"),
-        ("esc", "close"),
-    ] {
-        lines.push(row(k, what.into()));
     }
-    lines.push(Line::default());
-    lines.push(Line::styled(" search", heading));
-    for (k, what) in [
-        ("type", "filter topics"),
-        ("enter", "keep filter"),
-        ("esc", "clear"),
-    ] {
-        lines.push(row(k, what.into()));
+    for (title, keys) in HELP_FIXED {
+        let lines = &mut columns[2];
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::styled(format!(" {title}"), heading));
+        for (k, what) in *keys {
+            lines.push(row(k, (*what).into(), 9));
+        }
     }
-    f.render_widget(Paragraph::new(lines), right);
+    for (lines, col) in columns.into_iter().zip(cols) {
+        f.render_widget(Paragraph::new(lines), col);
+    }
 }
 
 fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {

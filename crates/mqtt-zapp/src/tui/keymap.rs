@@ -25,11 +25,13 @@ pub enum Action {
     Bottom,
     ScrollDown,
     ScrollUp,
+    CopyTopic,
+    CopyPayload,
 }
 
 impl Action {
     /// Every action with its settings name and default keys.
-    const DEFAULTS: [(Action, &'static str, &'static [&'static str]); 17] = [
+    const DEFAULTS: &'static [(Action, &'static str, &'static [&'static str])] = &[
         (Action::Up, "up", &["k", "up"]),
         (Action::Down, "down", &["j", "down"]),
         (Action::Collapse, "collapse", &["h", "left"]),
@@ -47,6 +49,8 @@ impl Action {
         (Action::Bottom, "bottom", &["G"]),
         (Action::ScrollDown, "scroll_down", &["ctrl-d"]),
         (Action::ScrollUp, "scroll_up", &["ctrl-u"]),
+        (Action::CopyTopic, "copy_topic", &["y"]),
+        (Action::CopyPayload, "copy_payload", &["Y"]),
     ];
 
     /// The snake_case name used in `[keys]`.
@@ -163,7 +167,7 @@ impl Keymap {
     /// default keys of that action and takes its key away from any other action.
     pub fn from_settings(overrides: &BTreeMap<String, String>) -> Result<Keymap> {
         let mut bindings = HashMap::new();
-        for (action, _, keys) in Action::DEFAULTS {
+        for &(action, _, keys) in Action::DEFAULTS {
             for k in keys {
                 bindings.insert(KeySpec::parse(k)?, action);
             }

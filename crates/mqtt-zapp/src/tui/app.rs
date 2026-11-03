@@ -56,6 +56,11 @@ pub enum Effect {
         retain: bool,
     },
     Connect(Profile, Option<String>),
+    /// Put `text` on the clipboard (OSC 52); `what` names it in the note.
+    Copy {
+        what: &'static str,
+        text: String,
+    },
 }
 
 // Hand-written so a connect password can never reach a debug log.
@@ -76,6 +81,9 @@ impl fmt::Debug for Effect {
                 .field("qos", qos)
                 .field("retain", retain)
                 .finish(),
+            Effect::Copy { what, text } => {
+                write!(f, "Copy({what}, <{} bytes>)", text.len())
+            }
             Effect::Connect(profile, password) => {
                 let pw = if password.is_some() {
                     "<redacted>"
@@ -610,8 +618,30 @@ impl App {
             Action::Cancel => self.clear_search(),
             Action::Publish => self.open_publish(),
             Action::Help => self.mode = Mode::Help,
+            Action::CopyTopic => return self.copy(true),
+            Action::CopyPayload => return self.copy(false),
         }
         Effect::None
+    }
+
+    /// Copy the selected topic, or the payload on screen (history-aware).
+    fn copy(&mut self, topic: bool) -> Effect {
+        let text = if topic {
+            self.selected.map(|id| self.tree.full_topic(id))
+        } else {
+            super::message_view::shown_message(self)
+                .map(|m| String::from_utf8_lossy(&m.payload).into_owned())
+        };
+        match text {
+            Some(text) => Effect::Copy {
+                what: if topic { "topic" } else { "payload" },
+                text,
+            },
+            None => {
+                self.set_note(Note::info("nothing to copy"), Instant::now());
+                Effect::None
+            }
+        }
     }
 
     fn history_len(&self) -> usize {
@@ -734,6 +764,29 @@ mod tests {
             a.apply_core_event(msg(t, "v"));
         }
         a
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn y_copies_topic_and_Y_copies_shown_payload() {
+        let mut a = browse(&[]);
+        assert!(matches!(a.handle_action(Action::CopyTopic), Effect::None));
+        assert_eq!(
+            a.note_at(Instant::now()),
+            Some(&Note::info("nothing to copy"))
+        );
+        a.apply_core_event(msg("x/y", "old"));
+        a.apply_core_event(msg("x/y", "new"));
+        a.selected = a.tree.find("x/y");
+        match a.handle_action(Action::CopyTopic) {
+            Effect::Copy { what, text } => assert_eq!((what, text.as_str()), ("topic", "x/y")),
+            e => panic!("{e:?}"),
+        }
+        a.history_sel = Some(0);
+        match a.handle_action(Action::CopyPayload) {
+            Effect::Copy { what, text } => assert_eq!((what, text.as_str()), ("payload", "old")),
+            e => panic!("{e:?}"),
+        }
     }
 
     fn sel(a: &App) -> String {

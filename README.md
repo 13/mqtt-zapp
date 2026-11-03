@@ -78,6 +78,8 @@ time.
 | `G` | `bottom` | Jump to the bottom |
 | `ctrl-d` | `scroll_down` | Scroll the payload half a page down |
 | `ctrl-u` | `scroll_up` | Scroll the payload half a page up |
+| `y` | `copy_topic` | Copy the topic to the clipboard (OSC 52) |
+| `Y` | `copy_payload` | Copy the shown payload to the clipboard (OSC 52) |
 
 `?` shows the effective keys, including your remaps. The publish form and
 search input take typed text and do not use the keymap; the help lists their

@@ -99,6 +99,11 @@ fn shown(app: &App) -> Option<Shown<'_>> {
     })
 }
 
+/// The message the payload area shows, if any.
+pub fn shown_message(app: &App) -> Option<&Message> {
+    shown(app).map(|s| s.msg)
+}
+
 fn body(app: &App) -> Option<Built> {
     let s = shown(app)?;
     let stamp = |m: &Message| (m.received_at, m.payload.len());

@@ -23,9 +23,10 @@ use crossterm::terminal::{
 use futures::StreamExt;
 use mqtt_zapp_core::client::{ConnState, Connection, CoreEvent};
 use mqtt_zapp_core::config::{ProfileStore, Settings};
+use mqtt_zapp_core::payload::base64;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use std::io::{Stdout, stdout};
+use std::io::{Stdout, Write, stdout};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -74,6 +75,19 @@ impl Session {
         match effect {
             Effect::None => {}
             Effect::Quit => return true,
+            Effect::Copy { what, text } => {
+                // OSC 52: the terminal (or tmux/ssh in between) sets the clipboard.
+                let mut out = stdout();
+                let ok = write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()))
+                    .and_then(|()| out.flush());
+                app.set_note(
+                    match ok {
+                        Ok(()) => Note::info(format!("copied {what}")),
+                        Err(e) => Note::error(format!("copy failed: {e}")),
+                    },
+                    Instant::now(),
+                );
+            }
             Effect::Connect(profile, password) => {
                 self.disconnect();
                 app.reset_tree();
