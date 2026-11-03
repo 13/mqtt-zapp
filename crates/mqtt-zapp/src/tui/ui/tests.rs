@@ -1388,3 +1388,79 @@ fn click_uses_pinned_payload() {
     click_payload_row(&mut a, &b, "\"a\": 1");
     assert_eq!(a.chart, Some(Some("a".into())));
 }
+
+/// The confirm card alone on a `w`×`h` screen; its inner rows, trimmed.
+fn confirm_rows(prompt: &str, w: u16, h: u16) -> Vec<String> {
+    use crate::tui::app::{Confirm, ConfirmAction};
+    let c = Confirm {
+        prompt: prompt.to_owned(),
+        action: ConfirmAction::DeleteTopic("t".into()),
+    };
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    t.draw(|f| render_confirm(f, f.area(), &c)).unwrap();
+    text(t.backend().buffer())
+        .lines()
+        .filter_map(|r| {
+            let (a, b) = (r.find('┃')?, r.rfind('┃')?);
+            (b > a).then(|| r[a + '┃'.len_utf8()..b].trim().to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn confirm_wraps_long_prompt() {
+    let topic =
+        "home/livingroom/sensors/temperature/very/long/path/that/goes/on/and/on/forever/leaf";
+    let prompt = format!("delete {topic} and clear 12 retained on the broker?");
+    for w in [30, 50, 70, 120] {
+        let rows = confirm_rows(&prompt, w, 30);
+        let joined: String = rows.concat().split_whitespace().collect();
+        let want: String = prompt.split_whitespace().collect();
+        assert!(joined.contains(&want), "w={w}: {rows:#?}");
+        assert!(
+            rows.last().unwrap().starts_with("y yes"),
+            "w={w}: {rows:#?}"
+        );
+    }
+}
+
+#[test]
+fn confirm_short_prompt_stays_one_line() {
+    let rows = confirm_rows("delete retained message on a/b?", 100, 24);
+    assert!(
+        rows.iter().any(|r| r == "delete retained message on a/b?"),
+        "{rows:#?}"
+    );
+}
+
+#[test]
+fn confirm_tiny_screen_does_not_panic() {
+    let p = "x".repeat(300);
+    for (w, h) in [(1, 1), (5, 3), (12, 6), (20, 4)] {
+        let _ = confirm_rows(&p, w, h);
+    }
+}
+
+#[test]
+fn wrap_words_fits_width_and_keeps_text() {
+    use unicode_width::UnicodeWidthStr;
+    assert_eq!(
+        wrap_words("delete aa/bbbb/cc now", 9),
+        ["delete", "aa/bbbb/", "cc now"]
+    );
+    for s in [
+        "delete 设备/房间/温度 and clear 3?",
+        "x".repeat(50).as_str(),
+        "a/b c",
+    ] {
+        for w in 1..30 {
+            let out = wrap_words(s, w);
+            assert!(
+                out.iter().all(|l| l.width() <= w.max(2)),
+                "{s} w={w}: {out:?}"
+            );
+            let joined: String = out.concat().split_whitespace().collect();
+            assert_eq!(joined, s.split_whitespace().collect::<String>(), "w={w}");
+        }
+    }
+}

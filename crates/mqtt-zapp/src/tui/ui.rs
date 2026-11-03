@@ -173,10 +173,29 @@ fn render_stats(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-/// A yes/no card for a destructive action.
+/// A yes/no card for a destructive action. The prompt wraps (a long topic
+/// breaks after a `/`), and the card grows to fit it; on a short screen the
+/// prompt is cut with `…` so the yes/no hint always shows.
 fn render_confirm(f: &mut Frame, area: Rect, c: &super::app::Confirm) {
     theme::dim_backdrop(f, area);
-    let card = theme::centered(area, 64, 6);
+    let prompt = single_line(&c.prompt);
+    // Borders and a space either side of the text.
+    let want = u16::try_from(prompt.width() + 4).unwrap_or(u16::MAX);
+    let width = want.clamp(CONFIRM_MIN_WIDTH, CONFIRM_MAX_WIDTH);
+    let room = usize::from(theme::centered(area, width, 1).width.saturating_sub(4)).max(1);
+    let mut text = wrap_words(&prompt, room);
+    let want_h = u16::try_from(text.len() + 4).unwrap_or(u16::MAX);
+    let card = theme::centered(area, width, want_h);
+    // Inner rows: the prompt, a blank row if there is room, the hint.
+    let inner = usize::from(card.height.saturating_sub(2));
+    let fit = inner.saturating_sub(1).max(1);
+    let gap = inner > text.len() + 1;
+    if text.len() > fit {
+        text.truncate(fit);
+        if let Some(last) = text.last_mut() {
+            *last = format!("{}…", fit_width(last, room.saturating_sub(1)));
+        }
+    }
     f.render_widget(Clear, card);
     let mut hint = vec![Span::raw(" ")];
     hint.extend(theme::key_hint("y", "yes"));
@@ -184,15 +203,71 @@ fn render_confirm(f: &mut Frame, area: Rect, c: &super::app::Confirm) {
         "any other key: no",
         Style::new().fg(theme::MUTED),
     ));
-    let lines = vec![
-        Line::raw(format!(" {}", single_line(&c.prompt))),
-        Line::default(),
-        Line::from(hint),
-    ];
+    let mut lines: Vec<Line> = text
+        .into_iter()
+        .map(|l| Line::raw(format!(" {l}")))
+        .collect();
+    if gap {
+        lines.push(Line::default());
+    }
+    lines.push(Line::from(hint));
     f.render_widget(
         Paragraph::new(lines).block(theme::pane("confirm", true)),
         card,
     );
+}
+
+const CONFIRM_MIN_WIDTH: u16 = 40;
+const CONFIRM_MAX_WIDTH: u16 = 80;
+
+/// The longest prefix of `s` at most `width` columns wide.
+fn fit_width(s: &str, width: usize) -> &str {
+    let mut w = 0;
+    for (i, ch) in s.char_indices() {
+        w += ch.width().unwrap_or(0);
+        if w > width {
+            return &s[..i];
+        }
+    }
+    s
+}
+
+/// Wrap `s` into lines at most `width` columns wide, breaking at spaces; a
+/// word too long for a line breaks after its last `/` that fits, else at
+/// the width.
+fn wrap_words(s: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in s.split(' ').filter(|w| !w.is_empty()) {
+        let sep = usize::from(!line.is_empty());
+        if line.width() + sep + word.width() <= width {
+            if sep == 1 {
+                line.push(' ');
+            }
+            line.push_str(word);
+            continue;
+        }
+        if !line.is_empty() {
+            out.push(std::mem::take(&mut line));
+        }
+        let mut rest = word;
+        while rest.width() > width {
+            let head = fit_width(rest, width);
+            let cut = match head.rfind('/') {
+                Some(i) if i > 0 => i + 1,
+                _ if head.is_empty() => rest.chars().next().map_or(rest.len(), char::len_utf8),
+                _ => head.len(),
+            };
+            out.push(rest[..cut].to_owned());
+            rest = &rest[cut..];
+        }
+        line.push_str(rest);
+    }
+    if !line.is_empty() || out.is_empty() {
+        out.push(line);
+    }
+    out
 }
 
 /// The help overlay's groups and the column (0–2) each goes in; every
