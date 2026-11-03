@@ -90,7 +90,32 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
     if app.mode == Mode::Help {
         render_help(f, main, app);
     }
+    if let (Mode::Confirm, Some(c)) = (app.mode, &app.confirm) {
+        render_confirm(f, main, c);
+    }
     f.render_widget(Paragraph::new(footer_line(app, area.width)), status);
+}
+
+/// A yes/no card for a destructive action.
+fn render_confirm(f: &mut Frame, area: Rect, c: &super::app::Confirm) {
+    theme::dim_backdrop(f, area);
+    let card = theme::centered(area, 64, 6);
+    f.render_widget(Clear, card);
+    let mut hint = vec![Span::raw(" ")];
+    hint.extend(theme::key_hint("y", "yes"));
+    hint.push(Span::styled(
+        "any other key: no",
+        Style::new().fg(theme::MUTED),
+    ));
+    let lines = vec![
+        Line::raw(format!(" {}", single_line(&c.prompt))),
+        Line::default(),
+        Line::from(hint),
+    ];
+    f.render_widget(
+        Paragraph::new(lines).block(theme::pane("confirm", true)),
+        card,
+    );
 }
 
 /// The help overlay's groups and the column (0 or 1) each goes in; every
@@ -132,6 +157,11 @@ const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
             Action::Cancel,
             Action::Quit,
         ],
+    ),
+    (
+        "retained",
+        1,
+        &[Action::DeleteRetained, Action::ClearRetained],
     ),
 ];
 
@@ -342,6 +372,13 @@ fn row_spans<'a>(
         name_style = name_style.fg(FLASH_FG).add_modifier(FLASH_MODIFIER);
     }
     highlight(&mut spans, name, query, name_style);
+    if node
+        .latest
+        .as_ref()
+        .is_some_and(|m| m.retain && !m.payload.is_empty())
+    {
+        spans.push(Span::styled(" ®", Style::new().fg(theme::MUTED)));
+    }
     if let Some(m) = &node.latest {
         spans.push(Span::raw("  "));
         highlight(
@@ -439,6 +476,7 @@ fn hints(app: &App) -> Vec<(String, &'static str)> {
             vec![("enter".into(), "connect"), ("esc".into(), "quit")]
         }
         (Mode::Password, _) => vec![("enter".into(), "connect"), ("esc".into(), "back")],
+        (Mode::Confirm, _) => vec![("y".into(), "confirm"), ("esc".into(), "cancel")],
         (Mode::Publish, _) => vec![
             ("ctrl-s".into(), "send"),
             ("ctrl-f".into(), "format json"),
@@ -1190,6 +1228,43 @@ mod tests {
         a.filter = mqtt_zapp_core::search::filter(&a.tree, "zzz");
         let s = text(&draw(&mut a, 100, 24));
         assert!(s.contains("no topics match \"zzz\""), "{s}");
+    }
+
+    fn retained(a: &mut App, topic: &str, payload: &[u8]) {
+        a.apply_core_event(CoreEvent::Message {
+            topic: topic.into(),
+            msg: Message {
+                payload: payload.to_vec(),
+                qos: 0,
+                retain: true,
+                received_at: SystemTime::now(),
+            },
+        });
+    }
+
+    #[test]
+    fn retained_marker_on_row() {
+        let mut a = app_with(&[("plain", b"1")]);
+        retained(&mut a, "kept", b"2");
+        retained(&mut a, "gone", b"");
+        let s = text(&draw(&mut a, 100, 24));
+        assert!(s.contains("kept ®  2"), "{s}");
+        assert!(!s.contains("plain ®"), "{s}");
+        assert!(!s.contains("gone ®"), "{s}");
+    }
+
+    #[test]
+    fn confirm_overlay_renders_at_40x10() {
+        let mut a = app_with(&[]);
+        retained(&mut a, "a/b", b"1");
+        a.selected = a.tree.find("a");
+        a.handle_action(Action::ClearRetained);
+        let b = draw(&mut a, 40, 10);
+        let s = text(&b);
+        assert!(s.contains("confirm"), "{s}");
+        assert!(last_line(&b).starts_with("y confirm"), "{s}");
+        let s = text(&draw(&mut a, 100, 24));
+        assert!(s.contains("clear 1 retained messages under a?"), "{s}");
     }
 
     #[test]

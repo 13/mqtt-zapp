@@ -80,6 +80,8 @@ time.
 | `ctrl-u` | `scroll_up` | Scroll the payload half a page up |
 | `y` | `copy_topic` | Copy the topic to the clipboard (OSC 52) |
 | `Y` | `copy_payload` | Copy the shown payload to the clipboard (OSC 52) |
+| `x` | `delete_retained` | Delete the retained message of the selected topic (asks first) |
+| `X` | `clear_retained` | Clear every retained message in the subtree (asks first) |
 
 `?` shows the effective keys, including your remaps. The publish form and
 search input take typed text and do not use the keymap; the help lists their

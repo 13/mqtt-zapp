@@ -75,6 +75,27 @@ impl Session {
         match effect {
             Effect::None => {}
             Effect::Quit => return true,
+            Effect::ClearRetained(topics) => match self.conn.clone() {
+                Some(conn) => {
+                    let notes = self.notes_tx.clone();
+                    // Off the UI loop: each publish may wait for the broker.
+                    tokio::spawn(async move {
+                        let n = topics.len();
+                        let mut failed = None;
+                        for t in &topics {
+                            if let Err(e) = conn.publish(t, Vec::new(), 0, true).await {
+                                failed = Some(format!("clear failed on {t}: {e:#}"));
+                                break;
+                            }
+                        }
+                        let _ = notes.send(match failed {
+                            None => Note::info(format!("cleared {n} retained")),
+                            Some(e) => Note::error(e),
+                        });
+                    });
+                }
+                None => app.set_note(Note::error("clear failed: not connected"), Instant::now()),
+            },
             Effect::Copy { what, text } => {
                 // OSC 52: the terminal (or tmux/ssh in between) sets the clipboard.
                 let mut out = stdout();

@@ -35,6 +35,8 @@ pub enum Mode {
     SearchInput,
     Publish,
     Help,
+    /// A yes/no question; see `App::confirm`.
+    Confirm,
 }
 
 /// Which pane the j/k keys drive.
@@ -56,6 +58,8 @@ pub enum Effect {
         retain: bool,
     },
     Connect(Profile, Option<String>),
+    /// Publish an empty retained message to each topic (clears it).
+    ClearRetained(Vec<String>),
     /// Put `text` on the clipboard (OSC 52); `what` names it in the note.
     Copy {
         what: &'static str,
@@ -81,6 +85,7 @@ impl fmt::Debug for Effect {
                 .field("qos", qos)
                 .field("retain", retain)
                 .finish(),
+            Effect::ClearRetained(t) => write!(f, "ClearRetained({} topics)", t.len()),
             Effect::Copy { what, text } => {
                 write!(f, "Copy({what}, <{} bytes>)", text.len())
             }
@@ -164,6 +169,14 @@ impl Note {
     }
 }
 
+/// A pending destructive action: what to ask, and the retained topics to
+/// clear on yes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Confirm {
+    pub prompt: String,
+    pub topics: Vec<String>,
+}
+
 pub struct App {
     pub tree: TopicTree,
     pub expanded: HashSet<NodeId>,
@@ -202,6 +215,8 @@ pub struct App {
     pub publish: Option<PublishForm>,
     /// A transient footer message (publish result) and when it was set.
     pub status_note: Option<(Note, Instant)>,
+    /// Set while in `Mode::Confirm`.
+    pub confirm: Option<Confirm>,
     /// Pane rectangles of the last frame, for mouse hit-testing.
     pub hit: Cell<HitAreas>,
 }
@@ -247,6 +262,7 @@ impl App {
             publish: None,
             status_note: None,
             hit: Cell::new(HitAreas::default()),
+            confirm: None,
         })
     }
 
@@ -468,7 +484,58 @@ impl App {
                 self.dirty = true;
                 Effect::None
             }
+            Mode::Confirm => self.on_confirm_key(key),
         }
+    }
+
+    /// `y` or enter confirms; any other key cancels.
+    fn on_confirm_key(&mut self, key: KeyEvent) -> Effect {
+        self.dirty = true;
+        self.mode = Mode::Browse;
+        let confirm = self.confirm.take();
+        match (key.code, confirm) {
+            (KeyCode::Char('y') | KeyCode::Enter, Some(c)) => Effect::ClearRetained(c.topics),
+            _ => {
+                self.set_note(Note::info("cancelled"), Instant::now());
+                Effect::None
+            }
+        }
+    }
+
+    /// Ask before clearing the retained messages of the selected node, or
+    /// (`subtree`) of it and everything below.
+    fn ask_clear_retained(&mut self, subtree: bool) {
+        let Some(id) = self.selected else {
+            self.set_note(Note::info("no retained messages here"), Instant::now());
+            return;
+        };
+        let is_retained = |n: &mqtt_zapp_core::TopicNode| {
+            n.latest
+                .as_ref()
+                .is_some_and(|m| m.retain && !m.payload.is_empty())
+        };
+        let mut topics = Vec::new();
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            let node = self.tree.node(n);
+            if is_retained(node) {
+                topics.push(self.tree.full_topic(n));
+            }
+            if subtree {
+                stack.extend(node.children.values());
+            }
+        }
+        let topic = self.tree.full_topic(id);
+        let prompt = match (subtree, topics.len()) {
+            (_, 0) => {
+                self.set_note(Note::info("no retained messages here"), Instant::now());
+                return;
+            }
+            (false, _) => format!("delete retained message on {topic}?"),
+            (true, n) => format!("clear {n} retained messages under {topic}?"),
+        };
+        self.confirm = Some(Confirm { prompt, topics });
+        self.mode = Mode::Confirm;
     }
 
     /// Keys in the publish form; they bypass the keymap. A send leaves the
@@ -618,6 +685,8 @@ impl App {
             Action::Cancel => self.clear_search(),
             Action::Publish => self.open_publish(),
             Action::Help => self.mode = Mode::Help,
+            Action::DeleteRetained => self.ask_clear_retained(false),
+            Action::ClearRetained => self.ask_clear_retained(true),
             Action::CopyTopic => return self.copy(true),
             Action::CopyPayload => return self.copy(false),
         }
@@ -787,6 +856,79 @@ mod tests {
             Effect::Copy { what, text } => assert_eq!((what, text.as_str()), ("payload", "old")),
             e => panic!("{e:?}"),
         }
+    }
+
+    fn plain(topic: &str, p: &str) -> CoreEvent {
+        match msg(topic, p) {
+            CoreEvent::Message { topic, mut msg } => {
+                msg.retain = false;
+                CoreEvent::Message { topic, msg }
+            }
+            e => e,
+        }
+    }
+
+    #[test]
+    fn delete_retained_needs_confirmation() {
+        let mut a = browse(&["a/b"]);
+        a.selected = a.tree.find("a/b");
+        assert!(matches!(
+            a.handle_action(Action::DeleteRetained),
+            Effect::None
+        ));
+        assert_eq!(a.mode, Mode::Confirm);
+        assert_eq!(
+            a.confirm.as_ref().unwrap().prompt,
+            "delete retained message on a/b?"
+        );
+        match a.handle_key(key(KeyCode::Char('y'))) {
+            Effect::ClearRetained(t) => assert_eq!(t, vec!["a/b".to_owned()]),
+            e => panic!("{e:?}"),
+        }
+        assert_eq!(a.mode, Mode::Browse);
+        a.handle_action(Action::DeleteRetained);
+        assert!(matches!(
+            a.handle_key(key(KeyCode::Char('n'))),
+            Effect::None
+        ));
+        assert_eq!(a.mode, Mode::Browse);
+        assert!(a.confirm.is_none());
+        assert_eq!(a.note_at(Instant::now()), Some(&Note::info("cancelled")));
+        a.handle_action(Action::DeleteRetained);
+        assert!(matches!(
+            a.handle_key(key(KeyCode::Enter)),
+            Effect::ClearRetained(_)
+        ));
+    }
+
+    #[test]
+    fn clear_retained_lists_every_retained_topic() {
+        let mut a = browse(&["a/x", "a/y/z", "a/y", "b"]);
+        a.apply_core_event(plain("a/w", "v"));
+        a.apply_core_event(msg("a/x", "")); // already cleared on the broker
+        a.selected = a.tree.find("a");
+        a.handle_action(Action::ClearRetained);
+        let c = a.confirm.as_ref().unwrap();
+        assert_eq!(c.prompt, "clear 2 retained messages under a?");
+        let mut t = c.topics.clone();
+        t.sort();
+        assert_eq!(t, vec!["a/y", "a/y/z"]);
+    }
+
+    #[test]
+    fn nothing_retained_notes_without_confirm() {
+        let mut a = browse(&[]);
+        a.apply_core_event(plain("p", "v"));
+        a.selected = a.tree.find("p");
+        a.handle_action(Action::DeleteRetained);
+        assert_eq!(a.mode, Mode::Browse);
+        assert_eq!(
+            a.note_at(Instant::now()),
+            Some(&Note::info("no retained messages here"))
+        );
+        a.selected = None;
+        a.handle_action(Action::ClearRetained);
+        assert_eq!(a.mode, Mode::Browse);
     }
 
     fn sel(a: &App) -> String {

@@ -27,6 +27,8 @@ pub enum Action {
     ScrollUp,
     CopyTopic,
     CopyPayload,
+    DeleteRetained,
+    ClearRetained,
 }
 
 impl Action {
@@ -51,6 +53,8 @@ impl Action {
         (Action::ScrollUp, "scroll_up", &["ctrl-u"]),
         (Action::CopyTopic, "copy_topic", &["y"]),
         (Action::CopyPayload, "copy_payload", &["Y"]),
+        (Action::DeleteRetained, "delete_retained", &["x"]),
+        (Action::ClearRetained, "clear_retained", &["X"]),
     ];
 
     /// The snake_case name used in `[keys]`.
