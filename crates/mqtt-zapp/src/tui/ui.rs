@@ -2,7 +2,7 @@
 //! disconnect reasons) goes through `sanitize`/`preview` before it reaches
 //! the terminal.
 
-use super::app::{App, Focus, Mode};
+use super::app::{App, Focus, HitAreas, Mode};
 use super::keymap::Action;
 use super::rows::Row;
 use super::theme;
@@ -32,6 +32,7 @@ const MATCH_MODIFIER: Modifier = Modifier::BOLD.union(Modifier::UNDERLINED);
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
+    app.hit.set(Default::default());
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         f.render_widget(Paragraph::new("terminal too small"), area);
         return;
@@ -48,12 +49,20 @@ fn render_front(f: &mut Frame, app: &App, area: Rect) {
     match (app.mode, &app.password) {
         (Mode::Password, Some(st)) => {
             if !app.picker.profiles.is_empty() {
-                super::picker::render_picker(f, main, &app.picker, None);
+                let _ = super::picker::render_picker(f, main, &app.picker, None);
                 theme::dim_backdrop(f, main);
             }
             super::picker::render_password(f, main, st)
         }
-        _ => super::picker::render_picker(f, main, &app.picker, app.store_error.as_deref()),
+        _ => {
+            let (card, skip) =
+                super::picker::render_picker(f, main, &app.picker, app.store_error.as_deref());
+            app.hit.set(HitAreas {
+                picker: card,
+                picker_skip: skip,
+                ..app.hit.get()
+            });
+        }
     }
     f.render_widget(Paragraph::new(footer_line(app, area.width)), status);
 }
@@ -132,7 +141,7 @@ fn render_help(f: &mut Frame, area: Rect, app: &App) {
     let area = theme::centered(area, 76, 22);
     let block = theme::pane("help · any key closes", true).title_bottom(
         Line::styled(
-            " remap in settings.toml [keys] ",
+            " shift-drag selects text · remap in settings.toml [keys] ",
             Style::new().fg(theme::MUTED),
         )
         .right_aligned(),
@@ -199,6 +208,10 @@ fn render_help(f: &mut Frame, area: Rect, app: &App) {
 
 fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Tree;
+    app.hit.set(HitAreas {
+        tree: area,
+        ..app.hit.get()
+    });
     let block = theme::pane("topics", focused);
     let height = block.inner(area).height as usize;
     let rows = app.rows();
@@ -591,7 +604,7 @@ fn header_line(app: &App, width: u16) -> Line<'static> {
 mod tests {
     use super::*;
     use crate::cli::Launch;
-    use crate::tui::app::{App, Mode, Note, ServerInfo};
+    use crate::tui::app::{App, Effect, Mode, Note, ServerInfo};
     use crate::tui::keymap::Action;
     use mqtt_zapp_core::Message;
     use mqtt_zapp_core::client::CoreEvent;
@@ -631,6 +644,137 @@ mod tests {
             .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    // --- mouse ---
+
+    fn mouse(a: &mut App, kind: crossterm::event::MouseEventKind, x: u16, y: u16) -> Effect {
+        a.handle_mouse(crossterm::event::MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })
+    }
+
+    fn click(a: &mut App, x: u16, y: u16) -> Effect {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        mouse(a, MouseEventKind::Down(MouseButton::Left), x, y)
+    }
+
+    /// Screen row of the first line containing `needle` in the tree pane.
+    fn tree_row(b: &Buffer, needle: &str) -> u16 {
+        text(b)
+            .lines()
+            .position(|l| l.chars().take(40).collect::<String>().contains(needle))
+            .unwrap_or_else(|| panic!("{needle}: {}", text(b))) as u16
+    }
+
+    #[test]
+    fn click_tree_row_selects_and_focuses() {
+        let mut a = app_with(&[("a", b"1"), ("b", b"2")]);
+        a.focus = Focus::History;
+        let b = draw(&mut a, 100, 24);
+        click(&mut a, 10, tree_row(&b, "b  2"));
+        assert_eq!(a.focus, Focus::Tree);
+        assert_eq!(a.selected, a.tree.find("b"));
+    }
+
+    #[test]
+    fn click_selected_row_or_marker_toggles_expand() {
+        let mut a = app_with(&[("a/x", b"1"), ("c/y", b"2")]);
+        let b = draw(&mut a, 100, 24);
+        let row = tree_row(&b, "▸ a");
+        click(&mut a, 10, row); // selects
+        assert!(a.expanded.is_empty());
+        click(&mut a, 10, row); // selected again: expands
+        assert!(a.expanded.contains(&a.tree.find("a").unwrap()));
+        let b = draw(&mut a, 100, 24);
+        click(&mut a, 1, tree_row(&b, "▸ c")); // marker of an unselected row
+        assert!(a.expanded.contains(&a.tree.find("c").unwrap()));
+        assert_eq!(a.selected, a.tree.find("c"));
+    }
+
+    #[test]
+    fn click_below_last_row_only_focuses() {
+        let mut a = app_with(&[("a", b"1")]);
+        a.focus = Focus::Payload;
+        let _ = draw(&mut a, 100, 24);
+        click(&mut a, 10, 20);
+        assert_eq!(a.focus, Focus::Tree);
+        assert_eq!(a.selected, None);
+    }
+
+    #[test]
+    fn wheel_over_tree_moves_selection() {
+        use crossterm::event::MouseEventKind;
+        let mut a = app_with(&[("a", b"1"), ("b", b"2"), ("c", b"3")]);
+        let _ = draw(&mut a, 100, 24);
+        mouse(&mut a, MouseEventKind::ScrollDown, 10, 5);
+        mouse(&mut a, MouseEventKind::ScrollDown, 10, 5);
+        assert_eq!(a.selected, a.tree.find("b"));
+        mouse(&mut a, MouseEventKind::ScrollUp, 10, 5);
+        assert_eq!(a.selected, a.tree.find("a"));
+        assert_eq!(a.focus, Focus::Tree, "wheel does not move focus");
+    }
+
+    #[test]
+    fn click_and_wheel_on_payload() {
+        use crossterm::event::MouseEventKind;
+        let body = (0..60)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut a = app_with(&[("a", body.as_bytes())]);
+        a.handle_action(Action::Down);
+        let _ = draw(&mut a, 100, 24);
+        click(&mut a, 70, 5);
+        assert_eq!(a.focus, Focus::Payload);
+        mouse(&mut a, MouseEventKind::ScrollDown, 70, 5);
+        assert_eq!(a.payload_scroll, 3);
+        mouse(&mut a, MouseEventKind::ScrollUp, 70, 5);
+        assert_eq!(a.payload_scroll, 0);
+        assert_eq!(a.selected, a.tree.find("a"), "tree untouched");
+    }
+
+    #[test]
+    fn click_history_row_pins_that_message() {
+        let mut a = app_with(&[("a", b"one"), ("a", b"two"), ("a", b"three")]);
+        a.handle_action(Action::Down);
+        let b = draw(&mut a, 100, 24);
+        let s: Vec<String> = text(&b).lines().map(str::to_owned).collect();
+        let y = s.iter().rposition(|l| l.contains("  one")).unwrap() as u16;
+        click(&mut a, 70, y);
+        assert_eq!(a.focus, Focus::History);
+        assert_eq!(a.history_sel, Some(0));
+        let y = s.iter().rposition(|l| l.contains("  three")).unwrap() as u16;
+        click(&mut a, 70, y);
+        assert_eq!(a.history_sel, None, "newest is live");
+    }
+
+    #[test]
+    fn picker_click_selects_then_connects() {
+        use mqtt_zapp_core::config::PasswordSource::None as N;
+        let mut a = picker_app(vec![profile("home", N), profile("lab", N)]);
+        let b = draw(&mut a, 80, 24);
+        let y = text(&b).lines().position(|l| l.contains("  lab ")).unwrap() as u16;
+        assert!(matches!(click(&mut a, 20, y), Effect::None));
+        assert_eq!(a.picker.sel, 1);
+        assert!(matches!(click(&mut a, 20, y), Effect::Connect(p, None) if p.name == "lab"));
+    }
+
+    #[test]
+    fn click_closes_help_and_is_ignored_in_publish() {
+        let mut a = app_with(&[("a", b"1")]);
+        a.handle_action(Action::Help);
+        let _ = draw(&mut a, 100, 24);
+        click(&mut a, 50, 10);
+        assert_eq!(a.mode, Mode::Browse);
+        a.handle_action(Action::Publish);
+        let _ = draw(&mut a, 100, 24);
+        click(&mut a, 10, 3);
+        assert_eq!(a.mode, Mode::Publish);
+        assert_eq!(a.selected, None);
     }
 
     #[test]

@@ -79,7 +79,14 @@ pub fn server_url(p: &Profile) -> String {
 }
 
 /// The broker list as a centred card: `▶ name  url`, names padded to line up.
-pub fn render_picker(f: &mut Frame, area: Rect, st: &PickerState, error: Option<&str>) {
+/// Returns the card and how many profiles were scrolled off its top.
+pub fn render_picker(
+    f: &mut Frame,
+    area: Rect,
+    st: &PickerState,
+    error: Option<&str>,
+) -> (Rect, usize) {
+    let mut skipped = 0;
     let muted = Style::new().fg(theme::MUTED);
     let lines: Vec<Line> =
         if st.profiles.is_empty() {
@@ -102,6 +109,7 @@ pub fn render_picker(f: &mut Frame, area: Rect, st: &PickerState, error: Option<
             let card = theme::centered(area, 72, st.profiles.len() as u16 + 4);
             let height = card.height.saturating_sub(4) as usize;
             let skip = (st.sel + 1).saturating_sub(height.max(1));
+            skipped = skip;
             let mut v = vec![Line::default()];
             v.extend(st.profiles.iter().zip(&names).enumerate().skip(skip).map(
                 |(i, (p, name))| {
@@ -132,6 +140,7 @@ pub fn render_picker(f: &mut Frame, area: Rect, st: &PickerState, error: Option<
         Paragraph::new(lines).block(theme::pane("mqtt-zapp · pick a broker", true)),
         card,
     );
+    (card, skipped)
 }
 
 /// A small modal under the picker: the broker and the masked input.

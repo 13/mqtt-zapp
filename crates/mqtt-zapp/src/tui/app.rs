@@ -19,6 +19,9 @@ use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::time::{Duration, Instant};
 
+mod mouse;
+pub use mouse::HitAreas;
+
 /// How long a node stays highlighted after it (or its subtree) got a message.
 pub const FLASH: Duration = Duration::from_secs(1);
 const RATE_WINDOW: Duration = Duration::from_secs(10);
@@ -191,6 +194,8 @@ pub struct App {
     pub publish: Option<PublishForm>,
     /// A transient status-bar message (publish result) and when it was set.
     pub status_note: Option<(Note, Instant)>,
+    /// Pane rectangles of the last frame, for mouse hit-testing.
+    pub hit: Cell<HitAreas>,
 }
 
 impl App {
@@ -233,6 +238,7 @@ impl App {
             store_error: None,
             publish: None,
             status_note: None,
+            hit: Cell::new(HitAreas::default()),
         })
     }
 

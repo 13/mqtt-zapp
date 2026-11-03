@@ -2,7 +2,7 @@
 //! against the previous message) and the history list. Everything that came
 //! from the broker is sanitized before it is drawn.
 
-use super::app::{App, Focus};
+use super::app::{App, Focus, HitAreas};
 use super::keymap::Action;
 use super::theme;
 use chrono::{DateTime, Local};
@@ -237,6 +237,10 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App) {
         // Payload and history focus both land here while there is nothing
         // to show, so the focus stays visible.
         let block = theme::pane("message", app.focus != Focus::Tree);
+        app.hit.set(HitAreas {
+            payload: area,
+            ..app.hit.get()
+        });
         let inner = block.inner(area);
         f.render_widget(block, area);
         let [_, mid] = Layout::vertical([
@@ -275,6 +279,10 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App) {
 
 fn render_payload(f: &mut Frame, area: Rect, app: &App) {
     let title = if app.show_diff { "diff" } else { "payload" };
+    app.hit.set(HitAreas {
+        payload: area,
+        ..app.hit.get()
+    });
     let mut block = theme::pane(title, app.focus == Focus::Payload);
     let height = block.inner(area).height;
     app.payload_height.set(height);
@@ -336,6 +344,11 @@ fn render_history(f: &mut Frame, area: Rect, app: &App, s: &Shown) {
     // Newest first: row `r` is history index `len - 1 - r`.
     let sel_row = s.idx.map(|i| h.len() - 1 - i);
     let offset = sel_row.map_or(0, |r| (r + 1).saturating_sub(height));
+    app.hit.set(HitAreas {
+        history: area,
+        history_offset: offset,
+        ..app.hit.get()
+    });
     let lines: Vec<Line> = h
         .iter()
         .rev()
