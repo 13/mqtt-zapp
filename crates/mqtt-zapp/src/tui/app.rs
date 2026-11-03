@@ -215,6 +215,9 @@ pub struct App {
     pub publish: Option<PublishForm>,
     /// A transient footer message (publish result) and when it was set.
     pub status_note: Option<(Note, Instant)>,
+    /// The chart: `None` off, `Some(None)` the plain numeric payload,
+    /// `Some(Some(path))` a JSON field. Reset when another topic is selected.
+    pub chart: Option<Option<String>>,
     /// Order of sibling topics; `s` cycles it.
     pub sort: SortOrder,
     /// Set while in `Mode::Confirm`.
@@ -266,6 +269,7 @@ impl App {
             hit: Cell::new(HitAreas::default()),
             confirm: None,
             sort: settings.sort,
+            chart: None,
         })
     }
 
@@ -695,6 +699,7 @@ impl App {
                     Instant::now(),
                 );
             }
+            Action::Chart => self.cycle_chart(),
             Action::ExpandAll => self.expand_subtree(true),
             Action::CollapseAll => self.expand_subtree(false),
             Action::DeleteRetained => self.ask_clear_retained(false),
@@ -703,6 +708,35 @@ impl App {
             Action::CopyPayload => return self.copy(false),
         }
         Effect::None
+    }
+
+    /// off → plain number (if the shown payload is one) → each numeric JSON
+    /// field → off.
+    fn cycle_chart(&mut self) {
+        use mqtt_zapp_core::payload::{numeric_at, numeric_paths};
+        let Some(m) = super::message_view::shown_message(self) else {
+            self.set_note(Note::info("nothing to chart"), Instant::now());
+            return;
+        };
+        let mut series: Vec<Option<String>> = Vec::new();
+        if numeric_at(&m.payload, None).is_some() {
+            series.push(None);
+        }
+        series.extend(numeric_paths(&m.payload).into_iter().map(Some));
+        let next = match &self.chart {
+            None => series.first().cloned(),
+            Some(cur) => series
+                .iter()
+                .position(|s| s == cur)
+                .and_then(|i| series.get(i + 1).cloned()),
+        };
+        self.chart = next;
+        let note = match (&self.chart, series.is_empty()) {
+            (_, true) => "no numeric values to chart".to_owned(),
+            (None, _) => "chart off".to_owned(),
+            (Some(s), _) => format!("chart: {}", s.as_deref().unwrap_or("value")),
+        };
+        self.set_note(Note::info(note), Instant::now());
     }
 
     /// Expand (or collapse) the selected node and every node below it.
@@ -804,6 +838,7 @@ impl App {
     /// Select a node; a different node starts with a live view at the top.
     fn select(&mut self, id: NodeId) {
         if self.selected != Some(id) {
+            self.chart = None;
             self.history_sel = None;
             self.payload_scroll = 0;
         }

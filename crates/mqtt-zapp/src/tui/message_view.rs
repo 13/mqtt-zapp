@@ -278,8 +278,70 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App) {
     let topic = app.tree.full_topic(app.selected.unwrap_or_default());
     let kind = body(app).map_or("", |(_, k)| k);
     f.render_widget(Paragraph::new(metadata(&s, &topic, kind)), meta);
+    let payload = match &app.chart {
+        Some(series) => {
+            let [chart, rest] =
+                Layout::vertical([Constraint::Min(5), Constraint::Percentage(50)]).areas(payload);
+            render_chart(f, chart, &s, series.as_deref());
+            rest
+        }
+        None => payload,
+    };
     render_payload(f, payload, app);
     render_history(f, history, app, &s);
+}
+
+/// `12.50` → `12.5`, `3.00` → `3`.
+fn fmt_num(x: f64) -> String {
+    let s = format!("{x:.2}");
+    s.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
+/// A braille line chart of the series over the topic's history (oldest
+/// left); entries without a number are skipped.
+fn render_chart(f: &mut Frame, area: Rect, s: &Shown, path: Option<&str>) {
+    use mqtt_zapp_core::payload::numeric_at;
+    use ratatui::symbols::Marker;
+    use ratatui::widgets::{Axis, Chart, Dataset, GraphType};
+    let name = path.unwrap_or("value");
+    let block = theme::pane(&format!("chart · {name}"), false);
+    let points: Vec<(f64, f64)> = s
+        .node
+        .history
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| numeric_at(&m.payload, path).map(|y| (i as f64, y)))
+        .collect();
+    if points.len() < 2 {
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        f.render_widget(
+            Paragraph::new("not enough numeric values").style(Style::new().fg(theme::MUTED)),
+            inner,
+        );
+        return;
+    }
+    let (lo, hi) = points
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(lo, hi), &(_, y)| {
+            (lo.min(y), hi.max(y))
+        });
+    let pad = if hi > lo { (hi - lo) * 0.05 } else { 1.0 };
+    let x_max = points.last().map_or(1.0, |p| p.0).max(1.0);
+    let data = [Dataset::default()
+        .marker(Marker::Braille)
+        .graph_type(GraphType::Line)
+        .style(Style::new().fg(theme::ACCENT))
+        .data(&points)];
+    let muted = Style::new().fg(theme::MUTED);
+    let chart = Chart::new(data.to_vec())
+        .block(block)
+        .x_axis(Axis::default().bounds([0.0, x_max]))
+        .y_axis(Axis::default().bounds([lo - pad, hi + pad]).labels([
+            Span::styled(fmt_num(lo), muted),
+            Span::styled(fmt_num(hi), muted),
+        ]));
+    f.render_widget(chart, area);
 }
 
 fn render_payload(f: &mut Frame, area: Rect, app: &App) {
@@ -590,6 +652,61 @@ mod tests {
         assert_eq!(t.len(), 12, "HH:MM:SS.mmm in {t:?}");
         assert_eq!(&t[2..3], ":");
         assert_eq!(&t[8..9], ".");
+    }
+
+    #[test]
+    fn c_cycles_series() {
+        let mut a = app_with(&[br#"{"ENERGY":{"Power":12},"t":1}"#]);
+        a.handle_action(Action::Chart);
+        assert_eq!(a.chart, Some(Some("ENERGY.Power".to_owned())));
+        a.handle_action(Action::Chart);
+        assert_eq!(a.chart, Some(Some("t".to_owned())));
+        a.handle_action(Action::Chart);
+        assert_eq!(a.chart, None);
+        let mut a = app_with(&[b"42"]);
+        a.handle_action(Action::Chart);
+        assert_eq!(a.chart, Some(None));
+        a.handle_action(Action::Chart);
+        assert_eq!(a.chart, None);
+        let mut a = app_with(&[b"hello"]);
+        a.handle_action(Action::Chart);
+        assert_eq!(a.chart, None);
+        assert!(a.note_at(std::time::Instant::now()).is_some());
+    }
+
+    #[test]
+    fn chart_renders_braille_series() {
+        let ps: Vec<String> = (0..10)
+            .map(|i| format!(r#"{{"ENERGY":{{"Power":{}}}}}"#, i * i))
+            .collect();
+        let refs: Vec<&[u8]> = ps.iter().map(|p| p.as_bytes()).collect();
+        let mut a = app_with(&refs);
+        a.handle_action(Action::Chart);
+        let b = draw(&a);
+        let s = text(&b);
+        assert!(s.contains("chart · ENERGY.Power"), "{s}");
+        assert!(
+            b.content.iter().any(|c| c
+                .symbol()
+                .chars()
+                .any(|ch| ('\u{2801}'..='\u{28ff}').contains(&ch))),
+            "{s}"
+        );
+        assert!(s.contains("81") && s.contains('0'), "y labels: {s}");
+        // Another topic turns the chart off.
+        send(&mut a, "other", b"1", false);
+        a.selected = None;
+        a.handle_action(Action::Down);
+        assert_eq!(a.chart, None);
+    }
+
+    #[test]
+    fn chart_not_enough_values() {
+        let mut a = app_with(&[b"1", b"x"]);
+        a.history_sel = Some(0);
+        a.handle_action(Action::Chart);
+        assert_eq!(a.chart, Some(None));
+        assert!(text(&draw(&a)).contains("not enough numeric values"));
     }
 
     #[test]

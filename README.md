@@ -85,6 +85,7 @@ time.
 | `s` | `sort` | Cycle the tree order: name (natural), message count, most recent |
 | `L` | `expand_all` | Expand the selected node and everything below it |
 | `H` | `collapse_all` | Collapse the selected node and everything below it |
+| `c` | `chart` | Chart the payload, or cycle through its numeric JSON fields |
 
 `?` shows the effective keys, including your remaps. The publish form and
 search input take typed text and do not use the keymap; the help lists their

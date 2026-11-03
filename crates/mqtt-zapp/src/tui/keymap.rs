@@ -32,6 +32,7 @@ pub enum Action {
     CycleSort,
     ExpandAll,
     CollapseAll,
+    Chart,
 }
 
 impl Action {
@@ -61,6 +62,7 @@ impl Action {
         (Action::CycleSort, "sort", &["s"]),
         (Action::ExpandAll, "expand_all", &["L"]),
         (Action::CollapseAll, "collapse_all", &["H"]),
+        (Action::Chart, "chart", &["c"]),
     ];
 
     /// The snake_case name used in `[keys]`.

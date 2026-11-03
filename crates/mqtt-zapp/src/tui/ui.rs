@@ -143,6 +143,7 @@ const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
             Action::ScrollDown,
             Action::ScrollUp,
             Action::ToggleDiff,
+            Action::Chart,
         ],
     ),
     (

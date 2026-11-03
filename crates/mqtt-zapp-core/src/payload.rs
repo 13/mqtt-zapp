@@ -84,6 +84,71 @@ pub fn hex_dump(payload: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// Most numeric paths `numeric_paths` returns.
+const MAX_NUMERIC_PATHS: usize = 50;
+
+/// Dotted paths (`ENERGY.Power`, `a.0`) to the numeric leaves of a JSON
+/// object or array, in document order. Empty for anything else.
+pub fn numeric_paths(payload: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    if let PayloadKind::Json(v) = detect(payload) {
+        walk_numbers(&v, String::new(), &mut out);
+    }
+    out
+}
+
+fn walk_numbers(v: &serde_json::Value, path: String, out: &mut Vec<String>) {
+    use serde_json::Value;
+    let join = |k: &str| {
+        if path.is_empty() {
+            k.to_owned()
+        } else {
+            format!("{path}.{k}")
+        }
+    };
+    match v {
+        Value::Number(_) if !path.is_empty() && out.len() < MAX_NUMERIC_PATHS => out.push(path),
+        Value::Object(m) => {
+            for (k, child) in m {
+                walk_numbers(child, join(k), out);
+            }
+        }
+        Value::Array(a) => {
+            for (i, child) in a.iter().enumerate() {
+                walk_numbers(child, join(&i.to_string()), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The payload as a finite number (`path` `None`), or the number at a
+/// dotted JSON path.
+pub fn numeric_at(payload: &[u8], path: Option<&str>) -> Option<f64> {
+    let x = match path {
+        None => std::str::from_utf8(payload)
+            .ok()?
+            .trim()
+            .parse::<f64>()
+            .ok()?,
+        Some(path) => {
+            let mut v: serde_json::Value = serde_json::from_slice(payload).ok()?;
+            for key in path.split('.') {
+                v = match v {
+                    serde_json::Value::Object(mut m) => m.remove(key)?,
+                    serde_json::Value::Array(mut a) => {
+                        let i: usize = key.parse().ok()?;
+                        (i < a.len()).then(|| a.swap_remove(i))?
+                    }
+                    _ => return None,
+                };
+            }
+            v.as_f64()?
+        }
+    };
+    x.is_finite().then_some(x)
+}
+
 /// Standard base64 (RFC 4648, with padding).
 pub fn base64(bytes: &[u8]) -> String {
     const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -127,6 +192,24 @@ pub fn preview(payload: &[u8], max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_paths_and_at() {
+        let p = br#"{"ENERGY":{"Power":12,"V":"x"},"a":[1,2.5],"ok":true}"#;
+        assert_eq!(numeric_paths(p), vec!["ENERGY.Power", "a.0", "a.1"]);
+        assert_eq!(numeric_at(p, Some("a.1")), Some(2.5));
+        assert_eq!(numeric_at(p, Some("ENERGY.Power")), Some(12.0));
+        assert_eq!(numeric_at(p, Some("ENERGY.V")), None);
+        assert_eq!(numeric_at(p, Some("nope.x")), None);
+        assert_eq!(numeric_at(b" 42 ", None), Some(42.0));
+        assert_eq!(numeric_at(b"nan", None), None);
+        assert_eq!(numeric_at(b"inf", None), None);
+        assert_eq!(numeric_at(p, None), None);
+        assert!(numeric_paths(b"42").is_empty());
+        assert!(numeric_paths(b"\xff").is_empty());
+        let many: String = format!("[{}]", vec!["1"; 80].join(","));
+        assert_eq!(numeric_paths(many.as_bytes()).len(), 50);
+    }
 
     #[test]
     fn base64_matches_rfc4648() {
