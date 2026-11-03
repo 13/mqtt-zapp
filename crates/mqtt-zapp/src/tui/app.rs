@@ -3,13 +3,15 @@
 //! as `Effect`s for the event loop to carry out, so `App` stays testable.
 
 use super::keymap::{Action, Keymap};
+use super::picker::{PasswordState, PickerState};
 use super::rows::{Row, visible_rows};
 use crate::cli::Launch;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use mqtt_zapp_core::client::{ConnState, CoreEvent};
-use mqtt_zapp_core::config::{Profile, ProfileStore, Settings};
+use mqtt_zapp_core::config::{PasswordSource, Profile, ProfileStore, Settings};
 use mqtt_zapp_core::search::{self, Filter};
+use mqtt_zapp_core::secrets::load_password;
 use mqtt_zapp_core::{NodeId, TopicTree};
 use std::cell::Cell;
 use std::collections::{HashSet, VecDeque};
@@ -23,7 +25,6 @@ const RATE_BUCKET: Duration = Duration::from_secs(1);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Picker,
-    #[allow(dead_code)] // TODO(task 11): password prompt
     Password,
     Browse,
     SearchInput,
@@ -115,8 +116,13 @@ pub struct App {
     keymap: Keymap,
     history_depth: usize,
     pending_connect: Option<Profile>,
-    #[allow(dead_code)] // TODO(task 11): the picker lists these profiles
-    store: ProfileStore,
+    pub picker: PickerState,
+    /// Set while in `Mode::Password`.
+    pub password: Option<PasswordState>,
+    /// Name of the profile last connected to, shown in the status bar.
+    pub profile_name: Option<String>,
+    /// Why `profiles.toml` could not be loaded; shown in the empty picker.
+    pub store_error: Option<String>,
 }
 
 impl App {
@@ -153,16 +159,114 @@ impl App {
             keymap: Keymap::from_settings(&settings.keys)?,
             history_depth: settings.history_depth,
             pending_connect,
-            store,
+            picker: PickerState::new(store.profiles),
+            password: None,
+            profile_name: None,
+            store_error: None,
         })
     }
 
     /// The effect to run once at startup: connect when launched with a profile.
     pub fn startup_effect(&mut self) -> Effect {
         match self.pending_connect.take() {
-            Some(p) => Effect::Connect(p, None),
+            Some(p) => self.begin_connect(p),
             None => Effect::None,
         }
+    }
+
+    /// Start connecting to `p`, resolving its password: connect right away,
+    /// or switch to `Mode::Password` (returning `Effect::None`) when the user
+    /// has to type it.
+    pub fn begin_connect(&mut self, p: Profile) -> Effect {
+        self.begin_connect_with(p, load_password)
+    }
+
+    /// `begin_connect` with the keyring lookup injected, so tests never
+    /// touch the real keyring.
+    fn begin_connect_with(
+        &mut self,
+        p: Profile,
+        keyring: impl FnOnce(&str) -> Result<Option<String>>,
+    ) -> Effect {
+        let password = match p.password {
+            PasswordSource::None => None,
+            // A failed or empty lookup falls back to asking.
+            PasswordSource::Keyring => match keyring(&p.name) {
+                Ok(Some(pw)) => Some(pw),
+                Ok(None) | Err(_) => return self.ask_password(p),
+            },
+            PasswordSource::Prompt => return self.ask_password(p),
+        };
+        self.connect_effect(p, password)
+    }
+
+    fn ask_password(&mut self, profile: Profile) -> Effect {
+        self.password = Some(PasswordState {
+            profile,
+            input: String::new(),
+        });
+        self.mode = Mode::Password;
+        self.dirty = true;
+        Effect::None
+    }
+
+    fn connect_effect(&mut self, p: Profile, password: Option<String>) -> Effect {
+        self.profile_name = Some(p.name.clone());
+        self.mode = Mode::Browse;
+        self.dirty = true;
+        Effect::Connect(p, password)
+    }
+
+    /// Keys in the picker: through the keymap.
+    fn on_picker_action(&mut self, action: Action) -> Effect {
+        self.dirty = true;
+        match action {
+            Action::Quit => return Effect::Quit,
+            Action::Up => self.picker.up(),
+            Action::Down => self.picker.down(),
+            Action::Select => {
+                if let Some(p) = self.picker.selected().cloned() {
+                    return self.begin_connect(p);
+                }
+            }
+            _ => {}
+        }
+        Effect::None
+    }
+
+    /// Keys in the password prompt. They bypass the keymap, so `q` and `j`
+    /// are just characters. The password is never echoed or logged.
+    fn on_password_key(&mut self, key: KeyEvent) -> Effect {
+        self.dirty = true;
+        let Some(st) = self.password.as_mut() else {
+            self.mode = Mode::Picker;
+            return Effect::None;
+        };
+        match key.code {
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                st.input.push(c);
+            }
+            KeyCode::Backspace => {
+                st.input.pop();
+            }
+            KeyCode::Enter => {
+                let st = self.password.take().expect("checked above");
+                return self.connect_effect(st.profile, Some(st.input));
+            }
+            KeyCode::Esc => {
+                self.password = None;
+                if self.picker.profiles.is_empty() {
+                    return Effect::Quit;
+                }
+                self.mode = Mode::Picker;
+            }
+            _ => {}
+        }
+        Effect::None
     }
 
     /// Forget all topics, e.g. when switching connections.
@@ -176,6 +280,7 @@ impl App {
         self.search.clear();
         self.tree_offset = 0;
         self.msg_rate = MsgRate::default();
+        self.body_cache.clear();
         self.dirty = true;
     }
 
@@ -240,11 +345,11 @@ impl App {
                 Some(action) => self.handle_action(action),
                 None => Effect::None,
             },
-            // Placeholder until the picker exists: only leaving is possible.
             Mode::Picker => match self.keymap.lookup(key) {
-                Some(Action::Quit | Action::Cancel) => Effect::Quit,
-                _ => Effect::None,
+                Some(action) => self.on_picker_action(action),
+                None => Effect::None,
             },
+            Mode::Password => self.on_password_key(key),
             Mode::SearchInput => {
                 self.on_search_key(key);
                 Effect::None
@@ -435,7 +540,9 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use mqtt_zapp_core::Message;
     use mqtt_zapp_core::client::{ConnState, CoreEvent};
-    use mqtt_zapp_core::config::{ProfileStore, Settings};
+    use mqtt_zapp_core::config::{
+        PasswordSource, Profile, ProfileStore, Protocol, Settings, TlsConfig,
+    };
     use std::time::{Duration, Instant, SystemTime};
 
     fn msg(topic: &str, p: &str) -> CoreEvent {
@@ -687,6 +794,148 @@ mod tests {
         a.dirty = false;
         a.on_tick();
         assert!(a.dirty, "fresh message is still flashing");
+    }
+
+    fn profile(name: &str, pw: PasswordSource) -> Profile {
+        Profile {
+            name: name.into(),
+            host: "h".into(),
+            port: 1883,
+            protocol: Protocol::Mqtt,
+            ws_path: "/".into(),
+            client_id: None,
+            username: Some("u".into()),
+            password: pw,
+            tls: TlsConfig::default(),
+            subscriptions: vec!["#".into()],
+        }
+    }
+
+    fn picker_app(profiles: Vec<Profile>) -> App {
+        let store = ProfileStore { profiles };
+        App::new(Launch::Picker, store, Settings::default()).unwrap()
+    }
+
+    #[test]
+    fn picker_enter_on_none_password_connects() {
+        let mut a = picker_app(vec![profile("a", PasswordSource::None)]);
+        match a.handle_key(key(KeyCode::Enter)) {
+            Effect::Connect(p, None) => assert_eq!(p.name, "a"),
+            e => panic!("expected connect, got {e:?}"),
+        }
+        assert_eq!(a.mode, Mode::Browse);
+        assert_eq!(a.profile_name.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn picker_moves_selection_and_connects_to_it() {
+        let mut a = picker_app(vec![
+            profile("a", PasswordSource::None),
+            profile("b", PasswordSource::None),
+        ]);
+        a.handle_key(key(KeyCode::Down));
+        a.handle_key(key(KeyCode::Down));
+        assert_eq!(a.picker.sel, 1, "stops at the last");
+        a.handle_key(key(KeyCode::Up));
+        a.handle_key(key(KeyCode::Down));
+        assert!(matches!(a.handle_key(key(KeyCode::Enter)),
+            Effect::Connect(p, None) if p.name == "b"));
+        let mut a = picker_app(vec![]);
+        assert!(matches!(a.handle_key(key(KeyCode::Enter)), Effect::None));
+        assert_eq!(a.mode, Mode::Picker);
+        assert!(matches!(
+            a.handle_key(key(KeyCode::Char('q'))),
+            Effect::Quit
+        ));
+    }
+
+    #[test]
+    fn picker_prompt_goes_to_password_mode_then_connects() {
+        let mut a = picker_app(vec![profile("a", PasswordSource::Prompt)]);
+        assert!(matches!(a.handle_key(key(KeyCode::Enter)), Effect::None));
+        assert_eq!(a.mode, Mode::Password);
+        // Keys bypass the keymap: q and j are characters.
+        type_str(&mut a, "pqj");
+        a.handle_key(key(KeyCode::Backspace));
+        type_str(&mut a, "w");
+        match a.handle_key(key(KeyCode::Enter)) {
+            Effect::Connect(p, Some(pw)) => {
+                assert_eq!((p.name.as_str(), pw.as_str()), ("a", "pqw"))
+            }
+            e => panic!("expected connect, got {e:?}"),
+        }
+        assert_eq!(a.mode, Mode::Browse);
+        assert!(a.password.is_none(), "input cleared");
+        assert_eq!(a.profile_name.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn password_esc_returns_to_picker() {
+        let mut a = picker_app(vec![profile("a", PasswordSource::Prompt)]);
+        a.handle_key(key(KeyCode::Enter));
+        type_str(&mut a, "secret");
+        assert!(matches!(a.handle_key(key(KeyCode::Esc)), Effect::None));
+        assert_eq!(a.mode, Mode::Picker);
+        assert!(a.password.is_none(), "input dropped");
+        // Without any profile (ad-hoc launch) there is no picker to go back to.
+        let mut a = App::new(
+            Launch::Connect(profile("adhoc", PasswordSource::Prompt)),
+            ProfileStore::default(),
+            Settings::default(),
+        )
+        .unwrap();
+        assert!(matches!(a.startup_effect(), Effect::None));
+        assert_eq!(a.mode, Mode::Password);
+        assert!(matches!(a.handle_key(key(KeyCode::Esc)), Effect::Quit));
+    }
+
+    #[test]
+    fn keyring_failure_falls_back_to_password_prompt() {
+        let lookup = |r: Result<Option<String>>| {
+            let mut a = picker_app(vec![]);
+            let e = a.begin_connect_with(profile("k", PasswordSource::Keyring), |_| r);
+            (a.mode, e)
+        };
+        let (mode, e) = lookup(Err(anyhow::anyhow!("no secret service")));
+        assert_eq!(mode, Mode::Password);
+        assert!(matches!(e, Effect::None));
+        let (mode, e) = lookup(Ok(None));
+        assert_eq!(mode, Mode::Password);
+        assert!(matches!(e, Effect::None));
+        let (mode, e) = lookup(Ok(Some("pw".into())));
+        assert_ne!(mode, Mode::Password);
+        assert!(matches!(e, Effect::Connect(_, Some(pw)) if pw == "pw"));
+    }
+
+    #[test]
+    fn startup_resolves_password_like_the_picker() {
+        let mut a = App::new(
+            Launch::Connect(profile("p", PasswordSource::Prompt)),
+            ProfileStore::default(),
+            Settings::default(),
+        )
+        .unwrap();
+        assert!(matches!(a.startup_effect(), Effect::None));
+        assert_eq!(a.mode, Mode::Password);
+        assert_eq!(a.password.as_ref().unwrap().profile.name, "p");
+    }
+
+    #[test]
+    fn password_debug_does_not_leak() {
+        let mut a = picker_app(vec![profile("a", PasswordSource::Prompt)]);
+        a.handle_key(key(KeyCode::Enter));
+        type_str(&mut a, "hunter2");
+        assert!(!format!("{:?}", a.password).contains("hunter2"));
+    }
+
+    #[test]
+    fn reset_tree_clears_body_cache() {
+        let mut a = browse(&["a"]);
+        a.handle_action(Action::Down);
+        super::super::message_view::content_len(&a);
+        assert!(a.body_cache.is_cached());
+        a.reset_tree();
+        assert!(!a.body_cache.is_cached());
     }
 
     #[test]

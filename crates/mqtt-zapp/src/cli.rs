@@ -135,6 +135,24 @@ fn build_profile(name: &str, conn: &ConnArgs, host: &str, password: PasswordSour
     }
 }
 
+/// The store to launch with. A `profiles.toml` that fails to load only
+/// matters when the launch needs a saved profile (`--profile` without
+/// `--host`): then the error is returned. Otherwise an empty store is used,
+/// and the message is handed back for the picker to show.
+pub fn store_or_empty(
+    args: &Args,
+    loaded: Result<ProfileStore>,
+) -> Result<(ProfileStore, Option<String>)> {
+    match loaded {
+        Ok(s) => Ok((s, None)),
+        Err(e) if args.conn.host.is_none() && args.profile.is_some() => {
+            Err(e.context("loading profiles"))
+        }
+        Err(_) if args.conn.host.is_some() => Ok((ProfileStore::default(), None)),
+        Err(e) => Ok((ProfileStore::default(), Some(format!("{e:#}")))),
+    }
+}
+
 pub fn resolve_launch(args: &Args, store: &ProfileStore) -> Result<Launch> {
     if let Some(host) = &args.conn.host {
         let pw = if args.conn.ask_password {
@@ -242,6 +260,29 @@ mod tests {
 
     fn launch(a: &[&str]) -> Result<Launch> {
         resolve_launch(&Args::parse_from(a), &store())
+    }
+
+    #[test]
+    fn corrupt_store_only_blocks_profile_launch() {
+        let bad = || Err(anyhow::anyhow!("bad toml"));
+        let args = |a: &[&str]| Args::parse_from(a);
+        let e = store_or_empty(&args(&["mqtt-zapp", "--profile", "home"]), bad())
+            .err()
+            .unwrap();
+        assert!(format!("{e:#}").contains("bad toml"), "{e:#}");
+        let (s, err) = store_or_empty(&args(&["mqtt-zapp", "--host", "h"]), bad()).unwrap();
+        assert!(s.profiles.is_empty() && err.is_none(), "--host ignores it");
+        let (s, err) = store_or_empty(
+            &args(&["mqtt-zapp", "--profile", "p", "--host", "h"]),
+            bad(),
+        )
+        .unwrap();
+        assert!(s.profiles.is_empty() && err.is_none(), "--host wins");
+        let (s, err) = store_or_empty(&args(&["mqtt-zapp"]), bad()).unwrap();
+        assert!(s.profiles.is_empty());
+        assert!(err.unwrap().contains("bad toml"), "picker shows it");
+        let (s, err) = store_or_empty(&args(&["mqtt-zapp"]), Ok(store())).unwrap();
+        assert!(s.profiles.len() == 1 && err.is_none());
     }
 
     #[test]

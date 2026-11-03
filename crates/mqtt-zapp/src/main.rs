@@ -10,8 +10,10 @@ async fn main() -> anyhow::Result<()> {
     match &args.cmd {
         Some(Cmd::Profile(cmd)) => cli::run_profile(cmd),
         Some(Cmd::Tui) | None => {
-            let store = mqtt_zapp_core::config::ProfileStore::load()?;
-            tui::run(cli::resolve_launch(&args, &store)?).await
+            let (store, store_error) =
+                cli::store_or_empty(&args, mqtt_zapp_core::config::ProfileStore::load())?;
+            let launch = cli::resolve_launch(&args, &store)?;
+            tui::run(launch, store, store_error).await
         }
     }
 }

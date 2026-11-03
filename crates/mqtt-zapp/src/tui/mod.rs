@@ -5,6 +5,7 @@
 mod app;
 mod keymap;
 mod message_view;
+mod picker;
 mod rows;
 mod ui;
 
@@ -31,8 +32,9 @@ const TICK: Duration = Duration::from_millis(100);
 /// during a retained-message burst.
 const MAX_DRAIN: usize = 2000;
 
-pub async fn run(launch: Launch) -> Result<()> {
-    let mut app = App::new(launch, ProfileStore::load()?, Settings::load()?)?;
+pub async fn run(launch: Launch, store: ProfileStore, store_error: Option<String>) -> Result<()> {
+    let mut app = App::new(launch, store, Settings::load()?)?;
+    app.store_error = store_error;
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;

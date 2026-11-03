@@ -12,7 +12,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Paragraph};
 use std::time::Instant;
 
 pub const MIN_WIDTH: u16 = 40;
@@ -41,16 +41,19 @@ pub fn render(f: &mut Frame, app: &mut App) {
         return;
     }
     match app.mode {
-        Mode::Picker => render_picker_placeholder(f, area),
+        Mode::Picker | Mode::Password => render_front(f, app, area),
         _ => render_browse(f, app, area),
     }
 }
 
-fn render_picker_placeholder(f: &mut Frame, area: Rect) {
-    let text = Paragraph::new("connection picker — coming soon (use --profile or --host)")
-        .wrap(Wrap { trim: true })
-        .block(Block::bordered().title("mqtt-zapp"));
-    f.render_widget(text, area);
+/// The picker and the password prompt: one pane above the status bar.
+fn render_front(f: &mut Frame, app: &App, area: Rect) {
+    let [main, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    match (app.mode, &app.password) {
+        (Mode::Password, Some(st)) => super::picker::render_password(f, main, st),
+        _ => super::picker::render_picker(f, main, &app.picker, app.store_error.as_deref()),
+    }
+    f.render_widget(Paragraph::new(status_line(app)), status);
 }
 
 fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
@@ -59,7 +62,7 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(main);
     render_tree(f, app, tree);
     super::message_view::render_message(f, message, app);
-    f.render_widget(Paragraph::new(status_text(app)), status);
+    f.render_widget(Paragraph::new(status_line(app)), status);
 }
 
 fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
@@ -157,38 +160,63 @@ fn single_line(s: &str) -> String {
     sanitize(s).replace('\n', "\u{23ce}")
 }
 
-fn status_text(app: &App) -> String {
+fn mode_hint(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Browse => "/ search  p publish  ? help",
+        Mode::Picker => "enter connect  q quit",
+        Mode::Password => "enter connect  esc back",
+        _ => "",
+    }
+}
+
+/// `● name  X.X msg/s  N topics  hint`. While searching or filtering, the
+/// search text replaces it. Before a connection exists (picker, password)
+/// only the hint is shown.
+fn status_line(app: &App) -> Line<'static> {
     if app.mode == Mode::SearchInput {
-        return format!("/{}▏", single_line(&app.search));
+        return Line::raw(format!("/{}▏", single_line(&app.search)));
     }
     if let Some(f) = &app.filter {
-        return format!(
+        return Line::raw(format!(
             "filter: {} ({} matches)",
             single_line(&f.query),
             f.matches.len()
-        );
+        ));
     }
-    let state = match &app.conn_state {
-        ConnState::Connecting => "connecting…".to_owned(),
-        ConnState::Connected => "connected".to_owned(),
+    let hint = mode_hint(app.mode);
+    if matches!(app.mode, Mode::Picker | Mode::Password) {
+        return Line::raw(hint);
+    }
+    let (state, color) = match &app.conn_state {
+        ConnState::Connected => ("●".to_owned(), Color::Green),
+        ConnState::Connecting => ("◌".to_owned(), Color::Yellow),
         ConnState::Disconnected {
             reason,
             retry_in_ms: 0,
-        } => format!("disconnected: {}", single_line(reason)),
+        } => (format!("✕ {}", single_line(reason)), Color::Red),
         ConnState::Disconnected {
             reason,
             retry_in_ms,
-        } => format!(
-            "disconnected: {} – retry in {}s",
-            single_line(reason),
-            retry_in_ms.div_ceil(1000)
+        } => (
+            format!(
+                "✕ {} – retry in {}s",
+                single_line(reason),
+                retry_in_ms.div_ceil(1000)
+            ),
+            Color::Red,
         ),
     };
-    format!(
-        "{state} · {:.1} msg/s · {} topics",
+    let name = app.profile_name.as_deref().map(single_line);
+    let rest = format!(
+        "{}  {:.1} msg/s  {} topics  {hint}",
+        name.map(|n| format!(" {n}")).unwrap_or_default(),
         app.msg_rate.per_sec(Instant::now()),
         app.tree.node(TopicTree::ROOT).topic_count
-    )
+    );
+    Line::from(vec![
+        Span::styled(state, Style::new().fg(color)),
+        Span::raw(rest),
+    ])
 }
 
 #[cfg(test)]
@@ -289,10 +317,7 @@ mod tests {
         ));
         let s = text(&draw(&mut a, 80, 24));
         let last = s.lines().last().unwrap();
-        assert!(
-            last.contains("disconnected: refused – retry in 4s"),
-            "{last}"
-        );
+        assert!(last.contains("✕ refused – retry in 4s"), "{last}");
         assert!(last.contains("msg/s"), "{last}");
     }
 
@@ -335,14 +360,126 @@ mod tests {
         );
     }
 
+    fn picker_app(profiles: Vec<mqtt_zapp_core::config::Profile>) -> App {
+        let store = ProfileStore { profiles };
+        App::new(Launch::Picker, store, Settings::default()).unwrap()
+    }
+
+    fn profile(
+        name: &str,
+        pw: mqtt_zapp_core::config::PasswordSource,
+    ) -> mqtt_zapp_core::config::Profile {
+        use mqtt_zapp_core::config::{Protocol, TlsConfig};
+        mqtt_zapp_core::config::Profile {
+            name: name.into(),
+            host: "broker.lan".into(),
+            port: 8883,
+            protocol: Protocol::Mqtts,
+            ws_path: "/".into(),
+            client_id: None,
+            username: Some("alice".into()),
+            password: pw,
+            tls: TlsConfig::default(),
+            subscriptions: vec!["#".into()],
+        }
+    }
+
+    fn last_line(b: &Buffer) -> String {
+        text(b).lines().last().unwrap().trim_end().to_owned()
+    }
+
     #[test]
-    fn picker_mode_renders_placeholder() {
-        let mut a = app_with(&[]);
-        a.mode = Mode::Picker;
-        let s = text(&draw(&mut a, 80, 24));
+    fn empty_picker_hint() {
+        let mut a = picker_app(vec![]);
+        let s = text(&draw(&mut a, 90, 24));
         assert!(
-            s.contains("connection picker — coming soon (use --profile or --host)"),
+            s.contains("no profiles – add one with: mqtt-zapp profile add --name … --host …"),
             "{s}"
         );
+        assert!(!s.contains("load error"));
+        a.store_error = Some("load error: bad toml".into());
+        let s = text(&draw(&mut a, 90, 24));
+        let err = s
+            .lines()
+            .position(|l| l.contains("load error: bad toml"))
+            .unwrap();
+        let hint = s.lines().position(|l| l.contains("no profiles")).unwrap();
+        assert!(err < hint, "error above hint: {s}");
+    }
+
+    #[test]
+    fn picker_lists_profiles_with_selection_and_hint() {
+        use mqtt_zapp_core::config::PasswordSource::None as N;
+        let mut a = picker_app(vec![profile("home", N), profile("lab", N)]);
+        a.picker.sel = 1;
+        let b = draw(&mut a, 80, 24);
+        let s = text(&b);
+        assert!(s.contains("home  mqtts://broker.lan:8883  alice"), "{s}");
+        let row = s.lines().position(|l| l.contains("lab  mqtts")).unwrap() as u16;
+        assert_eq!(b[(3, row)].bg, SELECTED_BG);
+        let other = s.lines().position(|l| l.contains("home  mqtts")).unwrap() as u16;
+        assert_ne!(b[(3, other)].bg, SELECTED_BG);
+        assert!(last_line(&b).contains("enter connect  q quit"), "{s}");
+    }
+
+    #[test]
+    fn password_render_is_masked() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use mqtt_zapp_core::config::PasswordSource::Prompt;
+        let mut a = picker_app(vec![profile("home", Prompt)]);
+        a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        for c in "pw".chars() {
+            a.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let b = draw(&mut a, 80, 24);
+        let s = text(&b);
+        assert!(s.contains("••"), "{s}");
+        assert!(!s.contains("pw"), "{s}");
+        assert!(!s.contains("•••"), "one dot per char: {s}");
+        assert!(last_line(&b).contains("enter connect  esc back"), "{s}");
+    }
+
+    #[test]
+    fn disconnected_state_in_status_bar() {
+        let mut a = app_with(&[]);
+        a.profile_name = Some("home".into());
+        a.apply_core_event(CoreEvent::State(
+            mqtt_zapp_core::client::ConnState::Disconnected {
+                reason: "connection refused".into(),
+                retry_in_ms: 3200,
+            },
+        ));
+        let b = draw(&mut a, 100, 24);
+        let last = last_line(&b);
+        assert!(
+            last.contains("✕ connection refused – retry in 4s"),
+            "{last}"
+        );
+        assert!(last.contains("home"), "{last}");
+        assert!(last.contains("0.0 msg/s  0 topics"), "{last}");
+        assert!(last.contains("/ search  p publish  ? help"), "{last}");
+        let col = last.chars().position(|c| c == '✕').unwrap() as u16;
+        let row = text(&b).lines().count() as u16 - 1;
+        assert_eq!(b[(col, row)].fg, Color::Red);
+    }
+
+    #[test]
+    fn connected_and_connecting_markers() {
+        let mut a = app_with(&[("a", b"1")]);
+        a.profile_name = Some("home".into());
+        a.apply_core_event(CoreEvent::State(
+            mqtt_zapp_core::client::ConnState::Connected,
+        ));
+        let b = draw(&mut a, 100, 24);
+        let last = last_line(&b);
+        assert!(last.starts_with("● home"), "{last}");
+        assert!(last.contains("1 topics"), "{last}");
+        assert_eq!(b[(0, 23)].fg, Color::Green);
+        a.apply_core_event(CoreEvent::State(
+            mqtt_zapp_core::client::ConnState::Connecting,
+        ));
+        let b = draw(&mut a, 100, 24);
+        assert!(last_line(&b).starts_with("◌ home"));
+        assert_eq!(b[(0, 23)].fg, Color::Yellow);
     }
 }

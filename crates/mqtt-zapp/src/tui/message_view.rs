@@ -36,6 +36,17 @@ pub struct BodyCache {
     builds: std::cell::Cell<u32>,
 }
 
+impl BodyCache {
+    pub fn clear(&self) {
+        *self.slot.borrow_mut() = None;
+    }
+
+    #[cfg(test)]
+    pub fn is_cached(&self) -> bool {
+        self.slot.borrow().is_some()
+    }
+}
+
 /// What the payload area shows.
 enum Body {
     Json(Vec<String>),
