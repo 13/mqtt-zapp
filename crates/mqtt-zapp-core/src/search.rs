@@ -376,7 +376,11 @@ mod tests {
         );
     }
 
+    /// A wall-clock bound only means something for the optimised build users
+    /// run; a debug build on a shared CI runner lands either side of it. CI
+    /// runs this with `cargo test --release`.
     #[test]
+    #[cfg_attr(debug_assertions, ignore = "timing: run with --release")]
     fn fast_enough_at_spec_scale() {
         // 5000 topics x 1 KB payloads
         let mut t = TopicTree::new(1);

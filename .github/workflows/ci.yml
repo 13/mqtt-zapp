@@ -31,3 +31,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config mosquitto
       - run: cargo test --workspace
+      - name: Search speed at spec scale (release build)
+        run: cargo test --release -p mqtt-zapp-core --lib fast_enough_at_spec_scale
