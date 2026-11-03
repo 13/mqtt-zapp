@@ -365,7 +365,11 @@ mod tests {
     #[test]
     fn persist_order_keeps_profiles_added_on_disk() {
         let _d = ConfigDir::new("order");
-        on_disk(vec![profile("a", NoPw), profile("b", NoPw), profile("x", NoPw)]);
+        on_disk(vec![
+            profile("a", NoPw),
+            profile("b", NoPw),
+            profile("x", NoPw),
+        ]);
         let s = persist_order(&["b".into(), "a".into()]).unwrap();
         assert_eq!(names(&s), ["b", "a", "x"]);
         assert_eq!(names(&ProfileStore::load().unwrap()), ["b", "a", "x"]);

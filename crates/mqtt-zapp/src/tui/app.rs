@@ -314,7 +314,7 @@ impl App {
             keymap: Keymap::from_settings(&settings.keys)?,
             history_depth: settings.history_depth,
             pending_connect,
-            picker: PickerState::new(store.profiles),
+            picker: PickerState::new(store.profiles, &Default::default()),
             password: None,
             server: None,
             store_error: None,
@@ -463,11 +463,7 @@ impl App {
     /// A profile save or delete went through: show the new list, select
     /// `select` (or keep the position), close the form.
     pub fn profile_saved(&mut self, profiles: Vec<Profile>, select: Option<&str>, note: &str) {
-        self.picker.sel = select
-            .and_then(|n| profiles.iter().position(|p| p.name == n))
-            .unwrap_or(self.picker.sel)
-            .min(profiles.len().saturating_sub(1));
-        self.picker.profiles = profiles;
+        self.picker.set_profiles(profiles, select);
         self.profile_form = None;
         self.mode = Mode::Picker;
         self.set_note(Note::info(note), Instant::now());
