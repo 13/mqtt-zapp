@@ -510,3 +510,45 @@ async fn slow_consumer_stays_connected() {
         "a slow consumer must not be disconnected"
     );
 }
+
+/// mosquitto 2 logs "Received DISCONNECT from <id>" and then
+/// "Client <id> [addr] disconnected." for a clean close, and
+/// "Client <id> closed its connection." for a dropped socket.
+fn clean_disconnect(log: &str) -> bool {
+    log.contains("Received DISCONNECT from zapp-close-test")
+        && log
+            .lines()
+            .any(|l| l.contains("Client zapp-close-test") && l.ends_with("disconnected."))
+}
+
+#[tokio::test]
+async fn close_waits_for_disconnect() {
+    let Some(b) = support::start(false) else {
+        return;
+    };
+    let mut p = profile("127.0.0.1", b.port, Protocol::Mqtt);
+    p.client_id = Some("zapp-close-test".into());
+    let (conn, mut rx) = Connection::connect(&p, None).unwrap();
+    ready(&conn, &mut rx, "zapp/ready/close").await;
+
+    conn.close(Duration::from_secs(2)).await;
+    assert!(conn.is_finished(), "close returned before the task ended");
+
+    // The broker logs the client's close after it has read our DISCONNECT.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let log = loop {
+        let log = b.log();
+        if clean_disconnect(&log) || std::time::Instant::now() > deadline {
+            break log;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        clean_disconnect(&log),
+        "no clean disconnect in broker log:\n{log}"
+    );
+    assert!(
+        !log.contains("closed its connection"),
+        "broker saw a dropped connection:\n{log}"
+    );
+}

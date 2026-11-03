@@ -31,6 +31,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io::{Stdout, Write, stdout};
 use std::time::{Duration, Instant};
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 const TICK: Duration = Duration::from_millis(100);
@@ -50,7 +51,7 @@ pub async fn run(launch: Launch, store: ProfileStore, store_error: Option<String
     let first = app.startup_effect();
     session.apply(first, &mut app);
     let result = event_loop(&mut terminal, &mut app, &mut session, &mut notes).await;
-    session.disconnect();
+    session.close().await;
     result
 }
 
@@ -202,6 +203,14 @@ impl Session {
         false
     }
 
+    /// Quit: send DISCONNECT and wait (briefly) until it has been written.
+    async fn close(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            conn.close(Duration::from_secs(2)).await;
+        }
+        self.rx = None;
+    }
+
     fn disconnect(&mut self) {
         if let Some(conn) = self.conn.take() {
             conn.disconnect();
@@ -226,8 +235,13 @@ async fn event_loop(
     let mut input = EventStream::new();
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // SIGTERM/SIGHUP end the loop normally, so the terminal guard restores it.
+    let mut sigterm = signal(SignalKind::terminate()).context("installing SIGTERM handler")?;
+    let mut sighup = signal(SignalKind::hangup()).context("installing SIGHUP handler")?;
     loop {
         tokio::select! {
+            _ = sigterm.recv() => return Ok(()),
+            _ = sighup.recv() => return Ok(()),
             ev = input.next() => match ev {
                 Some(Ok(Event::Key(key))) => {
                     let effect = app.handle_key(key);

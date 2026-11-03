@@ -26,6 +26,12 @@ impl Drop for Broker {
 }
 
 impl Broker {
+    /// Everything the broker has logged so far.
+    #[allow(dead_code)] // only some test binaries read the log
+    pub fn log(&self) -> String {
+        std::fs::read_to_string(self.dir.path().join("mosquitto.log")).unwrap_or_default()
+    }
+
     /// Freeze the broker (SIGSTOP): connections stay open but nothing is
     /// answered, until it is killed on drop.
     #[allow(dead_code)] // only some test binaries need it
@@ -156,7 +162,10 @@ fn write_conf(
     tls_port: u16,
     data: Option<&Path>,
 ) -> PathBuf {
-    let mut conf = String::from("per_listener_settings false\n");
+    let mut conf = format!(
+        "per_listener_settings false\nlog_dest file {}/mosquitto.log\nlog_type all\n",
+        dir.display()
+    );
     if let Some(data) = data {
         conf += &format!(
             "persistence true\npersistence_location {}/\nautosave_interval 1\n",

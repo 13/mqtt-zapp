@@ -13,7 +13,8 @@ use rumqttc::{
     TlsConfiguration, Transport,
 };
 use serde::Serialize;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -60,6 +61,8 @@ pub enum CoreEvent {
 pub struct Connection {
     client: Client,
     cancel: CancellationToken,
+    task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    finished: Arc<AtomicBool>,
 }
 
 /// The request side, for either protocol version.
@@ -211,14 +214,24 @@ impl Connection {
         };
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
         let cancel = CancellationToken::new();
-        handle.spawn(run(
-            eventloop,
-            client.clone(),
-            profile.subscriptions.clone(),
-            tx,
-            cancel.clone(),
-        ));
-        Ok((Connection { client, cancel }, rx))
+        let finished = Arc::new(AtomicBool::new(false));
+        let task = handle.spawn({
+            let (client, cancel, finished) = (client.clone(), cancel.clone(), finished.clone());
+            let subscriptions = profile.subscriptions.clone();
+            async move {
+                run(eventloop, client, subscriptions, tx, cancel).await;
+                finished.store(true, Ordering::SeqCst);
+            }
+        });
+        Ok((
+            Connection {
+                client,
+                cancel,
+                task: Arc::new(Mutex::new(Some(task))),
+                finished,
+            },
+            rx,
+        ))
     }
 
     pub async fn publish(
@@ -256,6 +269,22 @@ impl Connection {
     pub fn disconnect(&self) {
         self.client.try_disconnect();
         self.cancel.cancel();
+    }
+
+    /// Like `disconnect`, then wait up to `wait` for the background task to
+    /// finish, which it does once DISCONNECT has been written to the socket.
+    pub async fn close(&self, wait: Duration) {
+        self.disconnect();
+        let handle = self.task.lock().ok().and_then(|mut t| t.take());
+        if let Some(handle) = handle {
+            let _ = tokio::time::timeout(wait, handle).await;
+        }
+    }
+
+    /// Whether the background task has ended (for tests).
+    #[doc(hidden)]
+    pub fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::SeqCst)
     }
 }
 
