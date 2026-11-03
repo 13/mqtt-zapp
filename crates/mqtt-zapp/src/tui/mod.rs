@@ -6,6 +6,8 @@ mod app;
 mod keymap;
 mod message_view;
 mod picker;
+#[allow(dead_code)] // wired into the picker in the next commit
+mod profile_form;
 mod publish;
 mod rows;
 mod theme;
