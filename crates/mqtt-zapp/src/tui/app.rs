@@ -35,6 +35,8 @@ pub enum Mode {
     SearchInput,
     Publish,
     Help,
+    /// The broker statistics overlay; any key closes it.
+    Stats,
     /// A yes/no question; see `App::confirm`.
     Confirm,
 }
@@ -486,7 +488,7 @@ impl App {
                 Effect::None
             }
             Mode::Publish => self.on_publish_key(key),
-            Mode::Help => {
+            Mode::Help | Mode::Stats => {
                 self.mode = Mode::Browse;
                 self.dirty = true;
                 Effect::None
@@ -700,6 +702,7 @@ impl App {
                 );
             }
             Action::Chart => self.cycle_chart(),
+            Action::Stats => self.mode = Mode::Stats,
             Action::ExpandAll => self.expand_subtree(true),
             Action::CollapseAll => self.expand_subtree(false),
             Action::DeleteRetained => self.ask_clear_retained(false),

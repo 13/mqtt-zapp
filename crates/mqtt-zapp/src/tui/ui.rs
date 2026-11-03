@@ -90,10 +90,39 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
     if app.mode == Mode::Help {
         render_help(f, main, app);
     }
+    if app.mode == Mode::Stats {
+        render_stats(f, main, app);
+    }
     if let (Mode::Confirm, Some(c)) = (app.mode, &app.confirm) {
         render_confirm(f, main, c);
     }
     f.render_widget(Paragraph::new(footer_line(app, area.width)), status);
+}
+
+/// Live broker statistics from `$SYS`; redrawn every frame from the tree.
+fn render_stats(f: &mut Frame, area: Rect, app: &App) {
+    let stats = mqtt_zapp_core::stats::broker_stats(&app.tree);
+    theme::dim_backdrop(f, area);
+    let card = theme::centered(area, 64, stats.len().max(1) as u16 + 4);
+    f.render_widget(Clear, card);
+    let muted = Style::new().fg(theme::MUTED);
+    let mut lines = vec![Line::default()];
+    if stats.is_empty() {
+        lines.push(Line::styled(
+            " no $SYS data – subscribe to $SYS/# (the default)",
+            muted,
+        ));
+    }
+    for (label, value) in stats {
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {label:<20}"), muted),
+            Span::styled(value, Style::new().add_modifier(Modifier::BOLD)),
+        ]));
+    }
+    f.render_widget(
+        Paragraph::new(lines).block(theme::pane("broker stats · live", true)),
+        card,
+    );
 }
 
 /// A yes/no card for a destructive action.
@@ -144,6 +173,7 @@ const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
             Action::ScrollUp,
             Action::ToggleDiff,
             Action::Chart,
+            Action::Stats,
         ],
     ),
     (
@@ -1271,6 +1301,25 @@ mod tests {
         assert!(last_line(&b).starts_with("y confirm"), "{s}");
         let s = text(&draw(&mut a, 100, 24));
         assert!(s.contains("clear 1 retained messages under a?"), "{s}");
+    }
+
+    #[test]
+    fn stats_overlay_shows_values_and_closes_on_key() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut a = app_with(&[("$SYS/broker/clients/connected", b"7")]);
+        a.handle_action(Action::Stats);
+        assert_eq!(a.mode, Mode::Stats);
+        let s = text(&draw(&mut a, 100, 24));
+        assert!(s.contains("broker stats"), "{s}");
+        assert!(s.contains("clients connected"), "{s}");
+        let line = s.lines().find(|l| l.contains("clients connected")).unwrap();
+        assert!(line.contains('7'), "{line}");
+        a.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(a.mode, Mode::Browse);
+        let mut a = app_with(&[("a", b"1")]);
+        a.handle_action(Action::Stats);
+        assert!(text(&draw(&mut a, 100, 24)).contains("no $SYS data"));
+        let _ = draw(&mut a, 40, 10);
     }
 
     #[test]

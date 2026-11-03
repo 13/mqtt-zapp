@@ -39,7 +39,7 @@ impl App {
         };
         let left_click = ev.kind == MouseEventKind::Down(MouseButton::Left);
         match self.mode {
-            Mode::Help if matches!(ev.kind, MouseEventKind::Down(_)) => {
+            Mode::Help | Mode::Stats if matches!(ev.kind, MouseEventKind::Down(_)) => {
                 self.mode = Mode::Browse;
                 self.dirty = true;
             }

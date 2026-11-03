@@ -33,6 +33,7 @@ pub enum Action {
     ExpandAll,
     CollapseAll,
     Chart,
+    Stats,
 }
 
 impl Action {
@@ -63,6 +64,7 @@ impl Action {
         (Action::ExpandAll, "expand_all", &["L"]),
         (Action::CollapseAll, "collapse_all", &["H"]),
         (Action::Chart, "chart", &["c"]),
+        (Action::Stats, "stats", &["S"]),
     ];
 
     /// The snake_case name used in `[keys]`.
