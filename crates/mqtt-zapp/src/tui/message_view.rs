@@ -24,6 +24,8 @@ const MAX_DIFF_BYTES: usize = 256 * 1024;
 
 const HINT: &str = "select a topic with a message";
 const HISTORY_ROWS: usize = 6;
+/// Payloads above this are shown as plain text, never parsed as JSON.
+const PRETTY_MAX: usize = 1 << 20;
 
 type Stamp = (SystemTime, usize);
 type CacheKey = (usize, Stamp, Option<Stamp>, bool);
@@ -131,7 +133,7 @@ fn body(app: &App) -> Option<Built> {
     }
     #[cfg(test)]
     app.body_cache.builds.set(app.body_cache.builds.get() + 1);
-    let kind = match detect(&s.msg.payload) {
+    let kind = match detect_capped(&s.msg.payload) {
         // A cut payload shows as text even when its prefix parses as JSON.
         PayloadKind::Json(_) if s.msg.truncated_from.is_some() => {
             PayloadKind::Text(String::from_utf8_lossy(&s.msg.payload).into_owned())
@@ -146,6 +148,19 @@ fn body(app: &App) -> Option<Built> {
     let b = Rc::new(build_body(&s, kind, app.show_diff));
     *app.body_cache.slot.borrow_mut() = Some((key, (Rc::clone(&b), label)));
     Some((b, label))
+}
+
+/// `detect`, except that a payload above `PRETTY_MAX` is never parsed as
+/// JSON (a parse plus pretty-print of a huge payload would stall the UI):
+/// it is text, or binary when it is not UTF-8 or holds a NUL.
+fn detect_capped(payload: &[u8]) -> PayloadKind {
+    if payload.len() <= PRETTY_MAX {
+        return detect(payload);
+    }
+    match std::str::from_utf8(payload) {
+        Ok(t) if !payload.contains(&0) => PayloadKind::Text(t.to_owned()),
+        _ => PayloadKind::Binary,
+    }
 }
 
 fn build_body(s: &Shown, kind: PayloadKind, show_diff: bool) -> Body {
@@ -597,45 +612,117 @@ pub(super) fn chart_split(area: Rect) -> [Rect; 2] {
     Layout::vertical([Constraint::Min(5), Constraint::Percentage(50)]).areas(area)
 }
 
-type ChartKey = (usize, usize, Option<Stamp>, Option<String>);
+/// Everything the chart derives from the topic's history and the shown
+/// message, parsed once per change rather than once per frame.
+type HistoryKey = (usize, usize, Option<Stamp>);
+type ChartKey = (HistoryKey, Stamp);
 
 /// Chart points, shared between the cache and the frame being drawn.
 type Points = Rc<Vec<(f64, f64)>>;
 
-/// The last computed chart points, reused until the topic, its history or
-/// the series change: parsing every history entry each frame is costly for
-/// big JSON payloads.
-#[derive(Default)]
-pub struct ChartCache {
-    slot: RefCell<Option<(ChartKey, Points)>>,
-    #[cfg(test)]
-    pub builds: std::cell::Cell<u32>,
+/// Per-message chart facts, shared between the cache and its readers.
+pub struct ChartMeta {
+    /// What `c` cycles through: the plain value, then each numeric field.
+    pub series: Vec<Option<String>>,
+    /// Payload line of each numeric series, for the highlight.
+    lines: Vec<(usize, Option<String>)>,
 }
 
-/// (history index, value) for each history entry with a number.
-fn chart_points(app: &App, s: &Shown, path: Option<&str>) -> Points {
-    use mqtt_zapp_core::payload::numeric_at;
+impl ChartMeta {
+    /// The payload line of `path`, if it is a numeric series of the message.
+    pub fn line_of(&self, path: &Option<String>) -> Option<usize> {
+        self.lines.iter().find(|(_, p)| p == path).map(|(l, _)| *l)
+    }
+}
+
+/// The last computed chart data, reused until the topic, its history or the
+/// shown message change: parsing every history entry (or the shown payload)
+/// each frame is costly for big JSON payloads.
+#[derive(Default)]
+pub struct ChartCache {
+    /// Points per series path, under the history key.
+    slot: RefCell<Option<(HistoryKey, Option<String>, Points)>>,
+    /// Series and highlight lines of the shown message.
+    meta: RefCell<Option<(ChartKey, Rc<ChartMeta>)>>,
+    /// Rebuilds of the shown message's series and lines.
+    #[cfg(test)]
+    pub builds: std::cell::Cell<u32>,
+    /// Rebuilds of the points.
+    #[cfg(test)]
+    pub point_builds: std::cell::Cell<u32>,
+}
+
+fn history_key(app: &App, s: &Shown) -> HistoryKey {
     let h = &s.node.history;
-    let key = (
+    (
         app.selected.unwrap_or_default(),
         h.len(),
         h.back().map(|m| (m.received_at, m.payload.len())),
-        path.map(str::to_owned),
-    );
-    if let Some((k, p)) = &*app.chart_cache.slot.borrow()
+    )
+}
+
+fn chart_key(app: &App, s: &Shown) -> ChartKey {
+    (
+        history_key(app, s),
+        (s.msg.received_at, s.msg.payload.len()),
+    )
+}
+
+/// Series and highlight lines of the shown message, cached. A payload above
+/// `PRETTY_MAX` is not parsed as JSON here either (it is shown as text, so
+/// there are no JSON fields to chart or highlight): only a plain number
+/// stays chartable, which such a payload practically never is.
+pub fn chart_meta(app: &App) -> Option<Rc<ChartMeta>> {
+    use mqtt_zapp_core::payload::{numeric_at, numeric_lines, numeric_paths};
+    let s = shown(app)?;
+    let key = chart_key(app, &s);
+    if let Some((k, m)) = &*app.chart_cache.meta.borrow()
         && *k == key
     {
-        return Rc::clone(p);
+        return Some(Rc::clone(m));
     }
     #[cfg(test)]
     app.chart_cache.builds.set(app.chart_cache.builds.get() + 1);
+    let p = &s.msg.payload;
+    let mut series = Vec::new();
+    if numeric_at(p, None).is_some() {
+        series.push(None);
+    }
+    let lines = if p.len() > PRETTY_MAX {
+        Vec::new()
+    } else {
+        series.extend(numeric_paths(p).into_iter().map(Some));
+        numeric_lines(p)
+    };
+    let meta = Rc::new(ChartMeta { series, lines });
+    *app.chart_cache.meta.borrow_mut() = Some((key, Rc::clone(&meta)));
+    Some(meta)
+}
+
+/// (history index, value) for each history entry with a number. Oversize
+/// entries only count as plain numbers: their JSON fields are not parsed.
+fn chart_points(app: &App, s: &Shown, path: Option<&str>) -> Points {
+    use mqtt_zapp_core::payload::numeric_at;
+    let h = &s.node.history;
+    let key = history_key(app, s);
+    if let Some((k, p, pts)) = &*app.chart_cache.slot.borrow()
+        && *k == key
+        && p.as_deref() == path
+    {
+        return Rc::clone(pts);
+    }
+    #[cfg(test)]
+    app.chart_cache
+        .point_builds
+        .set(app.chart_cache.point_builds.get() + 1);
     let points: Points = Rc::new(
         h.iter()
             .enumerate()
+            .filter(|(_, m)| path.is_none() || m.payload.len() <= PRETTY_MAX)
             .filter_map(|(i, m)| numeric_at(&m.payload, path).map(|y| (i as f64, y)))
             .collect(),
     );
-    *app.chart_cache.slot.borrow_mut() = Some((key, Rc::clone(&points)));
+    *app.chart_cache.slot.borrow_mut() = Some((key, path.map(str::to_owned), Rc::clone(&points)));
     points
 }
 

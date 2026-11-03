@@ -964,27 +964,14 @@ impl App {
     /// What `c` cycles through for the shown payload, in order: the plain
     /// value (`None`) if it is a number, then each numeric JSON field.
     pub fn chart_series(&self) -> Vec<Option<String>> {
-        use mqtt_zapp_core::payload::{numeric_at, numeric_paths};
-        let Some(m) = super::message_view::shown_message(self) else {
-            return Vec::new();
-        };
-        let mut series: Vec<Option<String>> = Vec::new();
-        if numeric_at(&m.payload, None).is_some() {
-            series.push(None);
-        }
-        series.extend(numeric_paths(&m.payload).into_iter().map(Some));
-        series
+        super::message_view::chart_meta(self).map_or_else(Vec::new, |m| m.series.clone())
     }
 
     /// The payload line of the charted value in the shown payload; `None`
     /// with the chart off, in the diff view, or when the field is not there.
     pub fn chart_line(&self) -> Option<usize> {
         let cur = self.chart.as_ref().filter(|_| !self.show_diff)?;
-        let m = super::message_view::shown_message(self)?;
-        mqtt_zapp_core::payload::numeric_lines(&m.payload)
-            .into_iter()
-            .find(|(_, p)| p == cur)
-            .map(|(l, _)| l)
+        super::message_view::chart_meta(self)?.line_of(cur)
     }
 
     /// A click on payload line `line`: chart the value there, or turn the

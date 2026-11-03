@@ -1116,3 +1116,68 @@ fn truncated_prefix_that_parses_as_json_is_labelled_text() {
     );
     assert_eq!(l.last().unwrap(), "… truncated (2007 bytes)");
 }
+
+/// A JSON array just over `PRETTY_MAX`, on one line.
+fn big_json() -> Vec<u8> {
+    let mut p = b"[".to_vec();
+    while p.len() < PRETTY_MAX * 3 / 2 {
+        p.extend_from_slice(b"1,");
+    }
+    p.extend_from_slice(b"1]");
+    p
+}
+
+#[test]
+fn large_json_skips_pretty_print() {
+    let p = big_json();
+    let a = app_with(&[&p]);
+    let (b, label) = body(&a).unwrap();
+    assert_eq!(label, "TEXT");
+    match &*b {
+        Body::Plain(l) => assert_eq!(l, &[String::from_utf8(p).unwrap()]),
+        _ => panic!("expected plain text"),
+    }
+}
+
+#[test]
+fn json_at_the_cap_is_still_pretty_printed() {
+    let mut p = b"[".to_vec();
+    p.extend(b"1,".repeat((PRETTY_MAX - 4) / 2));
+    p.extend_from_slice(b"11]");
+    assert_eq!(p.len(), PRETTY_MAX);
+    let a = app_with(&[&p]);
+    let (_, label) = body(&a).unwrap();
+    assert_eq!(label, "JSON");
+}
+
+#[test]
+fn chart_series_parsed_once_per_message() {
+    let p = br#"{"a":1,"b":2}"#;
+    let mut a = app_with(&[p, p]);
+    a.chart = Some(Some("a".into()));
+    for _ in 0..5 {
+        let _ = draw(&a);
+    }
+    assert_eq!(a.chart_cache.builds.get(), 1);
+    assert_eq!(a.chart_cache.point_builds.get(), 1);
+    assert_eq!(a.chart_series(), vec![Some("a".into()), Some("b".into())]);
+    assert_eq!(a.chart_line(), Some(1));
+    assert_eq!(a.chart_cache.builds.get(), 1);
+    send(&mut a, T, br#"{"b":1,"a":2}"#, false);
+    assert_eq!(a.chart_line(), Some(2));
+    assert_eq!(a.chart_cache.builds.get(), 2);
+}
+
+#[test]
+fn oversize_payload_is_not_charted_and_does_not_panic() {
+    let p = big_json();
+    let mut a = app_with(&[&p, &p]);
+    assert!(a.chart_series().is_empty());
+    a.handle_action(Action::Chart);
+    assert_eq!(a.chart, None);
+    // A stale path chosen on an earlier, small message.
+    a.chart = Some(Some("0".into()));
+    assert_eq!(a.chart_line(), None);
+    let s = text(&draw(&a));
+    assert!(s.contains("not enough numeric values"), "{s}");
+}
