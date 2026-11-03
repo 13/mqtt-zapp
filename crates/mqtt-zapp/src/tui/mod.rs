@@ -8,6 +8,7 @@ mod message_view;
 mod picker;
 mod publish;
 mod rows;
+mod theme;
 mod ui;
 
 use crate::cli::Launch;

@@ -1,6 +1,6 @@
 //! The connection picker and the password prompt: their state and drawing.
 
-use super::ui::SELECTED_BG;
+use super::theme;
 use mqtt_zapp_core::config::Profile;
 use mqtt_zapp_core::payload::sanitize;
 use ratatui::Frame;
@@ -98,7 +98,7 @@ pub fn render_picker(f: &mut Frame, area: Rect, st: &PickerState, error: Option<
             .map(|(i, p)| {
                 let line = Line::raw(profile_line(p));
                 if i == st.sel {
-                    line.style(Style::new().bg(SELECTED_BG))
+                    line.style(theme::selection(true))
                 } else {
                     line
                 }

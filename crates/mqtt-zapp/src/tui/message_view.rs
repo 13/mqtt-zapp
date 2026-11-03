@@ -3,7 +3,7 @@
 //! from the broker is sanitized before it is drawn.
 
 use super::app::{App, Focus};
-use super::ui::{SELECTED_BG, border_style};
+use super::theme;
 use chrono::{DateTime, Local};
 use mqtt_zapp_core::diff::{ChangeKind, Diff, LineTag, diff};
 use mqtt_zapp_core::payload::{detect, pretty_lines, preview, sanitize};
@@ -260,9 +260,8 @@ fn render_history(f: &mut Frame, area: Rect, app: &App, s: &Shown) {
         None => "history (live)",
         Some(_) => "history (frozen)",
     };
-    let block = Block::bordered()
-        .title(title)
-        .border_style(border_style(app.focus == Focus::History));
+    let focused = app.focus == Focus::History;
+    let block = theme::pane(title, focused);
     let height = block.inner(area).height as usize;
     let h = &s.node.history;
     // Newest first: row `r` is history index `len - 1 - r`.
@@ -281,7 +280,7 @@ fn render_history(f: &mut Frame, area: Rect, app: &App, s: &Shown) {
                 preview(&m.payload, HISTORY_PREVIEW)
             );
             let style = if Some(row) == sel_row && app.history_sel.is_some() {
-                Style::new().bg(SELECTED_BG)
+                theme::selection(focused)
             } else {
                 Style::new()
             };
@@ -337,7 +336,6 @@ mod tests {
     use crate::cli::Launch;
     use crate::tui::app::{App, Focus, Mode};
     use crate::tui::keymap::Action;
-    use crate::tui::ui;
     use mqtt_zapp_core::Message;
     use mqtt_zapp_core::client::CoreEvent;
     use mqtt_zapp_core::config::{ProfileStore, Settings};
@@ -549,7 +547,7 @@ mod tests {
         let pos = |n: &str| l.iter().rposition(|r| r.contains(n)).unwrap();
         assert!(pos("ccc") < pos("bbb") && pos("bbb") < pos("aaa"));
         let y = pos("bbb") as u16;
-        assert!((0..100).any(|x| b[(x, y)].bg == ui::SELECTED_BG));
+        assert!((0..100).any(|x| b[(x, y)].bg == theme::SEL_BG_INACTIVE));
     }
 
     #[test]
@@ -567,9 +565,9 @@ mod tests {
             let y = lines(&b).iter().position(|r| r.contains(needle)).unwrap();
             b[(0, y as u16)].fg
         };
-        assert_ne!(corner(&a, "history"), ui::border_style(true).fg.unwrap());
+        assert_ne!(corner(&a, "history"), theme::ACCENT);
         a.focus = Focus::History;
-        assert_eq!(corner(&a, "history"), ui::border_style(true).fg.unwrap());
+        assert_eq!(corner(&a, "history"), theme::ACCENT);
     }
 
     // --- key handling ---

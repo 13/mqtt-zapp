@@ -5,6 +5,7 @@
 use super::app::{App, Focus, Mode};
 use super::keymap::Action;
 use super::rows::Row;
+use super::theme;
 use mqtt_zapp_core::TopicTree;
 use mqtt_zapp_core::client::ConnState;
 use mqtt_zapp_core::payload::{preview, sanitize};
@@ -13,12 +14,11 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use std::time::Instant;
 
 pub const MIN_WIDTH: u16 = 40;
 pub const MIN_HEIGHT: u16 = 10;
-pub const SELECTED_BG: Color = Color::DarkGray;
 /// Rows that got a message within `app::FLASH` are drawn bold yellow.
 pub const FLASH_MODIFIER: Modifier = Modifier::BOLD;
 const FLASH_FG: Color = Color::Yellow;
@@ -27,15 +27,6 @@ const PREVIEW_CHARS: usize = 60;
 const NOTE_MAX_CHARS: usize = 120;
 /// Search matches in tree rows.
 const MATCH_MODIFIER: Modifier = Modifier::BOLD.union(Modifier::UNDERLINED);
-
-/// Border of a pane: highlighted while it has focus.
-pub fn border_style(focused: bool) -> Style {
-    if focused {
-        Style::new().fg(Color::Cyan)
-    } else {
-        Style::new()
-    }
-}
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -76,9 +67,7 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
 
 /// Effective keymap on the left; keys that bypass the keymap on the right.
 fn render_help(f: &mut Frame, area: Rect, app: &App) {
-    let block = Block::bordered()
-        .title("help - any key closes")
-        .border_style(border_style(true));
+    let block = theme::pane("help - any key closes", true);
     let inner = block.inner(area);
     f.render_widget(Clear, area);
     f.render_widget(block, area);
@@ -120,9 +109,8 @@ fn render_help(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
-    let block = Block::bordered()
-        .title("topics")
-        .border_style(border_style(app.focus == Focus::Tree));
+    let focused = app.focus == Focus::Tree;
+    let block = theme::pane("topics", focused);
     let height = block.inner(area).height as usize;
     let rows = app.rows();
     let selected = app
@@ -143,7 +131,7 @@ fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
                 style = style.fg(FLASH_FG).add_modifier(FLASH_MODIFIER);
             }
             if Some(i) == selected {
-                style = style.bg(SELECTED_BG);
+                style = style.patch(theme::selection(focused));
             }
             Line::from(row_spans(&app.tree, row, query)).style(style)
         })
@@ -262,12 +250,12 @@ fn status_line(app: &App) -> Line<'static> {
         return Line::raw(hint.to_owned());
     }
     let (state, color) = match &app.conn_state {
-        ConnState::Connected => ("●".to_owned(), Color::Green),
-        ConnState::Connecting => ("◌".to_owned(), Color::Yellow),
+        ConnState::Connected => ("●".to_owned(), theme::OK),
+        ConnState::Connecting => ("◌".to_owned(), theme::WARN),
         ConnState::Disconnected {
             reason,
             retry_in_ms: 0,
-        } => (format!("✕ {}", single_line(reason)), Color::Red),
+        } => (format!("✕ {}", single_line(reason)), theme::ERR),
         ConnState::Disconnected {
             reason,
             retry_in_ms,
@@ -277,7 +265,7 @@ fn status_line(app: &App) -> Line<'static> {
                 single_line(reason),
                 retry_in_ms.div_ceil(1000)
             ),
-            Color::Red,
+            theme::ERR,
         ),
     };
     let name = app.profile_name.as_deref().map(single_line);
@@ -345,6 +333,32 @@ mod tests {
     }
 
     #[test]
+    fn tab_moves_thick_border_to_history() {
+        let mut a = app_with(&[("a", b"1"), ("a", b"2")]);
+        a.handle_action(Action::Down);
+        let first_thick = |b: &Buffer| {
+            let w = b.area.width;
+            (0..b.content.len())
+                .find(|&i| b.content[i].symbol() == "┏")
+                .map(|i| (i as u16 % w, i as u16 / w))
+                .unwrap()
+        };
+        let b = draw(&mut a, 100, 24);
+        let (x, y) = first_thick(&b);
+        assert!(x < 50, "tree focused: {x}");
+        assert_eq!(b[(x, y)].symbol(), "┏");
+        a.handle_action(Action::FocusNext);
+        let b = draw(&mut a, 100, 24);
+        let (x, _) = first_thick(&b);
+        assert!(x >= 50, "history focused: {x}");
+        let tree_corner = (0..b.content.len())
+            .find(|&i| b.content[i].symbol() == "╭")
+            .map(|i| i as u16 % 100)
+            .unwrap();
+        assert!(tree_corner < 50);
+    }
+
+    #[test]
     fn too_small_terminal_renders_notice() {
         let mut a = app_with(&[("a", b"1")]);
         assert!(text(&draw(&mut a, 30, 8)).contains("terminal too small"));
@@ -380,8 +394,8 @@ mod tests {
         let row_of = |needle: &str| s.lines().position(|l| l.contains(needle)).unwrap() as u16;
         let sel = &b[(3, row_of("a = 1"))];
         let other = &b[(3, row_of("b = 2"))];
-        assert_eq!(sel.bg, SELECTED_BG);
-        assert_ne!(other.bg, SELECTED_BG);
+        assert_eq!(sel.bg, theme::SEL_BG);
+        assert_ne!(other.bg, theme::SEL_BG);
         assert!(other.modifier.contains(FLASH_MODIFIER));
     }
 
@@ -536,9 +550,9 @@ mod tests {
         let s = text(&b);
         assert!(s.contains("home  mqtts://broker.lan:8883  alice"), "{s}");
         let row = s.lines().position(|l| l.contains("lab  mqtts")).unwrap() as u16;
-        assert_eq!(b[(3, row)].bg, SELECTED_BG);
+        assert_eq!(b[(3, row)].bg, theme::SEL_BG);
         let other = s.lines().position(|l| l.contains("home  mqtts")).unwrap() as u16;
-        assert_ne!(b[(3, other)].bg, SELECTED_BG);
+        assert_ne!(b[(3, other)].bg, theme::SEL_BG);
         assert!(last_line(&b).contains("enter connect  q quit"), "{s}");
     }
 
