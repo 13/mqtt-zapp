@@ -210,22 +210,29 @@ pub fn config_dir() -> PathBuf {
 /// Create `dir` if missing; a directory created here is made 0700 (an
 /// existing one keeps whatever mode the user gave it).
 pub(crate) fn create_private_dir(dir: &Path) -> Result<()> {
-    let existed = dir.exists();
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    #[cfg(unix)]
-    if !existed {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("setting permissions on {}", dir.display()))?;
+    let ctx = || format!("creating {}", dir.display());
+    if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).with_context(ctx)?;
     }
-    #[cfg(not(unix))]
-    let _ = existed;
-    Ok(())
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    match b.create(dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e).with_context(ctx),
+    }
 }
 
 /// Write `contents` to `path` atomically (temp file in the same directory,
-/// fsync, rename), with mode 0600 on unix.
+/// fsync, rename), with mode 0600 on unix. A symlinked target is written
+/// through, so the link survives.
 pub fn write_private(path: &Path, contents: &str) -> Result<()> {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let path = resolved.as_path();
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path.file_name().context("path has no file name")?;
     let n: u32 = rand::thread_rng().r#gen();
@@ -577,5 +584,44 @@ mod tests {
         let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&sub.join("profiles.toml")), 0o600);
         assert_eq!(mode(&sub), 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_private_writes_through_symlink() {
+        let d = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let real = other.path().join("real.toml");
+        std::fs::write(&real, "old").unwrap();
+        let link = d.path().join("profiles.toml");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        write_private(&link, "new").unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new");
+    }
+
+    #[test]
+    fn write_private_cleans_temp_on_error() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("f.toml");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("x"), "x").unwrap();
+        assert!(write_private(&path, "data").is_err());
+        let tmps = std::fs::read_dir(d.path())
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            })
+            .count();
+        assert_eq!(tmps, 0);
     }
 }
