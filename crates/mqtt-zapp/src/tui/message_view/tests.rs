@@ -923,3 +923,45 @@ fn no_copy_glyph_when_not_even_it_fits() {
         }
     }
 }
+
+/// The last history row showing `needle`, without the borders.
+fn history_row(b: &Buffer, needle: &str) -> String {
+    let l = lines(b);
+    let r = l.iter().rev().find(|r| r.contains(needle)).unwrap();
+    r.trim_start_matches('│').trim_end_matches('│').to_owned()
+}
+
+#[test]
+fn history_preview_uses_the_whole_row() {
+    let long = "a".repeat(200);
+    let a = app_with(&[long.as_bytes(), long.as_bytes()]);
+    // 100 columns: 98 inside, `HH:MM:SS` + 2 spaces leaves 88.
+    let row = history_row(&draw(&a), "aaa");
+    assert_eq!(row.chars().count(), 98, "{row:?}");
+    assert!(row.ends_with("a…"), "{row:?}");
+    assert_eq!(row.matches('a').count(), 87);
+    // Narrow pane: still fills the row, never past the border.
+    for w in [20u16, 30, 45] {
+        let mut t = Terminal::new(TestBackend::new(w, 30)).unwrap();
+        t.draw(|f| render_message(f, f.area(), &a, false)).unwrap();
+        let l = lines(t.backend().buffer());
+        let r = l.iter().rev().find(|r| r.contains("aaa")).unwrap();
+        assert!(r.ends_with("a…│"), "{w}: {r:?}");
+    }
+    // A short payload is not padded or cut.
+    let a = app_with(&[b"short", b"short"]);
+    assert!(history_row(&draw(&a), "short").contains("  short"));
+}
+
+#[test]
+fn history_preview_of_wide_chars_never_overflows() {
+    let wide = "温度".repeat(100);
+    let a = app_with(&[wide.as_bytes(), wide.as_bytes()]);
+    for w in [20u16, 31, 45, 100] {
+        let mut t = Terminal::new(TestBackend::new(w, 30)).unwrap();
+        t.draw(|f| render_message(f, f.area(), &a, false)).unwrap();
+        let l = lines(t.backend().buffer());
+        let r = l.iter().rev().find(|r| r.contains('温')).unwrap();
+        assert!(r.ends_with('│') && r.contains('…'), "{w}: {r:?}");
+    }
+}

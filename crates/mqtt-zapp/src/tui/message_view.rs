@@ -23,7 +23,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 const MAX_DIFF_BYTES: usize = 256 * 1024;
 
 const HINT: &str = "select a topic with a message";
-const HISTORY_PREVIEW: usize = 40;
 const HISTORY_ROWS: usize = 6;
 
 type Stamp = (SystemTime, usize);
@@ -231,6 +230,17 @@ pub fn age(received: SystemTime, now: SystemTime) -> String {
         s if s < 86_400 => format!("{}h ago", s / 3600),
         s => format!("{}d ago", s / 86_400),
     }
+}
+
+/// A one-line preview of `payload` in at most `room` display columns, with
+/// `…` when cut.
+fn fit_preview(payload: &[u8], room: usize) -> String {
+    let p = preview(payload, room);
+    if p.width() <= room {
+        return p;
+    }
+    // Wide characters: `preview` counts chars, the row counts columns.
+    format!("{}…", take_width(&p, room.saturating_sub(1), false))
 }
 
 /// Keep `max` display columns of `s`, from the end (`true`) or the start.
@@ -758,7 +768,8 @@ fn render_history(f: &mut Frame, area: Rect, app: &App, s: &Shown) {
     };
     let focused = app.focus == Focus::History;
     let block = theme::pane(&title, focused);
-    let height = block.inner(area).height as usize;
+    let inner = block.inner(area);
+    let height = inner.height as usize;
     let h = &s.node.history;
     // Newest first: row `r` is history index `len - 1 - r`.
     let sel_row = s.idx.map(|i| h.len() - 1 - i);
@@ -776,13 +787,14 @@ fn render_history(f: &mut Frame, area: Rect, app: &App, s: &Shown) {
         .take(height)
         .map(|(row, m)| {
             let marked = s.base == Some(h.len() - 1 - row);
+            let time = clock(m.received_at, "%H:%M:%S");
+            let marker = if marked { " ◆ " } else { "  " };
+            // The preview gets whatever the row has left.
+            let room = usize::from(inner.width).saturating_sub(time.width() + marker.width());
             let line = Line::from(vec![
-                Span::styled(clock(m.received_at, "%H:%M:%S"), theme::TITLE),
-                Span::styled(
-                    if marked { " ◆ " } else { "  " },
-                    Style::new().fg(theme::ACCENT),
-                ),
-                Span::raw(preview(&m.payload, HISTORY_PREVIEW)),
+                Span::styled(time, theme::TITLE),
+                Span::styled(marker, Style::new().fg(theme::ACCENT)),
+                Span::raw(fit_preview(&m.payload, room)),
             ]);
             if Some(row) == sel_row && app.history_sel.is_some() {
                 theme::select(line, focused)
