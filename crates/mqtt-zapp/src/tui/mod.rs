@@ -7,6 +7,7 @@ mod keymap;
 mod message_view;
 mod picker;
 mod profile_form;
+mod profiles;
 mod publish;
 mod rows;
 mod theme;
@@ -113,8 +114,23 @@ impl Session {
                     Instant::now(),
                 );
             }
-            // Persisted in the next commit.
-            Effect::SaveProfile(_) | Effect::DeleteProfile(_) => {}
+            Effect::SaveProfile(edit) => {
+                let name = edit.profile.name.clone();
+                match profiles::persist_edit(edit, &profiles::RealSecrets) {
+                    Ok(store) => {
+                        app.profile_saved(store.profiles, Some(&name), &format!("saved {name}"))
+                    }
+                    Err(e) => app.profile_save_failed(format!("{e:#}")),
+                }
+            }
+            Effect::DeleteProfile(name) => {
+                match profiles::persist_delete(&name, &profiles::RealSecrets) {
+                    Ok(store) => {
+                        app.profile_saved(store.profiles, None, &format!("deleted {name}"))
+                    }
+                    Err(e) => app.profile_save_failed(format!("{e:#}")),
+                }
+            }
             Effect::Connect(profile, password) => {
                 self.disconnect();
                 app.reset_tree();

@@ -452,7 +452,7 @@ impl ProfileForm {
 }
 
 pub const HINT: &str = "ctrl-s save  tab next  space change  esc cancel";
-const LABEL_WIDTH: usize = 13;
+const LABEL_WIDTH: usize = 14;
 
 /// One cell per char of `text`, sanitized char by char so `cursor` (a char
 /// index) still lines up; chars are skipped from the left to keep the cursor
@@ -922,6 +922,10 @@ mod tests {
         assert!(all.contains("edit profile · home"), "{all}");
         assert!(all.contains("(unchanged)"));
         assert!(all.contains("[x]"), "insecure shown");
+        assert!(
+            all.contains("subscriptions #"),
+            "label and value apart: {all}"
+        );
         let all = draw(&ProfileForm::new(None, vec![]), 80, 24).join("\n");
         assert!(all.contains("add profile"));
     }

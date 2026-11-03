@@ -462,7 +462,6 @@ impl App {
 
     /// A profile save or delete went through: show the new list, select
     /// `select` (or keep the position), close the form.
-    #[allow(dead_code)] // called by Session in the next commit
     pub fn profile_saved(&mut self, profiles: Vec<Profile>, select: Option<&str>, note: &str) {
         self.picker.sel = select
             .and_then(|n| profiles.iter().position(|p| p.name == n))
@@ -475,7 +474,6 @@ impl App {
     }
 
     /// A profile save or delete failed: show why in the form, if open.
-    #[allow(dead_code)] // called by Session in the next commit
     pub fn profile_save_failed(&mut self, err: String) {
         match self.profile_form.as_mut() {
             Some(form) => form.error = Some(err),
