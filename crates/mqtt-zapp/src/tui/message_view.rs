@@ -256,36 +256,55 @@ fn take_width(s: &str, max: usize, from_end: bool) -> String {
     out.into_iter().collect()
 }
 
-/// Split `topic` into (parents with their trailing `/`, leaf), fitted so
-/// that parents plus the padded leaf badge take at most `width` columns.
-/// The parents lose their middle first; the leaf is cut (from the left)
-/// only once there is no room for any parent.
+/// Split `topic` into (parents spaced as `a / b / `, leaf), fitted so that
+/// parents plus the padded leaf badge take at most `width` columns. Whole
+/// middle levels go first (`a / … / `), then all but `… / `; the leaf is cut
+/// (from the left) only once there is no room for any parent.
 fn fit_topic(topic: &str, width: usize) -> (String, String) {
     let topic = one_line(topic);
-    let (parents, leaf) = match topic.rfind('/') {
-        Some(i) => (topic[..=i].to_owned(), topic[i + 1..].to_owned()),
-        None => (String::new(), topic.clone()),
-    };
+    let mut levels: Vec<&str> = topic.split('/').collect();
+    let leaf = levels.pop().unwrap_or_default().to_owned();
     let leaf_room = width.saturating_sub(2);
+    if leaf_room == 0 {
+        return (String::new(), String::new());
+    }
     if leaf.width() > leaf_room {
         return (
             String::new(),
             format!("…{}", take_width(&leaf, leaf_room.saturating_sub(1), true)),
         );
     }
-    let room = width - 2 - leaf.width();
-    if parents.width() <= room {
-        return (parents, leaf);
+    let room = leaf_room - leaf.width();
+    let spaced = |ls: &[&str]| ls.iter().map(|l| format!("{l}{SEP}")).collect::<String>();
+    let full = spaced(&levels);
+    if full.width() <= room {
+        return (full, leaf);
     }
-    // `head…tail/`: the tail keeps the trailing `/`.
-    if room < 3 {
-        return (String::new(), leaf);
+    // `first / … / tail / `: whole middle levels go, the first stays and as
+    // many of the last ones as fit.
+    if levels.len() >= 2 {
+        let head = format!("{}{SEP}…{SEP}", levels[0]);
+        if head.width() <= room {
+            let mut tail = String::new();
+            for l in levels[2..].iter().rev() {
+                let t = format!("{l}{SEP}{tail}");
+                if head.width() + t.width() > room {
+                    break;
+                }
+                tail = t;
+            }
+            return (head + &tail, leaf);
+        }
     }
-    let keep = room - 1;
-    let head = take_width(&parents, keep / 2, false);
-    let tail = take_width(&parents, keep - head.width(), true);
-    (format!("{head}…{tail}"), leaf)
+    let ellipsis = format!("…{SEP}");
+    if ellipsis.width() <= room {
+        return (ellipsis, leaf);
+    }
+    (String::new(), leaf)
 }
+
+/// Between topic levels in the header: `muh / wsr / json`.
+const SEP: &str = " / ";
 
 fn leaf_badge(leaf: &str) -> Span<'static> {
     Span::styled(

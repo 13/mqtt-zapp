@@ -90,10 +90,11 @@ fn click_header_path_copies_topic() {
     let mut a = app_with(&[("dev/x", b"hello")]);
     a.selected = a.tree.find("dev/x");
     let b = draw(&mut a, 100, 24);
-    let (x, y) = find_at(&b, "│ dev/ x ");
+    let (x, y) = find_at(&b, "│ dev /  x ");
+    // The copied text is the real topic, not the spaced display.
     assert_eq!(copied(click(&mut a, x + 3, y)), ("topic", "dev/x".into()));
     // The leaf badge is part of the path too.
-    assert_eq!(copied(click(&mut a, x + 7, y)).0, "topic");
+    assert_eq!(copied(click(&mut a, x + 9, y)).0, "topic");
 }
 
 #[test]

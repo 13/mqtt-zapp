@@ -152,7 +152,7 @@ fn live_view_follows_latest() {
 
 /// The card's badge row: the line just below the path row.
 fn badge_row(l: &[String]) -> (usize, &String) {
-    let y = l.iter().position(|r| r.contains("dev/")).unwrap() + 1;
+    let y = l.iter().position(|r| r.contains("dev / ")).unwrap() + 1;
     (y, &l[y])
 }
 
@@ -217,7 +217,7 @@ fn header_card_draws_box_path_and_badges() {
     assert!(l[0].starts_with('╭'), "{}", l[0]);
     assert!(l[3].starts_with('╰'), "{}", l[3]);
     assert!(
-        l[1].contains("tasmota/tele/tasmota_A1B2C3/ SENSOR "),
+        l[1].contains("tasmota / tele / tasmota_A1B2C3 /  SENSOR "),
         "{}",
         l[1]
     );
@@ -247,9 +247,9 @@ fn header_long_cjk_topic_keeps_leaf() {
     let (parents, leaf) = fit_topic("设备/房间/很长很长很长很长很长很长很长很长/温度", 30);
     assert_eq!(leaf, "温度");
     assert!(parents.width() + leaf.width() + 2 <= 30, "{parents}");
-    assert!(parents.contains('…') && parents.ends_with('/'), "{parents}");
+    assert_eq!(parents, "设备 / … / ");
     let (p, leaf) = fit_topic("a/b/c", 40);
-    assert_eq!((p.as_str(), leaf.as_str()), ("a/b/", "c"));
+    assert_eq!((p.as_str(), leaf.as_str()), ("a / b / ", "c"));
     let (p, leaf) = fit_topic(&format!("a/{}", "x".repeat(50)), 12);
     assert!(p.is_empty(), "{p}");
     assert!(leaf.starts_with('…') && leaf.width() + 2 <= 12, "{leaf}");
@@ -282,7 +282,7 @@ fn header_compact_when_short_or_stacked() {
         let l = lines(t.backend().buffer());
         assert!(!l[0].contains('╭'), "{w}x{h}: {}", l[0]);
         assert!(
-            l[0].contains("dev/ x ") && l[0].contains(" TEXT "),
+            l[0].contains("dev /  x ") && l[0].contains(" TEXT "),
             "{}",
             l[0]
         );
@@ -733,4 +733,47 @@ fn diff_without_base_still_uses_previous() {
     let mut a = app_with(&[br#"{"v":1}"#, br#"{"v":2}"#, br#"{"v":3}"#]);
     a.show_diff = true;
     assert!(text(&draw(&a)).contains("~ v: 2 → 3"));
+}
+
+fn fit(topic: &str, width: usize) -> (String, String) {
+    let (p, l) = fit_topic(topic, width);
+    assert!(
+        p.width() + l.width() + 2 <= width,
+        "{topic} @ {width}: {p:?} {l:?}"
+    );
+    (p, l)
+}
+
+#[test]
+fn spaced_path_basic() {
+    assert_eq!(
+        fit("muh/wsr/json", 40),
+        ("muh / wsr / ".into(), "json".into())
+    );
+}
+
+#[test]
+fn spaced_path_shortens_middle_levels() {
+    let t = "tasmota/tele/tasmota_A1B2C3/SENSOR";
+    assert_eq!(fit(t, 22), ("tasmota / … / ".into(), "SENSOR".into()));
+    // Room for the first level and the last parent: only the middle goes.
+    assert_eq!(
+        fit("a/b/c/d/leaf", 20),
+        ("a / … / d / ".into(), "leaf".into())
+    );
+    assert_eq!(fit(t, 15), ("… / ".into(), "SENSOR".into()));
+    assert_eq!(fit(t, 11), ("".into(), "SENSOR".into()));
+}
+
+#[test]
+fn spaced_path_edge_topics() {
+    assert_eq!(fit("a", 10), ("".into(), "a".into()));
+    assert_eq!(fit("a//b", 20), ("a /  / ".into(), "b".into()));
+    assert_eq!(fit("/", 10), (" / ".into(), "".into()));
+    assert_eq!(fit("", 10), ("".into(), "".into()));
+    for w in 2..30 {
+        for t in ["/", "a//b", "///", "x/yyyyyyyyyyyy/z", "设备/房间/温度"] {
+            fit(t, w);
+        }
+    }
 }
