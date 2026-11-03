@@ -133,7 +133,7 @@ impl App {
             return;
         }
         let idx = usize::from(at.y - area.y) + self.tree_offset;
-        let Some(row) = self.rows().get(idx).copied() else {
+        let Some(row) = self.drawn_rows().get(idx).copied() else {
             return;
         };
         let marker = area.x + row.depth.saturating_mul(2);
@@ -152,7 +152,7 @@ impl App {
             return Effect::None;
         }
         let idx = usize::from(at.y - area.y) + self.tree_offset;
-        match self.rows().get(idx) {
+        match self.drawn_rows().get(idx) {
             Some(row) => Effect::Copy {
                 what: "topic",
                 text: mqtt_zapp_core::payload::clipboard_safe(

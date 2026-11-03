@@ -131,6 +131,7 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(main)
     };
     render_tree(f, app, tree);
+    super::message_view::settle_history_focus(app, message, stacked);
     super::message_view::render_message(f, message, app, stacked);
     if let (Mode::Publish, Some(form)) = (app.mode, &app.publish) {
         super::publish::render(f, main, form);
@@ -444,6 +445,7 @@ fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
     let block = theme::pane("topics", focused);
     let height = block.inner(area).height as usize;
     let rows = app.rows();
+    app.set_drawn_rows(&rows);
     let selected = app
         .selected
         .and_then(|s| rows.iter().position(|r| r.id == s));

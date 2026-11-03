@@ -505,8 +505,34 @@ fn header_compact(
     Line::from(spans)
 }
 
+/// Rows the history box gets in a message pane of `area`, before any
+/// focus override: 0 means it is not drawn. History takes at most half of
+/// what the meta line leaves, so the payload keeps room in short (stacked)
+/// layouts.
+fn history_rows(area: Rect, stacked: bool, entries: usize) -> u16 {
+    let card = !stacked && area.height >= HEADER_CARD_MIN_HEIGHT;
+    let header_rows = if card { 3 } else { 1 };
+    let half = area.height.saturating_sub(header_rows) / 2;
+    (entries.min(HISTORY_ROWS) as u16).min(half.saturating_sub(2))
+}
+
+/// Whether the history box fits in the message pane `area`. If history has
+/// focus but the box is not shown, focus moves to the payload.
+pub fn settle_history_focus(app: &mut App, area: Rect, stacked: bool) {
+    let fits = shown(app).is_some_and(|s| history_rows(area, stacked, s.node.history.len()) > 0);
+    app.history_shown.set(fits);
+    if !fits && app.focus == Focus::History {
+        app.focus = Focus::Payload;
+    }
+}
+
 pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
     let Some(s) = shown(app) else {
+        app.history_shown.set(false);
+        app.hit.set(HitAreas {
+            history: Rect::default(),
+            ..app.hit.get()
+        });
         // Payload and history focus both land here while there is nothing
         // to show, so the focus stays visible.
         let block = theme::pane("message", app.focus != Focus::Tree);
@@ -531,15 +557,15 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
         f.render_widget(hint, mid);
         return;
     };
-    // History takes at most half of what the meta line leaves, so the
-    // payload keeps room in short (stacked) layouts; with history focused it
-    // keeps at least one row so the focus stays visible.
     let card = !stacked && area.height >= HEADER_CARD_MIN_HEIGHT;
     let header_rows = if card { 3 } else { 1 };
-    let half = area.height.saturating_sub(header_rows) / 2;
-    let mut hist_rows = (s.node.history.len().min(HISTORY_ROWS) as u16).min(half.saturating_sub(2));
-    if app.focus == Focus::History {
-        hist_rows = hist_rows.max(1);
+    let hist_rows = history_rows(area, stacked, s.node.history.len());
+    app.history_shown.set(hist_rows > 0);
+    if hist_rows == 0 {
+        app.hit.set(HitAreas {
+            history: Rect::default(),
+            ..app.hit.get()
+        });
     }
     let hist_height = if hist_rows == 0 { 0 } else { hist_rows + 2 };
     let [meta, payload, history] = Layout::vertical([
@@ -615,7 +641,9 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
         None => payload,
     };
     render_payload(f, payload, app);
-    render_history(f, history, app, &s);
+    if hist_rows > 0 {
+        render_history(f, history, app, &s);
+    }
 }
 
 /// How an open chart splits the payload area: the chart on top, the

@@ -9,6 +9,7 @@ use mqtt_zapp_core::{Bytes, Message};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use std::time::SystemTime;
 
 fn app_with(items: &[(&str, &[u8])]) -> App {
@@ -315,6 +316,78 @@ fn history_focus_visible_at_40x10() {
     a.focus = Focus::History;
     let b = draw(&mut a, 40, 10);
     assert!(b.content.iter().any(|c| c.symbol() == "┏"), "{}", text(&b));
+}
+
+fn two_msgs() -> App {
+    let mut a = app_with(&[("dev/x", b"p1"), ("dev/x", b"p2")]);
+    a.selected = a.tree.find("dev/x");
+    a
+}
+
+#[test]
+fn tab_skips_hidden_history_box() {
+    let mut a = two_msgs();
+    let b = draw(&mut a, 40, 10);
+    assert!(!text(&b).contains("history"), "{}", text(&b));
+    assert!(!a.history_shown.get());
+    assert_eq!(a.focus, Focus::Tree);
+    a.handle_action(Action::FocusNext);
+    assert_eq!(a.focus, Focus::Payload);
+    a.handle_action(Action::FocusNext);
+    assert_eq!(a.focus, Focus::Tree);
+}
+
+#[test]
+fn tab_reaches_history_when_shown() {
+    let mut a = two_msgs();
+    let b = draw(&mut a, 100, 30);
+    assert!(text(&b).contains("history"), "{}", text(&b));
+    assert!(a.history_shown.get());
+    a.handle_action(Action::FocusNext);
+    assert_eq!(a.focus, Focus::Payload);
+    a.handle_action(Action::FocusNext);
+    assert_eq!(a.focus, Focus::History);
+    a.handle_action(Action::FocusNext);
+    assert_eq!(a.focus, Focus::Tree);
+}
+
+#[test]
+fn history_focus_falls_back_when_resized_away() {
+    let mut a = two_msgs();
+    draw(&mut a, 100, 30);
+    a.focus = Focus::History;
+    let b = draw(&mut a, 40, 10);
+    assert_eq!(a.focus, Focus::Payload);
+    assert!(!text(&b).contains("history"), "{}", text(&b));
+}
+
+#[test]
+fn hidden_history_has_no_hit_area() {
+    let mut a = two_msgs();
+    draw(&mut a, 100, 30);
+    assert_ne!(a.hit.get().history, Rect::default());
+    draw(&mut a, 40, 10);
+    assert_eq!(a.hit.get().history, Rect::default());
+}
+
+#[test]
+fn tree_click_uses_drawn_rows() {
+    let mut a = app_with(&[("b", b"2"), ("c", b"3")]);
+    let b = draw(&mut a, 100, 24);
+    let y = tree_row(&b, "c  3");
+    // A topic sorting first lands after the draw, shifting every row.
+    a.apply_core_event(CoreEvent::Message {
+        topic: "a".into(),
+        msg: Message {
+            payload: Bytes::copy_from_slice(b"1"),
+            qos: 0,
+            retain: false,
+            received_at: SystemTime::now(),
+            truncated_from: None,
+        },
+    });
+    click(&mut a, 10, y);
+    assert_eq!(a.selected, a.tree.find("c"));
 }
 
 #[test]

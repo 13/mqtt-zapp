@@ -331,6 +331,11 @@ pub struct App {
     pub profile_form: Option<ProfileForm>,
     /// Pane rectangles of the last frame, for mouse hit-testing.
     pub hit: Cell<HitAreas>,
+    /// Whether the last frame had room for the history box without forcing
+    /// it open; Tab only visits it then.
+    pub history_shown: Cell<bool>,
+    /// The rows the last frame drew, so mouse clicks hit what was on screen.
+    drawn_rows: RefCell<Option<Rc<[Row]>>>,
     /// When this `App` was made: Count and Recent rows refresh once a
     /// second counted from here.
     created: Instant,
@@ -415,6 +420,8 @@ impl App {
             publish: None,
             status_note: None,
             hit: Cell::new(HitAreas::default()),
+            history_shown: Cell::new(false),
+            drawn_rows: RefCell::new(None),
             confirm: None,
             profile_form: None,
             sort: settings.sort,
@@ -570,6 +577,18 @@ impl App {
     /// The tree pane's rows, cached until the tree's shape, the expanded
     /// set, the filter or the sort changes (Count and Recent: or a second
     /// passes). Cheap to call per frame and per key.
+    /// The rows the last frame drew (or `rows()` before any frame).
+    pub(super) fn drawn_rows(&self) -> Rc<[Row]> {
+        self.drawn_rows
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| self.rows())
+    }
+
+    pub(super) fn set_drawn_rows(&self, rows: &Rc<[Row]>) {
+        *self.drawn_rows.borrow_mut() = Some(Rc::clone(rows));
+    }
+
     pub fn rows(&self) -> Rc<[Row]> {
         let key = RowsKey {
             shape: self.tree.shape_gen(),
@@ -964,8 +983,8 @@ impl App {
             Action::FocusNext => {
                 self.focus = match self.focus {
                     Focus::Tree => Focus::Payload,
-                    Focus::Payload => Focus::History,
-                    Focus::History => Focus::Tree,
+                    Focus::Payload if self.history_shown.get() => Focus::History,
+                    Focus::Payload | Focus::History => Focus::Tree,
                 }
             }
             Action::ToggleDiff => {

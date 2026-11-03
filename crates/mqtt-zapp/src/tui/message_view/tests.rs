@@ -528,6 +528,7 @@ fn focus_next_toggles_and_diff_toggles() {
 #[test]
 fn focus_cycles_tree_payload_history() {
     let mut a = app_with(&[b"a"]);
+    draw(&a); // history_shown is set by a frame
     a.handle_action(Action::FocusNext);
     assert_eq!(a.focus, Focus::Payload);
     a.handle_action(Action::FocusNext);
