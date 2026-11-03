@@ -1,10 +1,17 @@
 //! The add/edit profile form: one line per profile field. State, keys and
 //! validation live here; the card is drawn by `render`.
 
+use super::theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mqtt_zapp_core::config::{
     PasswordSource, Profile, Protocol, TlsConfig, default_subscriptions, default_ws_path,
 };
+use mqtt_zapp_core::payload::sanitize;
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -444,6 +451,127 @@ impl ProfileForm {
     }
 }
 
+pub const HINT: &str = "ctrl-s save  tab next  space change  esc cancel";
+const LABEL_WIDTH: usize = 13;
+
+/// One cell per char of `text`, sanitized char by char so `cursor` (a char
+/// index) still lines up; chars are skipped from the left to keep the cursor
+/// within `width`.
+fn input_spans(text: &str, cursor: Option<usize>, width: usize) -> Vec<Span<'static>> {
+    let mut cells: Vec<String> = text
+        .chars()
+        .map(|c| sanitize(&c.to_string()).replace('\n', " "))
+        .collect();
+    if cursor.is_some_and(|c| c >= cells.len()) {
+        cells.push(" ".into());
+    }
+    let skip = cursor.map_or(0, |c| (c + 1).saturating_sub(width.max(1)));
+    cells
+        .into_iter()
+        .enumerate()
+        .skip(skip)
+        .map(|(i, t)| {
+            if cursor == Some(i) {
+                Span::styled(t, Style::new().add_modifier(Modifier::REVERSED))
+            } else {
+                Span::raw(t)
+            }
+        })
+        .collect()
+}
+
+fn choice(text: &str) -> Vec<Span<'static>> {
+    vec![Span::styled(
+        format!("‹ {text} ›"),
+        Style::new().add_modifier(Modifier::BOLD),
+    )]
+}
+
+fn value_spans(form: &ProfileForm, field: PField, width: usize) -> Vec<Span<'static>> {
+    let focused = form.field == field;
+    match field {
+        PField::Protocol => choice(&format!("{:?}", form.protocol).to_lowercase()),
+        PField::PasswordSource => choice(&format!("{:?}", form.source).to_lowercase()),
+        PField::Insecure => vec![Span::raw(if form.insecure {
+            "[x] skip certificate checks"
+        } else {
+            "[ ] skip certificate checks"
+        })],
+        PField::Password => {
+            let input = &form.password;
+            if input.text().is_empty() && form.had_keyring {
+                let mut v = input_spans("", focused.then_some(0), width);
+                v.push(Span::styled("(unchanged)", Style::new().fg(theme::MUTED)));
+                return v;
+            }
+            let masked = "•".repeat(input.text().chars().count());
+            input_spans(&masked, focused.then(|| input.cursor()), width)
+        }
+        f => {
+            let input = form.input(f).expect("text field");
+            input_spans(input.text(), focused.then(|| input.cursor()), width)
+        }
+    }
+}
+
+/// The form as a card centred over `area`; the rows scroll to keep the
+/// focused one in view.
+pub fn render(f: &mut Frame, area: Rect, form: &ProfileForm) {
+    let fields = form.visible_fields();
+    theme::dim_backdrop(f, area);
+    let card = theme::centered(area, 72, fields.len() as u16 + 4);
+    f.render_widget(Clear, card);
+    let title = match &form.original {
+        Some(name) => format!("edit profile · {name}"),
+        None => "add profile".into(),
+    };
+    let block = match &form.error {
+        Some(e) => Block::bordered()
+            .border_type(BorderType::Thick)
+            .title(Span::styled(
+                format!(" {title} - {} ", sanitize(e).replace('\n', " ")),
+                Style::new().fg(theme::ERR).add_modifier(Modifier::BOLD),
+            ))
+            .border_style(Style::new().fg(theme::ERR)),
+        None => theme::pane(&title, true),
+    };
+    let inner = block.inner(card);
+    f.render_widget(block, card);
+    let [rows, hint] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+    let height = rows.height.max(1) as usize;
+    let focus = fields.iter().position(|x| *x == form.field).unwrap_or(0);
+    let skip = (focus + 1).saturating_sub(height);
+    let width = (inner.width as usize).saturating_sub(LABEL_WIDTH + 3);
+    let lines: Vec<Line> = fields
+        .iter()
+        .skip(skip)
+        .map(|&field| {
+            let sel = field == form.field;
+            let mut spans = vec![
+                Span::styled(
+                    if sel { " ▶ " } else { "   " },
+                    Style::new().fg(theme::ACCENT),
+                ),
+                Span::styled(
+                    format!("{:<LABEL_WIDTH$}", field.label()),
+                    if sel {
+                        Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::new().fg(theme::MUTED)
+                    },
+                ),
+            ];
+            spans.extend(value_spans(form, field, width));
+            Line::from(spans)
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), rows);
+    f.render_widget(
+        Paragraph::new(format!(" {HINT}")).style(Style::new().fg(theme::MUTED)),
+        hint,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -738,6 +866,72 @@ mod tests {
         goto(&mut f, PField::Insecure);
         f.on_key(key(KeyCode::Char(' ')));
         assert!(!save(&mut f).unwrap().profile.tls.insecure);
+    }
+
+    fn draw(f: &ProfileForm, w: u16, h: u16) -> Vec<String> {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|fr| render(fr, fr.area(), f)).unwrap();
+        let buf = t.backend().buffer().clone();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_owned()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn form_sanitizes_values() {
+        let mut p = sample("x", PasswordSource::None);
+        p.host = "evil\x1b[31m".into();
+        let rows = draw(&ProfileForm::new(Some(&p), vec![]), 80, 24);
+        let all = rows.join("\n");
+        assert!(!all.contains('\x1b'));
+        assert!(all.contains("evil"));
+    }
+
+    #[test]
+    fn form_fits_40x10_and_shows_focus() {
+        let mut f = ProfileForm::new(None, vec![]);
+        goto(&mut f, PField::Subscriptions);
+        let rows = draw(&f, 40, 10);
+        assert!(
+            rows.iter()
+                .any(|r| r.contains('▶') && r.contains("subscriptions")),
+            "{rows:#?}"
+        );
+        // The first row has scrolled away.
+        assert!(!rows.iter().any(|r| r.contains(" name  ")), "{rows:#?}");
+    }
+
+    #[test]
+    fn form_masks_password() {
+        let mut f = filled();
+        goto(&mut f, PField::PasswordSource);
+        f.on_key(key(KeyCode::Char(' ')));
+        goto(&mut f, PField::Password);
+        type_str(&mut f, "abc");
+        let all = draw(&f, 80, 24).join("\n");
+        assert!(all.contains("•••"));
+        assert!(!all.contains("abc"));
+        assert!(all.contains("‹ keyring ›"));
+    }
+
+    #[test]
+    fn edit_title_and_unchanged_hint() {
+        let p = sample("home", PasswordSource::Keyring);
+        let all = draw(&ProfileForm::new(Some(&p), vec![]), 80, 24).join("\n");
+        assert!(all.contains("edit profile · home"), "{all}");
+        assert!(all.contains("(unchanged)"));
+        assert!(all.contains("[x]"), "insecure shown");
+        let all = draw(&ProfileForm::new(None, vec![]), 80, 24).join("\n");
+        assert!(all.contains("add profile"));
+    }
+
+    #[test]
+    fn error_shows_in_title() {
+        let mut f = ProfileForm::new(None, vec![]);
+        save(&mut f);
+        let all = draw(&f, 80, 24).join("\n");
+        assert!(all.contains("name is required"), "{all}");
     }
 
     #[test]
