@@ -22,6 +22,10 @@ pub struct HitAreas {
     /// The picker card; its first profile row is two rows below its top.
     pub picker: Rect,
     pub picker_skip: usize,
+    /// The message header's path row; a click copies the topic.
+    pub header_topic: Rect,
+    /// The payload pane's `⧉ copy` title; a click copies the payload.
+    pub payload_copy: Rect,
 }
 
 fn inner(r: Rect) -> Rect {
@@ -38,6 +42,7 @@ impl App {
             _ => None,
         };
         let left_click = ev.kind == MouseEventKind::Down(MouseButton::Left);
+        let right_click = ev.kind == MouseEventKind::Down(MouseButton::Right);
         match self.mode {
             Mode::Help | Mode::Stats if matches!(ev.kind, MouseEventKind::Down(_)) => {
                 self.mode = Mode::Browse;
@@ -52,7 +57,8 @@ impl App {
                     self.picker.up();
                 }
             }
-            Mode::Browse if left_click => self.browse_click(at, hit),
+            Mode::Browse if left_click => return self.browse_click(at, hit),
+            Mode::Browse if right_click => return self.tree_copy_click(at, inner(hit.tree)),
             Mode::Browse => {
                 if let Some(down) = wheel {
                     self.browse_wheel(at, hit, down);
@@ -81,7 +87,14 @@ impl App {
         Effect::None
     }
 
-    fn browse_click(&mut self, at: Position, hit: HitAreas) {
+    fn browse_click(&mut self, at: Position, hit: HitAreas) -> Effect {
+        // The copy targets sit on top of the panes, so they go first.
+        if hit.header_topic.contains(at) {
+            return self.copy(true);
+        }
+        if hit.payload_copy.contains(at) {
+            return self.copy(false);
+        }
         if hit.tree.contains(at) {
             self.dirty = true;
             self.focus = Focus::Tree;
@@ -94,6 +107,7 @@ impl App {
             self.focus = Focus::History;
             self.history_click(at, inner(hit.history), hit.history_offset);
         }
+        Effect::None
     }
 
     /// Select the clicked row. A click on its `▸`/`▾` marker, or on the row
@@ -112,6 +126,22 @@ impl App {
         self.select(row.id);
         if row.has_children && (on_marker || was_selected) {
             self.handle_action(Action::ToggleExpand);
+        }
+    }
+
+    /// A right click on a tree row copies that row's topic; the selection
+    /// stays where it was.
+    fn tree_copy_click(&mut self, at: Position, area: Rect) -> Effect {
+        if !area.contains(at) {
+            return Effect::None;
+        }
+        let idx = usize::from(at.y - area.y) + self.tree_offset;
+        match self.rows().get(idx) {
+            Some(row) => Effect::Copy {
+                what: "topic",
+                text: self.tree.full_topic(row.id),
+            },
+            None => Effect::None,
         }
     }
 

@@ -383,6 +383,8 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
         let block = theme::pane("message", app.focus != Focus::Tree);
         app.hit.set(HitAreas {
             payload: area,
+            header_topic: Rect::default(),
+            payload_copy: Rect::default(),
             ..app.hit.get()
         });
         let inner = block.inner(area);
@@ -425,9 +427,22 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
             .border_style(Style::new().fg(theme::MUTED));
         let inner = block.inner(meta);
         let rows = header_lines(&s, &topic, kind, &app.timestamp_format, now, inner.width);
+        app.hit.set(HitAreas {
+            header_topic: Rect { height: 1, ..inner },
+            ..app.hit.get()
+        });
         f.render_widget(Paragraph::new(rows.to_vec()).block(block), meta);
     } else {
         let row = header_compact(&s, &topic, kind, &app.timestamp_format, now, meta.width);
+        // The path is the row's first two spans (parents, leaf badge).
+        let path_w: usize = row.spans.iter().take(2).map(|s| s.content.width()).sum();
+        app.hit.set(HitAreas {
+            header_topic: Rect {
+                width: (path_w as u16).min(meta.width),
+                ..meta
+            },
+            ..app.hit.get()
+        });
         f.render_widget(Paragraph::new(row), meta);
     }
     let payload = match &app.chart {
@@ -541,8 +556,33 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
     let mut block = theme::pane(title, app.focus == Focus::Payload);
     let height = block.inner(area).height;
     app.payload_height.set(height);
-    let Some((body, _)) = body(app) else { return };
+    let Some((body, _)) = body(app) else {
+        app.hit.set(HitAreas {
+            payload_copy: Rect::default(),
+            ..app.hit.get()
+        });
+        return;
+    };
     let body = &*body;
+    let focused = app.focus == Focus::Payload;
+    let copy_label = " ⧉ copy ";
+    let copy_w = copy_label.width() as u16;
+    block = block.title(
+        Line::styled(
+            copy_label,
+            Style::new().fg(if focused { theme::ACCENT } else { theme::MUTED }),
+        )
+        .right_aligned(),
+    );
+    app.hit.set(HitAreas {
+        payload_copy: Rect {
+            x: (area.x + area.width).saturating_sub(1 + copy_w),
+            y: area.y,
+            width: copy_w.min(area.width.saturating_sub(2)),
+            height: 1,
+        },
+        ..app.hit.get()
+    });
     // The stored scroll may predate a resize or a new message.
     let max = body.len().saturating_sub(height as usize);
     let skip = app.payload_scroll.min(max);

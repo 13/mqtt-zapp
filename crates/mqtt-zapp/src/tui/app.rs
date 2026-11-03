@@ -1040,7 +1040,7 @@ impl App {
     }
 
     /// Copy the selected topic, or the payload on screen (history-aware).
-    fn copy(&mut self, topic: bool) -> Effect {
+    pub(super) fn copy(&mut self, topic: bool) -> Effect {
         let text = if topic {
             self.selected.map(|id| self.tree.full_topic(id))
         } else {

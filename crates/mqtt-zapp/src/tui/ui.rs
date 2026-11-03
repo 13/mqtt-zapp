@@ -832,6 +832,77 @@ mod tests {
             .unwrap_or_else(|| panic!("{needle}: {}", text(b))) as u16
     }
 
+    /// Screen position of the first occurrence of `needle`.
+    fn find_at(b: &Buffer, needle: &str) -> (u16, u16) {
+        let t = text(b);
+        for (y, l) in t.lines().enumerate() {
+            if let Some(i) = l.find(needle) {
+                return (l[..i].chars().count() as u16, y as u16);
+            }
+        }
+        panic!("{needle} not on screen: {t}");
+    }
+
+    fn copied(e: Effect) -> (&'static str, String) {
+        match e {
+            Effect::Copy { what, text } => (what, text),
+            e => panic!("expected a copy, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn click_header_path_copies_topic() {
+        let mut a = app_with(&[("dev/x", b"hello")]);
+        a.selected = a.tree.find("dev/x");
+        let b = draw(&mut a, 100, 24);
+        let (x, y) = find_at(&b, "│ dev/ x ");
+        assert_eq!(copied(click(&mut a, x + 3, y)), ("topic", "dev/x".into()));
+        // The leaf badge is part of the path too.
+        assert_eq!(copied(click(&mut a, x + 7, y)).0, "topic");
+    }
+
+    #[test]
+    fn click_copy_button_copies_payload() {
+        let mut a = app_with(&[("dev/x", b"hello")]);
+        a.selected = a.tree.find("dev/x");
+        let b = draw(&mut a, 100, 24);
+        let (x, y) = find_at(&b, "⧉ copy");
+        assert_eq!(copied(click(&mut a, x + 2, y)), ("payload", "hello".into()));
+    }
+
+    #[test]
+    fn click_copy_button_copies_pinned_history_entry() {
+        let mut a = app_with(&[("dev/x", b"first"), ("dev/x", b"second")]);
+        a.selected = a.tree.find("dev/x");
+        a.history_sel = Some(0);
+        let b = draw(&mut a, 100, 24);
+        let (x, y) = find_at(&b, "⧉ copy");
+        assert_eq!(copied(click(&mut a, x, y)).1, "first");
+    }
+
+    #[test]
+    fn right_click_tree_row_copies_that_topic_without_selecting() {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let mut a = app_with(&[("a", b"1"), ("b", b"2")]);
+        a.selected = a.tree.find("a");
+        let b = draw(&mut a, 100, 24);
+        let e = mouse(
+            &mut a,
+            MouseEventKind::Down(MouseButton::Right),
+            10,
+            tree_row(&b, "b  2"),
+        );
+        assert_eq!(copied(e), ("topic", "b".into()));
+        assert_eq!(a.selected, a.tree.find("a"));
+    }
+
+    #[test]
+    fn click_header_with_nothing_shown_is_none() {
+        let mut a = app_with(&[("dev/x", b"hello")]);
+        let _ = draw(&mut a, 100, 24);
+        assert!(matches!(click(&mut a, 60, 2), Effect::None));
+    }
+
     #[test]
     fn click_tree_row_selects_and_focuses() {
         let mut a = app_with(&[("a", b"1"), ("b", b"2")]);
