@@ -1,0 +1,8 @@
+[package]
+name = "mqtt-zapp-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
