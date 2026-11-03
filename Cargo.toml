@@ -6,3 +6,6 @@ members = ["crates/mqtt-zapp-core", "crates/mqtt-zapp"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+
+[profile.release]
+panic = "abort"

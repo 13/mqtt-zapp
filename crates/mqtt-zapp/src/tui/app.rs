@@ -31,7 +31,6 @@ pub enum Mode {
     Browse,
     SearchInput,
     Publish,
-    #[allow(dead_code)] // TODO(task 11): help overlay
     Help,
 }
 
@@ -145,7 +144,7 @@ pub struct App {
     pub body_cache: super::message_view::BodyCache,
     /// Rows the payload area had in the last frame; sizes half-page scrolls.
     pub payload_height: Cell<u16>,
-    keymap: Keymap,
+    pub keymap: Keymap,
     history_depth: usize,
     pending_connect: Option<Profile>,
     pub picker: PickerState,
@@ -413,7 +412,11 @@ impl App {
                 Effect::None
             }
             Mode::Publish => self.on_publish_key(key),
-            _ => Effect::None,
+            Mode::Help => {
+                self.mode = Mode::Browse;
+                self.dirty = true;
+                Effect::None
+            }
         }
     }
 
@@ -541,8 +544,8 @@ impl App {
             Action::Search => self.mode = Mode::SearchInput,
             Action::Cancel => self.clear_search(),
             Action::Publish => self.open_publish(),
-            // TODO(task 11): help.
-            Action::Select | Action::Help => {}
+            Action::Help => self.mode = Mode::Help,
+            Action::Select => {}
         }
         Effect::None
     }
@@ -1133,5 +1136,22 @@ mod tests {
             Some("published a/b")
         );
         assert_eq!(a.note_at(t0 + Duration::from_secs(6)), None);
+    }
+
+    #[test]
+    fn help_opens_on_question_mark_and_any_key_closes() {
+        let mut a = app();
+        a.mode = Mode::Browse;
+        let k = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        a.handle_key(k('?'));
+        assert_eq!(a.mode, Mode::Help);
+        // A key that is bound (q = quit) only closes the overlay.
+        assert!(matches!(a.handle_key(k('q')), Effect::None));
+        assert_eq!(a.mode, Mode::Browse);
+        a.handle_key(k('?'));
+        assert!(matches!(
+            a.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Effect::Quit
+        ));
     }
 }

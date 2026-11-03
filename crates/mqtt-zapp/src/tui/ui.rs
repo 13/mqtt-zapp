@@ -12,7 +12,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph};
 use std::time::Instant;
 
 pub const MIN_WIDTH: u16 = 40;
@@ -67,7 +67,55 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
     if let (Mode::Publish, Some(form)) = (app.mode, &app.publish) {
         super::publish::render(f, main, form);
     }
+    if app.mode == Mode::Help {
+        render_help(f, main, app);
+    }
     f.render_widget(Paragraph::new(status_line(app)), status);
+}
+
+/// Effective keymap on the left; keys that bypass the keymap on the right.
+fn render_help(f: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered()
+        .title("help - any key closes")
+        .border_style(border_style(true));
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let [left, right] =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(inner);
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    let mut lines = vec![Line::styled("keymap ([keys] in settings.toml)", bold)];
+    for (action, keys) in app.keymap.bindings() {
+        let keys: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+        let keys = if keys.is_empty() {
+            "(unbound)".to_owned()
+        } else {
+            keys.join(", ")
+        };
+        lines.push(Line::from(format!("{:<14}{keys}", action.name())));
+    }
+    f.render_widget(Paragraph::new(lines), left);
+    let mut lines = vec![Line::styled("publish form", bold)];
+    lines.extend(
+        [
+            "ctrl-s    send",
+            "ctrl-f    format json",
+            "tab       next field",
+            "esc       close",
+        ]
+        .map(Line::from),
+    );
+    lines.push(Line::default());
+    lines.push(Line::styled("search", bold));
+    lines.extend(
+        [
+            "type      filter topics",
+            "enter     keep filter",
+            "esc       clear",
+        ]
+        .map(Line::from),
+    );
+    f.render_widget(Paragraph::new(lines), right);
 }
 
 fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
@@ -527,5 +575,31 @@ mod tests {
             Instant::now() - std::time::Duration::from_secs(6),
         ));
         assert!(!last_line(&draw(&mut a, 100, 24)).contains("old"));
+    }
+
+    #[test]
+    fn help_overlay_lists_effective_keymap() {
+        let mut st = Settings::default();
+        st.keys.insert("quit".into(), "x".into());
+        let mut a = App::new(Launch::Picker, ProfileStore::default(), st).unwrap();
+        a.mode = Mode::Browse;
+        a.handle_action(Action::Help);
+        assert_eq!(a.mode, Mode::Help);
+        let s = text(&draw(&mut a, 100, 30));
+        let line = s.lines().find(|l| l.contains("quit")).expect("quit row");
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let at = words.iter().position(|w| w.contains("quit")).unwrap();
+        assert_eq!(words[at + 1], "x", "{line}");
+        assert!(!words.contains(&"q"), "{line}");
+        for want in [
+            "toggle_diff",
+            "d",
+            "ctrl-d",
+            "k, up",
+            "ctrl-s",
+            "publish form",
+        ] {
+            assert!(s.contains(want), "{want}: {s}");
+        }
     }
 }

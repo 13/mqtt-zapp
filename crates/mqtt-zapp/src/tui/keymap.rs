@@ -4,6 +4,7 @@
 use anyhow::{Result, anyhow, bail};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
@@ -47,6 +48,14 @@ impl Action {
         (Action::ScrollDown, "scroll_down", &["ctrl-d"]),
         (Action::ScrollUp, "scroll_up", &["ctrl-u"]),
     ];
+
+    /// The snake_case name used in `[keys]`.
+    pub fn name(self) -> &'static str {
+        Self::DEFAULTS
+            .iter()
+            .find(|(a, _, _)| *a == self)
+            .map_or("", |(_, n, _)| n)
+    }
 
     fn from_name(name: &str) -> Option<Action> {
         Self::DEFAULTS
@@ -114,6 +123,37 @@ impl KeySpec {
     }
 }
 
+/// The text form `parse` accepts: `ctrl-s`, `G`, `esc`, `space`.
+impl fmt::Display for KeySpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.1.contains(KeyModifiers::CONTROL) {
+            f.write_str("ctrl-")?;
+        }
+        if self.1.contains(KeyModifiers::ALT) {
+            f.write_str("alt-")?;
+        }
+        match self.0 {
+            KeyCode::Esc => f.write_str("esc"),
+            KeyCode::Enter => f.write_str("enter"),
+            KeyCode::Tab => f.write_str("tab"),
+            KeyCode::BackTab => f.write_str("backtab"),
+            KeyCode::Char(' ') => f.write_str("space"),
+            KeyCode::Char(c) => write!(f, "{c}"),
+            KeyCode::Backspace => f.write_str("backspace"),
+            KeyCode::Delete => f.write_str("delete"),
+            KeyCode::Up => f.write_str("up"),
+            KeyCode::Down => f.write_str("down"),
+            KeyCode::Left => f.write_str("left"),
+            KeyCode::Right => f.write_str("right"),
+            KeyCode::Home => f.write_str("home"),
+            KeyCode::End => f.write_str("end"),
+            KeyCode::PageUp => f.write_str("pageup"),
+            KeyCode::PageDown => f.write_str("pagedown"),
+            other => write!(f, "{other:?}"),
+        }
+    }
+}
+
 pub struct Keymap {
     bindings: HashMap<KeySpec, Action>,
 }
@@ -140,6 +180,25 @@ impl Keymap {
             bindings.insert(spec, action);
         }
         Ok(Keymap { bindings })
+    }
+
+    /// Every action with its keys, in `Action` declaration order; each
+    /// action's keys sorted by display string. An action whose keys were all
+    /// taken by overrides has an empty list.
+    pub fn bindings(&self) -> Vec<(Action, Vec<KeySpec>)> {
+        Action::DEFAULTS
+            .iter()
+            .map(|(action, _, _)| {
+                let mut keys: Vec<KeySpec> = self
+                    .bindings
+                    .iter()
+                    .filter(|(_, a)| *a == action)
+                    .map(|(k, _)| *k)
+                    .collect();
+                keys.sort_by_cached_key(|k| k.to_string());
+                (*action, keys)
+            })
+            .collect()
     }
 
     pub fn lookup(&self, ev: KeyEvent) -> Option<Action> {
@@ -239,5 +298,60 @@ mod tests {
     #[test]
     fn bad_key_in_override_errors() {
         assert!(Keymap::from_settings(&[("quit".into(), "ctrl-".into())].into()).is_err());
+    }
+
+    #[test]
+    fn default_bindings_round_trip_through_display_and_parse() {
+        let k = Keymap::from_settings(&Default::default()).unwrap();
+        let all = k.bindings();
+        assert_eq!(all.len(), Action::DEFAULTS.len());
+        for (action, keys) in &all {
+            assert!(!keys.is_empty(), "{}", action.name());
+            for spec in keys {
+                let shown = spec.to_string();
+                assert_eq!(KeySpec::parse(&shown).unwrap(), *spec, "{shown}");
+            }
+        }
+        let shown = |a: Action| -> Vec<String> {
+            all.iter()
+                .find(|(x, _)| *x == a)
+                .unwrap()
+                .1
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        };
+        assert_eq!(shown(Action::Up), ["k", "up"]);
+        assert_eq!(shown(Action::ScrollDown), ["ctrl-d"]);
+        assert_eq!(shown(Action::ToggleExpand), ["space"]);
+        assert_eq!(shown(Action::Bottom), ["G"]);
+        assert_eq!(shown(Action::Help), ["?"]);
+        // Declaration order.
+        assert_eq!(all[0].0, Action::Up);
+        assert_eq!(all[16].0, Action::ScrollUp);
+    }
+
+    #[test]
+    fn bindings_reflect_overrides() {
+        let k = Keymap::from_settings(&[("quit".into(), "x".into())].into()).unwrap();
+        let quit = k.bindings().into_iter().find(|(a, _)| *a == Action::Quit);
+        assert_eq!(quit.unwrap().1, vec![KeySpec::parse("x").unwrap()]);
+    }
+
+    /// The README key table is generated from the defaults; keep it in sync.
+    #[test]
+    fn readme_key_table_matches_defaults() {
+        let readme = include_str!("../../../../README.md");
+        let k = Keymap::from_settings(&Default::default()).unwrap();
+        for (action, keys) in k.bindings() {
+            let keys: Vec<String> = keys.iter().map(|k| format!("`{k}`")).collect();
+            let prefix = format!("| {} | `{}` |", keys.join(", "), action.name());
+            assert!(
+                readme.lines().any(|l| l.starts_with(&prefix)),
+                "README row missing: {prefix}"
+            );
+        }
+        let rows = readme.lines().filter(|l| l.starts_with("| `")).count();
+        assert_eq!(rows, Action::DEFAULTS.len());
     }
 }
