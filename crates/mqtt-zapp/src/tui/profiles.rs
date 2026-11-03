@@ -98,6 +98,15 @@ pub fn persist_delete(name: &str, s: &dyn Secrets) -> Result<ProfileStore> {
     Ok(store)
 }
 
+/// Save the picker's custom order: names first, in order; profiles added on
+/// disk meanwhile keep their place after them.
+pub fn persist_order(names: &[String]) -> Result<ProfileStore> {
+    let mut store = ProfileStore::load()?;
+    store.reorder(names);
+    store.save()?;
+    Ok(store)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +356,27 @@ mod tests {
             .is_err()
         );
         assert!(persist_delete("y", &FakeSecrets::default()).is_err());
+        assert_eq!(
+            std::fs::read_to_string(d.0.join("profiles.toml")).unwrap(),
+            "not = [valid"
+        );
+    }
+
+    #[test]
+    fn persist_order_keeps_profiles_added_on_disk() {
+        let _d = ConfigDir::new("order");
+        on_disk(vec![profile("a", NoPw), profile("b", NoPw), profile("x", NoPw)]);
+        let s = persist_order(&["b".into(), "a".into()]).unwrap();
+        assert_eq!(names(&s), ["b", "a", "x"]);
+        assert_eq!(names(&ProfileStore::load().unwrap()), ["b", "a", "x"]);
+    }
+
+    #[test]
+    fn persist_order_broken_file_is_not_overwritten() {
+        let d = ConfigDir::new("order-broken");
+        std::fs::create_dir_all(&d.0).unwrap();
+        std::fs::write(d.0.join("profiles.toml"), "not = [valid").unwrap();
+        assert!(persist_order(&["a".into()]).is_err());
         assert_eq!(
             std::fs::read_to_string(d.0.join("profiles.toml")).unwrap(),
             "not = [valid"

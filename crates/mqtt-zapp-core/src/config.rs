@@ -227,6 +227,19 @@ impl ProfileStore {
         Ok(())
     }
 
+    /// Put the profiles named in `names` first, in that order; the rest keep
+    /// their relative order after them. Unknown names are ignored.
+    pub fn reorder(&mut self, names: &[String]) {
+        let rank = |p: &Profile| {
+            names
+                .iter()
+                .position(|n| *n == p.name)
+                .unwrap_or(names.len())
+        };
+        // Stable, so unnamed profiles keep their order.
+        self.profiles.sort_by_key(rank);
+    }
+
     pub fn remove(&mut self, name: &str) -> bool {
         let before = self.profiles.len();
         self.profiles.retain(|p| p.name != name);
@@ -351,6 +364,20 @@ mod tests {
         let s = Settings::load().unwrap();
         assert_eq!(s.history_depth, 100);
         assert!(s.keys.is_empty());
+    }
+
+    #[test]
+    fn reorder_moves_named_first() {
+        let mut s = ProfileStore::default();
+        for n in ["a", "b", "c"] {
+            s.upsert(sample(n));
+        }
+        s.reorder(&["c".into(), "a".into()]);
+        let names: Vec<_> = s.profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["c", "a", "b"]);
+        s.reorder(&["zz".into()]);
+        let names: Vec<_> = s.profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["c", "a", "b"]);
     }
 
     #[test]
