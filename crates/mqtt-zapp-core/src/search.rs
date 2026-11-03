@@ -3,10 +3,14 @@
 //! or the latest payload. Regex mode is opt-in (`ctrl-r` in the TUI).
 
 use crate::{NodeId, TopicTree};
-use regex::{Regex, RegexBuilder};
+use regex::RegexBuilder;
+use regex::bytes::{Regex as BytesRegex, RegexBuilder as BytesRegexBuilder};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::ops::Range;
+
+/// Only this many leading payload bytes are searched.
+pub const SEARCH_PAYLOAD_MAX: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub enum QueryMode {
@@ -18,9 +22,17 @@ pub enum QueryMode {
 /// A parsed query, ready to match many nodes.
 #[derive(Debug, Clone)]
 pub enum Query {
-    /// Lowercased terms; all must match.
-    Terms(Vec<String>),
-    Regex(Regex),
+    /// All terms must match. `regexes` are the escaped, case-insensitive byte
+    /// matchers; `terms` are the lowercased originals, used for highlighting.
+    Terms {
+        terms: Vec<String>,
+        regexes: Vec<BytesRegex>,
+    },
+    /// `bytes` matches raw payloads; `text` highlights `&str`.
+    Regex {
+        text: regex::Regex,
+        bytes: BytesRegex,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,39 +94,53 @@ impl Query {
                 if t.is_empty() {
                     return Ok(None);
                 }
-                Query::Terms(t)
+                let regexes = t
+                    .iter()
+                    .map(|t| {
+                        BytesRegexBuilder::new(&regex::escape(t))
+                            .case_insensitive(true)
+                            .size_limit(1 << 20)
+                            .build()
+                            .map_err(|e| e.to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Query::Terms { terms: t, regexes }
             }
-            QueryMode::Regex => Query::Regex(
-                RegexBuilder::new(query)
+            QueryMode::Regex => Query::Regex {
+                text: RegexBuilder::new(query)
                     .case_insensitive(true)
                     .size_limit(1 << 20)
                     .build()
                     .map_err(|e| e.to_string())?,
-            ),
+                bytes: BytesRegexBuilder::new(query)
+                    .case_insensitive(true)
+                    .size_limit(1 << 20)
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            },
         }))
     }
 
     /// Whether a node matches. Terms may each match the path or the payload.
-    fn matches(&self, path: &str, payload: &str) -> bool {
+    fn matches(&self, path: &str, payload: &[u8]) -> bool {
         match self {
-            Query::Terms(terms) => {
-                let (path, payload) = (path.to_lowercase(), payload.to_lowercase());
-                terms
-                    .iter()
-                    .all(|t| path.contains(t.as_str()) || payload.contains(t.as_str()))
+            Query::Terms { regexes, .. } => regexes
+                .iter()
+                .all(|re| re.is_match(path.as_bytes()) || re.is_match(payload)),
+            Query::Regex { bytes, .. } => {
+                bytes.is_match(path.as_bytes()) || bytes.is_match(payload)
             }
-            Query::Regex(re) => re.is_match(path) || re.is_match(payload),
         }
     }
 
     /// Sorted, merged byte ranges of every match in `haystack`.
     pub fn ranges(&self, haystack: &str) -> Vec<Range<usize>> {
         let mut all: Vec<Range<usize>> = match self {
-            Query::Terms(terms) => terms
+            Query::Terms { terms, .. } => terms
                 .iter()
                 .flat_map(|t| term_ranges(haystack, t))
                 .collect(),
-            Query::Regex(re) => re
+            Query::Regex { text, .. } => text
                 .find_iter(haystack)
                 .filter(|m| !m.is_empty())
                 .map(|m| m.range())
@@ -140,14 +166,30 @@ pub fn filter(tree: &TopicTree, query: &str, mode: QueryMode) -> Result<Option<F
     };
     let mut matches = HashSet::new();
     let mut visible = HashSet::from([TopicTree::ROOT]);
-    for id in (1..tree.len()).filter(|&id| tree.is_alive(id)) {
+    // Depth-first with one reused path buffer; `full_topic` joins names with
+    // '/', so only the first level has no leading slash. Each stack entry
+    // carries its parent's path length, to truncate back to.
+    let mut path = String::new();
+    let mut stack: Vec<(NodeId, usize)> = tree
+        .node(TopicTree::ROOT)
+        .children
+        .values()
+        .rev()
+        .map(|&id| (id, 0))
+        .collect();
+    while let Some((id, parent_len)) = stack.pop() {
+        if !tree.is_alive(id) {
+            continue;
+        }
+        path.truncate(parent_len);
+        if parent_len > 0 || tree.node(id).parent != Some(TopicTree::ROOT) {
+            path.push('/');
+        }
+        path.push_str(&tree.node(id).name);
         let node = tree.node(id);
-        let payload = node
-            .latest
-            .as_ref()
-            .map(|m| String::from_utf8_lossy(&m.payload))
-            .unwrap_or_default();
-        if compiled.matches(&tree.full_topic(id), &payload) {
+        let payload: &[u8] = node.latest.as_ref().map_or(&[], |m| &m.payload);
+        let payload = &payload[..payload.len().min(SEARCH_PAYLOAD_MAX)];
+        if compiled.matches(&path, payload) {
             matches.insert(id);
             let mut cur = Some(id);
             while let Some(i) = cur {
@@ -156,6 +198,10 @@ pub fn filter(tree: &TopicTree, query: &str, mode: QueryMode) -> Result<Option<F
                 }
                 cur = tree.node(i).parent;
             }
+        }
+        let here = path.len();
+        for &child in node.children.values().rev() {
+            stack.push((child, here));
         }
     }
     Ok(Some(Filter {
@@ -371,6 +417,46 @@ mod tests {
     }
 
     #[test]
+    fn match_beyond_payload_cap_is_ignored() {
+        let mut p = "x".repeat(SEARCH_PAYLOAD_MAX);
+        p.push_str("needle");
+        let t = tree_with(&[("a", &p)]);
+        assert!(filter(&t, "needle").unwrap().matches.is_empty());
+        let t = tree_with(&[("a", "needle")]);
+        assert_eq!(filter(&t, "needle").unwrap().matches.len(), 1);
+    }
+
+    #[test]
+    fn non_utf8_payload_matches_ascii_term() {
+        let mut t = TopicTree::new(1);
+        t.insert(
+            "bin",
+            Message {
+                payload: Bytes::from_static(b"\xff\xfeTEMP=21"),
+                qos: 0,
+                retain: false,
+                received_at: SystemTime::now(),
+                truncated_from: None,
+            },
+        );
+        assert_eq!(filter(&t, "temp").unwrap().matches.len(), 1);
+    }
+
+    #[test]
+    fn path_matches_use_full_topic_joining() {
+        let t = tree_with(&[("a//b", "v"), ("c/d", "v")]);
+        assert_eq!(hits(&t, "a//b", QueryMode::Plain), ["a//b"]);
+        assert_eq!(hits(&t, "^c/d$", QueryMode::Regex), ["c/d"]);
+        assert_eq!(hits(&t, "^a//b$", QueryMode::Regex), ["a//b"]);
+    }
+
+    #[test]
+    fn unicode_case_folding_in_payload() {
+        let t = tree_with(&[("a", "GRÜSSE")]);
+        assert_eq!(filter(&t, "grüsse").unwrap().matches.len(), 1);
+    }
+
+    #[test]
     fn match_ranges_case_insensitive() {
         assert_eq!(
             match_ranges("aWZRbwzr", "wzr", QueryMode::Plain),
@@ -396,6 +482,21 @@ mod tests {
         super::filter(&t, r"dev_49\d9", QueryMode::Regex).unwrap();
         assert!(
             s.elapsed() < Duration::from_millis(200),
+            "{:?}",
+            s.elapsed()
+        );
+
+        // 50k topics x 1 KB payloads
+        let mut t = TopicTree::new(1);
+        for i in 0..50_000 {
+            t.insert(&format!("tasmota/tele/dev_{i}/SENSOR"), m(&p));
+        }
+        let s = Instant::now();
+        filter(&t, "dev_49999");
+        filter(&t, "tele dev_49999 xxx");
+        super::filter(&t, r"dev_499\d9", QueryMode::Regex).unwrap();
+        assert!(
+            s.elapsed() < Duration::from_millis(150),
             "{:?}",
             s.elapsed()
         );

@@ -460,6 +460,7 @@ fn new_matching_topic_appears_while_filtered() {
     assert_eq!(a.mode, Mode::Browse);
     assert!(a.filter.is_some(), "enter keeps the filter");
     a.apply_core_event(msg("new/wzr2", "v"));
+    a.last_filter_rebuild -= Duration::from_millis(500);
     a.on_tick();
     assert!(row_names(&a).contains(&"new/wzr2".to_string()));
 }
@@ -550,11 +551,44 @@ fn typing_q_in_search_does_not_quit() {
 fn on_tick_rebuilds_active_filter() {
     let mut a = browse(&["a/wzr"]);
     a.search = "wzr".into();
+    a.last_filter_rebuild -= Duration::from_millis(500);
     a.on_tick();
     assert_eq!(a.filter.as_ref().unwrap().matches.len(), 1);
     a.apply_core_event(msg("b/wzr2", "v"));
+    a.last_filter_rebuild -= Duration::from_millis(500);
     a.on_tick();
     assert_eq!(a.filter.as_ref().unwrap().matches.len(), 2);
+}
+
+#[test]
+fn on_tick_throttles_filter_rebuild() {
+    let mut a = browse(&["a/wzr"]);
+    a.search = "wzr".into();
+    a.last_filter_rebuild -= Duration::from_millis(500);
+    a.on_tick();
+    let n = a.filter_builds.get();
+    a.apply_core_event(msg("b/wzr2", "v"));
+    a.on_tick();
+    assert_eq!(a.filter_builds.get(), n, "second tick is throttled");
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 1);
+    a.last_filter_rebuild -= Duration::from_millis(500);
+    a.on_tick();
+    assert_eq!(
+        a.filter_builds.get(),
+        n + 1,
+        "the pending change still lands"
+    );
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 2);
+}
+
+#[test]
+fn keystroke_rebuilds_filter_immediately() {
+    let mut a = browse(&["a/wzr"]);
+    a.mode = Mode::SearchInput;
+    a.last_filter_rebuild = Instant::now();
+    let n = a.filter_builds.get();
+    a.on_search_key(key(KeyCode::Char('w')));
+    assert_eq!(a.filter_builds.get(), n + 1);
 }
 
 #[test]

@@ -233,6 +233,9 @@ pub enum ConfirmAction {
 
 const STORE_BROKEN: &str = "profiles.toml has errors – fix it by hand first";
 
+/// Minimum gap between tick-driven live-filter rebuilds.
+const FILTER_REBUILD_EVERY: Duration = Duration::from_millis(500);
+
 pub struct App {
     pub tree: TopicTree,
     pub expanded: Expanded,
@@ -241,6 +244,11 @@ pub struct App {
     pub filter: Option<Filter>,
     /// Bumped by `set_filter`; part of the rows cache key.
     filter_gen: u64,
+    /// When the filter was last rebuilt; `on_tick` rebuilds at most every
+    /// `FILTER_REBUILD_EVERY`.
+    last_filter_rebuild: Instant,
+    #[cfg(test)]
+    filter_builds: Cell<u32>,
     pub search: String,
     /// `ctrl-r` in the search input: the query is a regex.
     pub search_regex: bool,
@@ -365,6 +373,9 @@ impl App {
             selected: None,
             filter: None,
             filter_gen: 0,
+            last_filter_rebuild: Instant::now(),
+            #[cfg(test)]
+            filter_builds: Cell::new(0),
             search: String::new(),
             search_regex: false,
             search_error: None,
@@ -499,8 +510,16 @@ impl App {
     /// Called every UI tick (100 ms): refresh the live filter so new messages
     /// show up in it, and keep redrawing while something is flashing.
     pub fn on_tick(&mut self) {
-        if std::mem::take(&mut self.tree_changed) && !self.search.is_empty() {
-            self.rebuild_filter();
+        // Throttled: a busy broker changes the tree every tick, and a rebuild
+        // scans every node. A skipped change stays pending in `tree_changed`.
+        if self.tree_changed
+            && (self.search.is_empty()
+                || self.last_filter_rebuild.elapsed() >= FILTER_REBUILD_EVERY)
+        {
+            self.tree_changed = false;
+            if !self.search.is_empty() {
+                self.rebuild_filter();
+            }
         }
         let now = Instant::now();
         if self.status_note.is_some() {
@@ -893,6 +912,9 @@ impl App {
     /// Recompute the filter from `search`; if the selection is not shown,
     /// move it to the first match.
     fn rebuild_filter(&mut self) {
+        self.last_filter_rebuild = Instant::now();
+        #[cfg(test)]
+        self.filter_builds.set(self.filter_builds.get() + 1);
         let mode = if self.search_regex {
             search::QueryMode::Regex
         } else {
