@@ -206,10 +206,10 @@ fn expand_all_and_collapse_all_subtree() {
             .map(|t| a.tree.find(t).unwrap())
             .collect::<HashSet<_>>()
     };
-    assert_eq!(a.expanded, ids(&a, &["a", "a/b", "a/d"]));
+    assert_eq!(*a.expanded.as_set(), ids(&a, &["a", "a/b", "a/d"]));
     a.expanded.insert(a.tree.find("z").unwrap());
     a.handle_action(Action::CollapseAll);
-    assert_eq!(a.expanded, ids(&a, &["z"]));
+    assert_eq!(*a.expanded.as_set(), ids(&a, &["z"]));
 }
 
 fn ctrl_key(c: char) -> KeyEvent {
@@ -510,7 +510,7 @@ fn enter_keeping_filter_reveals_selection() {
     let deep = a.tree.find("muh/esp/esp32-WZR1/LWT").unwrap();
     a.selected = Some(deep);
     a.handle_key(key(KeyCode::Enter));
-    a.filter = None;
+    a.set_filter(None);
     assert!(a.rows().iter().any(|r| r.id == deep));
 }
 
@@ -1680,4 +1680,128 @@ fn zero_payload_cap_means_unlimited() {
     let m = n.latest.as_ref().unwrap();
     assert_eq!((m.payload.len(), m.truncated_from), (3000, None));
     assert!(n.retained, "a non-empty retained payload stays retained");
+}
+
+#[test]
+fn rows_are_cached_between_calls() {
+    let mut a = browse(&["a/b", "c"]);
+    a.handle_action(Action::Down);
+    let first = a.rows();
+    a.on_tick();
+    assert!(std::rc::Rc::ptr_eq(&first, &a.rows()));
+    // A message to a known topic keeps the shape (Name sort).
+    a.apply_core_event(msg("c", "again"));
+    assert!(std::rc::Rc::ptr_eq(&first, &a.rows()));
+}
+
+#[test]
+fn rows_rebuild_on_expand_filter_sort_and_new_topic() {
+    let mut a = browse(&["a/b", "c/wzr"]);
+    a.handle_action(Action::Down);
+    let changed = |a: &mut App, f: &dyn Fn(&mut App)| {
+        let before = a.rows();
+        f(a);
+        let after = a.rows();
+        assert!(!std::rc::Rc::ptr_eq(&before, &after));
+        after
+    };
+    let rows = changed(&mut a, &|a| {
+        a.handle_action(Action::Expand);
+    });
+    assert_eq!(rows.len(), 3, "expand shows a/b");
+    let rows = changed(&mut a, &|a| {
+        a.handle_action(Action::Search);
+        type_str(a, "wzr");
+    });
+    assert!(!rows.iter().any(|r| r.id == a.tree.find("a").unwrap()));
+    let rows = changed(&mut a, &|a| {
+        a.handle_key(key(KeyCode::Esc));
+    });
+    assert!(rows.iter().any(|r| r.id == a.tree.find("a").unwrap()));
+    changed(&mut a, &|a| {
+        a.handle_action(Action::CycleSort);
+    });
+    let rows = changed(&mut a, &|a| {
+        a.apply_core_event(msg("d", "new"));
+    });
+    assert!(rows.iter().any(|r| r.id == a.tree.find("d").unwrap()));
+}
+
+#[test]
+fn rows_drop_removed_topic() {
+    let mut a = browse(&["a/b", "a/x"]);
+    a.selected = a.tree.find("a");
+    a.handle_action(Action::Expand);
+    let b = a.tree.find("a/b").unwrap();
+    assert!(a.rows().iter().any(|r| r.id == b));
+    a.selected = Some(b);
+    del_key(&mut a);
+    a.handle_key(key(KeyCode::Char('y')));
+    assert!(!a.tree.is_alive(b));
+    assert!(!a.rows().iter().any(|r| r.id == b));
+    // A direct remove too.
+    let x = a.tree.find("a/x").unwrap();
+    a.rows();
+    a.tree.remove(x);
+    assert!(!a.rows().iter().any(|r| r.id == x));
+}
+
+#[test]
+fn count_sort_selection_follows_id_across_rebuild() {
+    let mut a = browse(&["b", "b", "a", "c"]);
+    a.handle_action(Action::CycleSort);
+    assert_eq!(a.sort, SortOrder::Count);
+    assert_eq!(row_names(&a), ["b", "a", "c"]);
+    a.selected = a.tree.find("b");
+    for _ in 0..2 {
+        a.apply_core_event(msg("a", "more"));
+    }
+    // Count order refreshes at most once a second: within the same second
+    // the cached order stands.
+    assert_eq!(row_names(&a), ["b", "a", "c"]);
+    a.created = a.created.checked_sub(Duration::from_secs(2)).unwrap();
+    let rows = a.rows();
+    assert_eq!(row_names(&a), ["a", "b", "c"]);
+    let i = rows
+        .iter()
+        .position(|r| Some(r.id) == a.tree.find("b"))
+        .unwrap();
+    a.handle_action(Action::Down);
+    assert_eq!(a.selected, Some(rows[i + 1].id));
+    assert_eq!(sel(&a), "c");
+}
+
+/// See `fast_enough_at_spec_scale`: CI runs this with `--release`.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timing: run with --release")]
+fn rows_fast_at_50k() {
+    let mut a = browse(&[]);
+    for i in 0..50_000 {
+        a.apply_core_event(plain(&format!("dev_{i}/x"), "v"));
+    }
+    for i in 0..50_000 {
+        a.expanded.insert(a.tree.find(&format!("dev_{i}")).unwrap());
+    }
+    let s = Instant::now();
+    let rows = a.rows();
+    let first = s.elapsed();
+    assert_eq!(rows.len(), 100_000);
+    let s = Instant::now();
+    let again = a.rows();
+    let cached = s.elapsed();
+    assert!(std::rc::Rc::ptr_eq(&rows, &again));
+    eprintln!("rows_fast_at_50k: first {first:?}, cached {cached:?}");
+    assert!(first < Duration::from_millis(60), "first {first:?}");
+    assert!(cached < Duration::from_millis(1), "cached {cached:?}");
+}
+
+#[test]
+fn reset_tree_drops_cached_rows() {
+    let mut a = browse(&["a"]);
+    assert_eq!(row_names(&a), ["a"]);
+    a.reset_tree();
+    assert!(a.rows().is_empty());
+    // Same shape generation as the old tree had; still the new rows.
+    a.apply_core_event(msg("b", "v"));
+    assert_eq!(row_names(&a), ["b"]);
 }

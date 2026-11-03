@@ -971,7 +971,7 @@ fn filter_chip_is_highlighted() {
 fn regex_chip_and_error_chip() {
     use mqtt_zapp_core::search::QueryMode;
     let mut a = app_with(&[("a/wzr", b"1")]);
-    a.filter = mqtt_zapp_core::search::filter(&a.tree, "w.r", QueryMode::Regex).unwrap();
+    a.set_filter(mqtt_zapp_core::search::filter(&a.tree, "w.r", QueryMode::Regex).unwrap());
     let last = last_line(&draw(&mut a, 100, 24));
     assert!(last.starts_with(" regex: w.r (1) "), "{last}");
     a.search_error = Some("unclosed group".into());

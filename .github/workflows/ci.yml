@@ -33,3 +33,5 @@ jobs:
       - run: cargo test --workspace
       - name: Search speed at spec scale (release build)
         run: cargo test --release -p mqtt-zapp-core --lib fast_enough_at_spec_scale
+      - name: Tree rows speed at 50k topics (release build)
+        run: cargo test --release -p mqtt-zapp rows_fast_at_50k

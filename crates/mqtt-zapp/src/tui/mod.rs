@@ -3,6 +3,7 @@
 //! terminal, the broker connection and a redraw tick.
 
 mod app;
+mod expanded;
 mod keymap;
 mod message_view;
 mod picker;

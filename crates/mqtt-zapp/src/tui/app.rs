@@ -2,6 +2,7 @@
 //! core events. Side effects (connecting, publishing, quitting) are returned
 //! as `Effect`s for the event loop to carry out, so `App` stays testable.
 
+use super::expanded::Expanded;
 use super::keymap::{Action, Keymap};
 use super::picker::{PasswordState, PickerState};
 use super::profile_form::{ProfileEdit, ProfileForm, ProfileOutcome};
@@ -19,9 +20,10 @@ use mqtt_zapp_core::search::{self, Filter};
 use mqtt_zapp_core::secrets::load_password;
 use mqtt_zapp_core::state::AppState;
 use mqtt_zapp_core::{NodeId, TopicTree};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 mod front;
@@ -233,9 +235,12 @@ const STORE_BROKEN: &str = "profiles.toml has errors – fix it by hand first";
 
 pub struct App {
     pub tree: TopicTree,
-    pub expanded: HashSet<NodeId>,
+    pub expanded: Expanded,
     pub selected: Option<NodeId>,
+    /// Set it through `set_filter`, which invalidates the cached rows.
     pub filter: Option<Filter>,
+    /// Bumped by `set_filter`; part of the rows cache key.
+    filter_gen: u64,
     pub search: String,
     /// `ctrl-r` in the search input: the query is a regex.
     pub search_regex: bool,
@@ -318,6 +323,23 @@ pub struct App {
     pub profile_form: Option<ProfileForm>,
     /// Pane rectangles of the last frame, for mouse hit-testing.
     pub hit: Cell<HitAreas>,
+    /// When this `App` was made: Count and Recent rows refresh once a
+    /// second counted from here.
+    created: Instant,
+    /// The last `rows()` result and what it was built from.
+    rows_cache: RefCell<Option<(RowsKey, Rc<[Row]>)>>,
+}
+
+/// Everything `visible_rows` depends on, cheaply comparable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RowsKey {
+    shape: u64,
+    expanded: u64,
+    filter: u64,
+    sort: SortOrder,
+    /// `None` for Name sort; else whole seconds since `App::created`, so
+    /// count and recency orders refresh at most once a second.
+    order_second: Option<u64>,
 }
 
 impl App {
@@ -339,9 +361,10 @@ impl App {
                 settings.max_history_mb.saturating_mul(1024 * 1024),
                 settings.max_topics,
             ),
-            expanded: HashSet::new(),
+            expanded: Expanded::default(),
             selected: None,
             filter: None,
+            filter_gen: 0,
             search: String::new(),
             search_regex: false,
             search_error: None,
@@ -389,6 +412,8 @@ impl App {
             theme: settings.theme,
             timestamp_format: valid_time_format(&settings.timestamp_format),
             sent_walk: None,
+            created: Instant::now(),
+            rows_cache: RefCell::new(None),
         })
     }
 
@@ -410,7 +435,9 @@ impl App {
         self.history_sel = None;
         self.diff_base = None;
         self.payload_scroll = 0;
-        self.filter = None;
+        self.set_filter(None);
+        // The new tree starts its `shape_gen` over: never reuse old rows.
+        self.rows_cache.take();
         self.search.clear();
         self.tree_offset = 0;
         self.msg_rate = MsgRate::default();
@@ -521,8 +548,40 @@ impl App {
             .is_some_and(|t| now.saturating_duration_since(t) < FLASH)
     }
 
-    pub fn rows(&self) -> Vec<Row> {
-        visible_rows(&self.tree, &self.expanded, self.filter.as_ref(), self.sort)
+    /// The tree pane's rows, cached until the tree's shape, the expanded
+    /// set, the filter or the sort changes (Count and Recent: or a second
+    /// passes). Cheap to call per frame and per key.
+    pub fn rows(&self) -> Rc<[Row]> {
+        let key = RowsKey {
+            shape: self.tree.shape_gen(),
+            expanded: self.expanded.generation(),
+            filter: self.filter_gen,
+            sort: self.sort,
+            order_second: match self.sort {
+                SortOrder::Name => None,
+                SortOrder::Count | SortOrder::Recent => Some(self.created.elapsed().as_secs()),
+            },
+        };
+        if let Some((k, rows)) = &*self.rows_cache.borrow()
+            && *k == key
+        {
+            return Rc::clone(rows);
+        }
+        let rows: Rc<[Row]> = visible_rows(
+            &self.tree,
+            self.expanded.as_set(),
+            self.filter.as_ref(),
+            self.sort,
+        )
+        .into();
+        *self.rows_cache.borrow_mut() = Some((key, Rc::clone(&rows)));
+        rows
+    }
+
+    /// Replace the filter; the only way to change it, so the rows cache sees it.
+    pub fn set_filter(&mut self, f: Option<Filter>) {
+        self.filter = f;
+        self.filter_gen += 1;
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
@@ -818,7 +877,7 @@ impl App {
         self.reveal_selected();
         self.search.clear();
         self.search_error = None;
-        self.filter = None;
+        self.set_filter(None);
     }
 
     /// Expand every ancestor of the selection, so it stays visible once a
@@ -841,7 +900,7 @@ impl App {
         };
         match search::filter(&self.tree, &self.search, mode) {
             Ok(f) => {
-                self.filter = f;
+                self.set_filter(f);
                 self.search_error = None;
             }
             // Keep the last valid filter while the regex is being typed.
@@ -853,7 +912,11 @@ impl App {
         if self.selected.is_some_and(|s| f.visible.contains(&s)) {
             return;
         }
-        let first = self.rows().into_iter().find(|r| f.matches.contains(&r.id));
+        let first = self
+            .rows()
+            .iter()
+            .copied()
+            .find(|r| f.matches.contains(&r.id));
         if let Some(row) = first {
             self.select(row.id);
         }
@@ -1116,7 +1179,7 @@ impl App {
 
     fn selected_row(&self) -> Option<Row> {
         let id = self.selected?;
-        self.rows().into_iter().find(|r| r.id == id)
+        self.rows().iter().copied().find(|r| r.id == id)
     }
 
     /// `to(index, row_count)` picks the new row; with nothing (visible)

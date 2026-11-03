@@ -80,6 +80,9 @@ pub struct TopicTree {
     max_topics: usize,
     /// Messages refused because their topic would exceed `max_topics`.
     dropped_topics: u64,
+    /// Bumped whenever a node is created or removed; see `shape_gen`.
+    #[serde(skip)]
+    shape_gen: u64,
 }
 
 impl TopicTree {
@@ -107,7 +110,15 @@ impl TopicTree {
             entries: 0,
             max_topics,
             dropped_topics: 0,
+            shape_gen: 0,
         }
+    }
+
+    /// Changes whenever a node is created or `remove` runs, so a view of the
+    /// tree's shape (its flattened rows) can be cached until it moves.
+    /// Message updates to existing nodes leave it alone.
+    pub fn shape_gen(&self) -> u64 {
+        self.shape_gen
     }
 
     /// Messages refused because the tree was at `max_topics`.
@@ -178,6 +189,7 @@ impl TopicTree {
                 self.dropped_topics += 1;
                 return None;
             }
+            self.shape_gen += 1;
             for level in topic.split('/').skip(found) {
                 let id = self.nodes.len();
                 self.nodes.push(TopicNode::new(level.to_owned(), Some(cur)));
@@ -241,6 +253,7 @@ impl TopicTree {
         else {
             return 0;
         };
+        self.shape_gen += 1;
         let removed_msgs = self.nodes[id].msg_count;
         let removed_topics =
             self.nodes[id].topic_count + u32::from(self.nodes[id].latest.is_some());
@@ -566,6 +579,21 @@ mod tests {
         assert_eq!(t.find("gone"), Some(id));
         assert_eq!(t.node(id).history.len(), 1);
         assert_eq!(t.node(TopicTree::ROOT).topic_count, 2);
+    }
+
+    #[test]
+    fn shape_gen_bumps_on_create_and_remove_only() {
+        let mut t = TopicTree::with_limits(1, usize::MAX, 3);
+        let g0 = t.shape_gen();
+        t.insert("a/b", msg("1"));
+        let g1 = t.shape_gen();
+        assert_ne!(g0, g1, "new nodes");
+        t.insert("a/b", msg("2"));
+        assert_eq!(t.shape_gen(), g1, "an update creates nothing");
+        assert!(t.insert("x/y", msg("3")).is_none());
+        assert_eq!(t.shape_gen(), g1, "refused at the cap");
+        t.remove(t.find("a/b").unwrap());
+        assert_ne!(t.shape_gen(), g1, "remove");
     }
 
     #[test]
