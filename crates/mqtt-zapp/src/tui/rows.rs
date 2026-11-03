@@ -2,7 +2,6 @@
 
 use mqtt_zapp_core::config::SortOrder;
 use mqtt_zapp_core::search::Filter;
-use mqtt_zapp_core::tree::natural_cmp;
 use mqtt_zapp_core::{NodeId, TopicTree};
 use std::collections::HashSet;
 
@@ -26,7 +25,11 @@ pub fn visible_rows(
     let shown = |id: &NodeId| filter.is_none_or(|f| f.visible.contains(id));
     let order = |a: &NodeId, b: &NodeId| {
         let (x, y) = (tree.node(*a), tree.node(*b));
-        let by_name = || natural_cmp(&x.name, &y.name);
+        let by_name = || {
+            x.sort_key
+                .cmp(&y.sort_key)
+                .then_with(|| x.name.cmp(&y.name))
+        };
         match sort {
             SortOrder::Name => by_name(),
             SortOrder::Count => y.msg_count.cmp(&x.msg_count).then_with(by_name),

@@ -36,11 +36,15 @@ pub struct TopicNode {
     /// Taken out by `TopicTree::remove`; the slot stays so ids are stable.
     #[serde(skip)]
     removed: bool,
+    /// Precomputed natural order of `name`.
+    #[serde(skip)]
+    pub sort_key: NaturalKey,
 }
 
 impl TopicNode {
     fn new(name: String, parent: Option<NodeId>) -> Self {
         Self {
+            sort_key: natural_key(&name),
             name,
             parent,
             children: BTreeMap::new(),
@@ -337,44 +341,154 @@ fn runs(s: &str) -> Vec<&str> {
     out
 }
 
+/// One run of a [`NaturalKey`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KeyPart {
+    /// Digits without leading zeros, and the run's original width.
+    Num { value: Box<str>, width: usize },
+    /// Lowercased text.
+    Text(Box<str>),
+}
+
+/// Precomputed sort key: ordering two keys equals `natural_cmp` before its
+/// final byte-order tie-break.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NaturalKey(Box<[KeyPart]>);
+
+/// Build the key for `s`; see [`natural_cmp`] for the order.
+pub fn natural_key(s: &str) -> NaturalKey {
+    NaturalKey(
+        runs(s)
+            .into_iter()
+            .map(|r| {
+                if r.as_bytes()[0].is_ascii_digit() {
+                    KeyPart::Num {
+                        value: r.trim_start_matches('0').into(),
+                        width: r.len(),
+                    }
+                } else {
+                    KeyPart::Text(r.chars().flat_map(char::to_lowercase).collect())
+                }
+            })
+            .collect(),
+    )
+}
+
+impl Ord for NaturalKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let part = |x: &KeyPart, y: &KeyPart| match (x, y) {
+            (KeyPart::Num { value: a, .. }, KeyPart::Num { value: b, .. }) => {
+                a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+            }
+            (KeyPart::Text(a), KeyPart::Text(b)) => a.cmp(b),
+            (KeyPart::Num { .. }, KeyPart::Text(_)) => Ordering::Less,
+            (KeyPart::Text(_), KeyPart::Num { .. }) => Ordering::Greater,
+        };
+        let (a, b) = (&self.0, &other.0);
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| part(x, y))
+            .find(|o| *o != Ordering::Equal)
+            .unwrap_or_else(|| a.len().cmp(&b.len()))
+            .then_with(|| {
+                // Shorter digit runs first (`x1` < `x01`).
+                a.iter()
+                    .zip(b.iter())
+                    .find_map(|(x, y)| match (x, y) {
+                        (KeyPart::Num { width: p, .. }, KeyPart::Num { width: q, .. })
+                            if p != q =>
+                        {
+                            Some(p.cmp(q))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(Ordering::Equal)
+            })
+    }
+}
+
+impl PartialOrd for NaturalKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Natural order: digit runs compare by value (`tasmota_2` < `tasmota_10`),
 /// text runs case-insensitively. Ties are broken by shorter digit runs
 /// (`x1` < `x01`), then by plain byte order, so the order is total.
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let (ra, rb) = (runs(a), runs(b));
-    let is_num = |r: &str| r.as_bytes()[0].is_ascii_digit();
-    for (x, y) in ra.iter().zip(&rb) {
-        let ord = match (is_num(x), is_num(y)) {
-            (true, true) => {
-                let (tx, ty) = (x.trim_start_matches('0'), y.trim_start_matches('0'));
-                tx.len().cmp(&ty.len()).then_with(|| tx.cmp(ty))
-            }
-            (false, false) => x
-                .chars()
-                .flat_map(char::to_lowercase)
-                .cmp(y.chars().flat_map(char::to_lowercase)),
-            (true, false) => Ordering::Less,
-            (false, true) => Ordering::Greater,
-        };
-        if ord != Ordering::Equal {
-            return ord;
-        }
-    }
-    ra.len()
-        .cmp(&rb.len())
-        .then_with(|| {
-            ra.iter()
-                .zip(&rb)
-                .map(|(x, y)| x.len().cmp(&y.len()))
-                .find(|o| *o != Ordering::Equal)
-                .unwrap_or(Ordering::Equal)
-        })
-        .then_with(|| a.cmp(b))
+    natural_key(a).cmp(&natural_key(b)).then_with(|| a.cmp(b))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Natural order: digit runs compare by value (`tasmota_2` < `tasmota_10`),
+    /// text runs case-insensitively. Ties are broken by shorter digit runs
+    /// (`x1` < `x01`), then by plain byte order, so the order is total.
+    fn old_natural_cmp(a: &str, b: &str) -> Ordering {
+        let (ra, rb) = (runs(a), runs(b));
+        let is_num = |r: &str| r.as_bytes()[0].is_ascii_digit();
+        for (x, y) in ra.iter().zip(&rb) {
+            let ord = match (is_num(x), is_num(y)) {
+                (true, true) => {
+                    let (tx, ty) = (x.trim_start_matches('0'), y.trim_start_matches('0'));
+                    tx.len().cmp(&ty.len()).then_with(|| tx.cmp(ty))
+                }
+                (false, false) => x
+                    .chars()
+                    .flat_map(char::to_lowercase)
+                    .cmp(y.chars().flat_map(char::to_lowercase)),
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
+            };
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        ra.len()
+            .cmp(&rb.len())
+            .then_with(|| {
+                ra.iter()
+                    .zip(&rb)
+                    .map(|(x, y)| x.len().cmp(&y.len()))
+                    .find(|o| *o != Ordering::Equal)
+                    .unwrap_or(Ordering::Equal)
+            })
+            .then_with(|| a.cmp(b))
+    }
+
+    #[test]
+    fn natural_key_agrees_with_natural_cmp() {
+        let names = [
+            "n10",
+            "n9",
+            "n2",
+            "x01",
+            "x1",
+            "Tasmota_2",
+            "tasmota_10",
+            "a",
+            "A",
+            "",
+            "0",
+            "00",
+            "b-1",
+            "b_1",
+            "é9",
+            "é10",
+        ];
+        for a in names {
+            for b in names {
+                assert_eq!(
+                    natural_key(a).cmp(&natural_key(b)).then(a.cmp(b)),
+                    old_natural_cmp(a, b),
+                    "{a:?} vs {b:?}"
+                );
+            }
+        }
+    }
 
     fn msg(p: &str) -> Message {
         Message {
