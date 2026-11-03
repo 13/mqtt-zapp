@@ -183,6 +183,21 @@ impl App {
         }
     }
 
+    /// A profile edit was saved (`original` = its old name, if any).
+    pub fn profile_edit_saved(
+        &mut self,
+        profiles: Vec<Profile>,
+        original: Option<&str>,
+        name: &str,
+    ) {
+        // Rename the last-used time first: in last-used sort the view
+        // position of `name` depends on it.
+        if let Some(old) = original.filter(|o| *o != name) {
+            self.profile_renamed(old, name);
+        }
+        self.profile_saved(profiles, Some(name), &format!("saved {name}"));
+    }
+
     pub fn profile_deleted(&mut self, name: &str) {
         self.picker.last_used.remove(name);
     }

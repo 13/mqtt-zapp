@@ -389,36 +389,34 @@ impl App {
         match ev {
             CoreEvent::State(s) => self.conn_state = s,
             CoreEvent::Message { topic, msg } => {
-                let before = self
-                    .tree
-                    .find(&topic)
-                    .map(|id| self.tree.node(id).history.len());
+                // The paused entry, by stamp: an insert anywhere can evict
+                // the selected topic's oldest entries (depth or memory cap).
+                let stamp = |m: &mqtt_zapp_core::Message| (m.received_at, m.payload.len());
+                let paused = self
+                    .selected
+                    .zip(self.history_sel)
+                    .and_then(|(s, i)| self.tree.node(s).history.get(i).map(stamp));
                 let first_new = self.tree.len();
-                let id = self.tree.insert(&topic, msg);
+                self.tree.insert(&topic, msg);
                 // Only nodes this message created; a hand-collapsed one stays.
                 for new in first_new..self.tree.len() {
                     if self.depth(new) <= self.auto_expand {
                         self.expanded.insert(new);
                     }
                 }
-                // A full ring drops its oldest entry, shifting every index down
-                // by one; keep a frozen selection on its entry (or the oldest).
-                if before.is_some_and(|n| n > 0 && n == self.tree.node(id).history.len())
-                    && self.selected == Some(id)
-                {
-                    self.history_sel = self.history_sel.map(|i| i.saturating_sub(1));
-                }
-                // The marked entry fell out of the ring.
-                if self.selected == Some(id)
-                    && let Some(base) = self.diff_base
-                    && !self
-                        .tree
-                        .node(id)
-                        .history
-                        .iter()
-                        .any(|m| (m.received_at, m.payload.len()) == base)
-                {
-                    self.diff_base = None;
+                if let Some(sel) = self.selected {
+                    let h = &self.tree.node(sel).history;
+                    // Keep a frozen selection on its entry (or the oldest).
+                    if let Some(p) = paused {
+                        self.history_sel = Some(h.iter().position(|m| stamp(m) == p).unwrap_or(0));
+                    }
+                    // The marked entry fell out of the ring.
+                    if self
+                        .diff_base
+                        .is_some_and(|b| !h.iter().any(|m| stamp(m) == b))
+                    {
+                        self.diff_base = None;
+                    }
                 }
                 self.msg_rate.record(Instant::now());
                 self.tree_changed = true;

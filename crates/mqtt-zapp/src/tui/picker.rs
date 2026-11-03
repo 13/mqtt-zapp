@@ -85,14 +85,11 @@ impl PickerState {
         let Some(i) = self.selected_index() else {
             return false;
         };
-        if self.sort != PickerSort::Custom {
-            self.sort = PickerSort::Custom;
-            self.sel = i;
-        }
         let j = if down { i + 1 } else { i.wrapping_sub(1) };
         if j >= self.profiles.len() {
             return false;
         }
+        self.sort = PickerSort::Custom;
         self.profiles.swap(i, j);
         self.sel = j;
         true

@@ -121,9 +121,9 @@ impl Session {
                 let original = edit.original.clone();
                 match profiles::persist_edit(edit, &profiles::RealSecrets) {
                     Ok(store) => {
-                        app.profile_saved(store.profiles, Some(&name), &format!("saved {name}"));
-                        if let Some(old) = original.filter(|o| *o != name) {
-                            app.profile_renamed(&old, &name);
+                        let renamed = original.as_deref().is_some_and(|o| o != name);
+                        app.profile_edit_saved(store.profiles, original.as_deref(), &name);
+                        if renamed {
                             save_state(app);
                         }
                     }

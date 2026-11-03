@@ -1204,3 +1204,89 @@ fn memory_cap_comes_from_settings() {
         "cap survives reset_tree"
     );
 }
+
+// --- final review fixes ---
+
+fn capped_app() -> App {
+    let s = Settings {
+        max_history_mb: 1,
+        ..Settings::default()
+    };
+    let mut a = App::new(Launch::Picker, ProfileStore::default(), s).unwrap();
+    a.mode = Mode::Browse;
+    a
+}
+
+fn kb(tag: &str) -> String {
+    format!("{tag}{}", "x".repeat(100 * 1024))
+}
+
+#[test]
+fn cap_eviction_elsewhere_keeps_paused_entry() {
+    let mut a = capped_app();
+    for i in 0..5 {
+        a.apply_core_event(msg("a", &kb(&i.to_string())));
+    }
+    a.selected = a.tree.find("a");
+    a.history_sel = Some(3);
+    let paused = |a: &App| {
+        String::from_utf8_lossy(&crate::tui::message_view::shown_message(a).unwrap().payload)[..1]
+            .to_owned()
+    };
+    assert_eq!(paused(&a), "3");
+    // The cap evicts a0..a2 (older); the paused a3 survives and stays shown.
+    for i in 0..8 {
+        a.apply_core_event(msg("b", &kb(&format!("b{i}"))));
+    }
+    assert_eq!(paused(&a), "3", "the paused entry must not change");
+}
+
+#[test]
+fn cap_eviction_elsewhere_clears_gone_diff_base() {
+    let mut a = capped_app();
+    for i in 0..5 {
+        a.apply_core_event(msg("a", &kb(&i.to_string())));
+    }
+    a.selected = a.tree.find("a");
+    a.history_sel = Some(0);
+    a.handle_action(Action::MarkDiffBase);
+    a.history_sel = None;
+    for i in 0..8 {
+        a.apply_core_event(msg("b", &kb(&format!("b{i}"))));
+    }
+    assert_eq!(a.diff_base, None);
+}
+
+#[test]
+fn rename_in_last_used_sort_keeps_renamed_selected() {
+    let mut a = picker_app(vec![
+        profile("c", PasswordSource::None),
+        profile("a", PasswordSource::None),
+        profile("b", PasswordSource::None),
+    ]);
+    let mut st = AppState {
+        picker_sort: PickerSort::LastUsed,
+        ..Default::default()
+    };
+    st.touch("a", 10);
+    st.touch("b", 5);
+    a.set_app_state(st);
+    let renamed = vec![
+        profile("c", PasswordSource::None),
+        profile("a", PasswordSource::None),
+        profile("bb", PasswordSource::None),
+    ];
+    a.profile_edit_saved(renamed, Some("b"), "bb");
+    assert_eq!(a.picker.selected().unwrap().name, "bb");
+}
+
+#[test]
+fn move_at_edge_in_name_sort_changes_nothing() {
+    let mut a = picker_app(vec![
+        profile("a", PasswordSource::None),
+        profile("b", PasswordSource::None),
+    ]);
+    press(&mut a, 's'); // name sort; "a" selected, first in file order
+    assert!(matches!(press(&mut a, 'K'), Effect::None));
+    assert_eq!(a.picker.sort, PickerSort::Name);
+}

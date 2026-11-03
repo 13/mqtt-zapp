@@ -20,6 +20,10 @@ pub struct TopicNode {
     /// Insertion sequence number of each `history` entry (same order).
     #[serde(skip)]
     history_seq: VecDeque<u64>,
+    /// The cap reached this node's only entry, whose queue slot was dropped;
+    /// the next insert puts it back at the front of the queue.
+    #[serde(skip)]
+    parked: bool,
     /// Messages received in this subtree.
     pub msg_count: u64,
     /// Descendants that have received at least one message.
@@ -40,6 +44,7 @@ impl TopicNode {
             latest: None,
             history: VecDeque::new(),
             history_seq: VecDeque::new(),
+            parked: false,
             msg_count: 0,
             topic_count: 0,
             retained: false,
@@ -92,12 +97,10 @@ impl TopicTree {
     }
 
     /// Drop the globally oldest history entries until under `max_bytes`,
-    /// never a node's last one. Bounded by the queue length, so a queue of
-    /// nothing but latest entries cannot spin.
+    /// never a node's last one. Every iteration consumes a queue slot, so
+    /// this is amortized O(1) per insert.
     fn enforce_cap(&mut self) {
-        let mut budget = self.order.len();
-        while self.bytes > self.max_bytes && budget > 0 {
-            budget -= 1;
+        while self.bytes > self.max_bytes {
             let Some((id, seq)) = self.order.pop_front() else {
                 break;
             };
@@ -106,9 +109,10 @@ impl TopicTree {
                 continue; // already gone (depth eviction)
             }
             if node.history.len() == 1 {
-                // The latest message stays; it becomes evictable again only
-                // when a newer one arrives, so keep its slot for later.
-                self.order.push_back((id, seq));
+                // The latest message stays. Park it: the next insert here
+                // re-queues it at the front, where it was (all slots after
+                // it are newer), instead of rescanning it on every insert.
+                node.parked = true;
                 continue;
             }
             node.history_seq.pop_front();
@@ -155,6 +159,11 @@ impl TopicTree {
             node.retained = true;
         }
         node.latest = Some(msg.clone());
+        if std::mem::take(&mut node.parked)
+            && let Some(&old) = node.history_seq.front()
+        {
+            self.order.push_front((cur, old));
+        }
         self.bytes += msg.payload.len();
         node.history.push_back(msg);
         node.history_seq.push_back(self.next_seq);
@@ -342,6 +351,24 @@ mod tests {
         }
         assert_eq!(t.node(t.find("x").unwrap()).history.len(), 1);
         assert!(t.order.len() <= 2 + COMPACT_SLACK, "{}", t.order.len());
+    }
+
+    #[test]
+    fn latest_only_entries_leave_the_queue() {
+        // Over the cap with nothing evictable: no slot may be scanned again
+        // on later inserts (that made every insert O(topics)).
+        let mut t = TopicTree::with_limits(100, 0);
+        for i in 0..2000 {
+            t.insert(&format!("t{i}"), m("p"));
+        }
+        assert_eq!(t.order.len(), 0);
+        t.insert("t7", m("q"));
+        assert_eq!(
+            payloads(&t, "t7"),
+            ["q"],
+            "the parked entry is evicted first"
+        );
+        assert_eq!(t.history_bytes(), 2000);
     }
 
     #[test]
