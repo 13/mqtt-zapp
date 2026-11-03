@@ -97,6 +97,66 @@ pub fn numeric_paths(payload: &[u8]) -> Vec<String> {
     out
 }
 
+/// Where each chartable value sits in `pretty_lines` of `payload` (0-based
+/// line, dotted path), in `numeric_paths` order with the same cap. A payload
+/// that is a plain number is `[(line, None)]` on its line; anything else
+/// without numbers is empty.
+pub fn numeric_lines(payload: &[u8]) -> Vec<(usize, Option<String>)> {
+    match detect(payload) {
+        PayloadKind::Json(v) => {
+            let mut out = Vec::new();
+            walk_lines(&v, String::new(), &mut 0, &mut out);
+            out
+        }
+        PayloadKind::Text(t) if numeric_at(payload, None).is_some() => {
+            let line = t.split('\n').position(|l| !l.trim().is_empty());
+            vec![(line.unwrap_or(0), None)]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Lay `v` out as `serde_json::to_string_pretty` does, starting on `*line`
+/// and leaving `*line` on the next free one: scalars and empty containers
+/// take one line; other containers open on their line, put each child on
+/// the following ones and close on a line of their own.
+fn walk_lines(
+    v: &serde_json::Value,
+    path: String,
+    line: &mut usize,
+    out: &mut Vec<(usize, Option<String>)>,
+) {
+    use serde_json::Value;
+    let join = |k: &str| {
+        if path.is_empty() {
+            k.to_owned()
+        } else {
+            format!("{path}.{k}")
+        }
+    };
+    match v {
+        Value::Object(m) if !m.is_empty() => {
+            *line += 1;
+            for (k, child) in m {
+                walk_lines(child, join(k), line, out);
+            }
+            *line += 1;
+        }
+        Value::Array(a) if !a.is_empty() => {
+            *line += 1;
+            for (i, child) in a.iter().enumerate() {
+                walk_lines(child, join(&i.to_string()), line, out);
+            }
+            *line += 1;
+        }
+        Value::Number(_) if !path.is_empty() && out.len() < MAX_NUMERIC_PATHS => {
+            out.push((*line, Some(path)));
+            *line += 1;
+        }
+        _ => *line += 1,
+    }
+}
+
 fn walk_numbers(v: &serde_json::Value, path: String, out: &mut Vec<String>) {
     use serde_json::Value;
     let join = |k: &str| {
@@ -192,6 +252,71 @@ pub fn preview(payload: &[u8], max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pretty(p: &[u8]) -> Vec<String> {
+        pretty_lines(&detect(p), p)
+    }
+
+    #[test]
+    fn numeric_lines_basic() {
+        let p = br#"{"a":1,"b":{"c":2,"d":"x"},"e":[3,4]}"#;
+        let got = numeric_lines(p);
+        let want = [(1, "a"), (3, "b.c"), (7, "e.0"), (8, "e.1")];
+        assert_eq!(
+            got,
+            want.map(|(l, k)| (l, Some(k.to_string()))).to_vec(),
+            "{:#?}",
+            pretty(p)
+        );
+        let lines = pretty(p);
+        assert!(lines[3].contains("\"c\": 2"), "{}", lines[3]);
+        assert_eq!(lines[8].trim(), "4");
+    }
+
+    #[test]
+    fn numeric_lines_match_pretty_output() {
+        let cases: &[&[u8]] = &[
+            br#"{"a":1}"#,
+            br#"[1,2,3]"#,
+            br#"[{"x":1},{"y":[2,{"z":3}]}]"#,
+            br#"{"e":{},"f":[],"g":{"h":[[],{}],"i":7}}"#,
+            br#"{"deep":{"a":{"b":{"c":{"d":-1.5e3}}}}}"#,
+            br#"{"s":"5","n":null,"b":true,"v":5}"#,
+            br#"{"ENERGY":{"Power":12,"Voltage":230},"t":21.5}"#,
+            br#"[[1,[2,[3]]],{"k":[{"m":4}]}]"#,
+            br#"{"arr":[{"a":1,"b":[]},{"a":2,"b":[9]}]}"#,
+            br#"  {"pad": 1}  "#,
+        ];
+        for p in cases {
+            let lines = pretty(p);
+            let got = numeric_lines(p);
+            let paths: Vec<String> = got.iter().map(|(_, k)| k.clone().unwrap()).collect();
+            assert_eq!(paths, numeric_paths(p), "{}", String::from_utf8_lossy(p));
+            for (l, path) in &got {
+                let path = path.as_deref().unwrap();
+                let text = lines[*l].trim().trim_end_matches(',');
+                let value = text.rsplit(": ").next().unwrap();
+                let want = numeric_at(p, Some(path)).unwrap();
+                assert_eq!(
+                    value.parse::<f64>().ok(),
+                    Some(want),
+                    "{path} on {l}: {text}"
+                );
+                let last = path.rsplit('.').next().unwrap();
+                if text.contains(": ") {
+                    assert!(text.starts_with(&format!("\"{last}\"")), "{path}: {text}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn numeric_lines_plain_number_and_text() {
+        assert_eq!(numeric_lines(b"21.5"), vec![(0, None)]);
+        assert_eq!(numeric_lines(b" 7 \n"), vec![(0, None)]);
+        assert!(numeric_lines(b"hello").is_empty());
+        assert!(numeric_lines(b"\x00\x01").is_empty());
+    }
 
     #[test]
     fn numeric_paths_and_at() {
