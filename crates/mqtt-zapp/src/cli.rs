@@ -155,7 +155,7 @@ pub fn store_or_empty(
 
 pub fn resolve_launch(args: &Args, store: &ProfileStore) -> Result<Launch> {
     if let Some(host) = &args.conn.host {
-        let pw = if args.conn.ask_password {
+        let pw = if args.conn.user.is_some() || args.conn.ask_password {
             PasswordSource::Prompt
         } else {
             PasswordSource::None
@@ -322,6 +322,19 @@ mod tests {
         assert_eq!(p.port, 443);
         assert_eq!(p.name, "adhoc");
         assert!(matches!(p.password, PasswordSource::Prompt));
+    }
+
+    #[test]
+    fn adhoc_user_implies_prompt() {
+        let Launch::Connect(p) = launch(&["mqtt-zapp", "--host", "b", "--user", "u"]).unwrap()
+        else {
+            panic!()
+        };
+        assert!(matches!(p.password, PasswordSource::Prompt));
+        let Launch::Connect(p) = launch(&["mqtt-zapp", "--host", "b"]).unwrap() else {
+            panic!()
+        };
+        assert!(matches!(p.password, PasswordSource::None));
     }
 
     #[test]
