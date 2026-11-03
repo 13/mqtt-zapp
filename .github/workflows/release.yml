@@ -16,7 +16,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - id: v
         name: Tag matches the Cargo version
         run: |
@@ -35,11 +35,10 @@ jobs:
     env:
       FILE: mqtt-zapp-v${{ needs.version.outputs.version }}-x86_64-linux-musl
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: x86_64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --locked --target x86_64-unknown-linux-musl -p mqtt-zapp --no-default-features
       - name: Verify static binary
@@ -48,7 +47,7 @@ jobs:
         run: |
           strip target/x86_64-unknown-linux-musl/release/mqtt-zapp
           cp target/x86_64-unknown-linux-musl/release/mqtt-zapp "$FILE"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: musl
           path: ${{ env.FILE }}
@@ -60,8 +59,8 @@ jobs:
     env:
       V: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: musl
           path: musl
@@ -73,7 +72,7 @@ jobs:
             "/p/mqtt-zapp-$V-x86_64.AppImage" --appimage-extract-and-run --version)
           echo "$out"
           test "$out" = "mqtt-zapp $V"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: appimage
           path: dist/mqtt-zapp-${{ env.V }}-x86_64.AppImage
@@ -87,9 +86,8 @@ jobs:
     env:
       V: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - run: cargo install cargo-deb --locked --version 3.8.0
       - run: cargo deb -p mqtt-zapp --locked
@@ -100,7 +98,7 @@ jobs:
             "apt-get update -qq && apt-get install -y -qq /p/mqtt-zapp_${V}-1_amd64.deb >/dev/null && mqtt-zapp --version")
           echo "$out"
           test "$(tail -n1 <<<"$out")" = "mqtt-zapp $V"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: deb
           path: target/debian/mqtt-zapp_${{ env.V }}-1_amd64.deb
@@ -115,7 +113,7 @@ jobs:
     steps:
       # git before checkout, so the checkout is a repo `git archive` can read.
       - run: pacman -Syu --noconfirm --needed base-devel rust git dbus
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Build (makepkg refuses root, so as an unprivileged user)
         run: |
@@ -129,7 +127,7 @@ jobs:
           pacman -U --noconfirm "packaging/arch/mqtt-zapp-$V-1-x86_64.pkg.tar.zst"
           pacman -Qi mqtt-zapp
           test "$(mqtt-zapp --version)" = "mqtt-zapp $V"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: arch
           path: packaging/arch/mqtt-zapp-${{ env.V }}-1-x86_64.pkg.tar.zst
@@ -145,8 +143,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: dist
           merge-multiple: true
@@ -156,6 +156,10 @@ jobs:
           sha256sum -- * > SHA256SUMS
           cat SHA256SUMS
           test "$(wc -l < SHA256SUMS)" -eq 4
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: dist/*
       - name: Create release
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         env:

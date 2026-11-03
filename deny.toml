@@ -1,0 +1,38 @@
+[advisories]
+# Defaults: vulnerabilities deny, unmaintained warn.
+ignore = [
+  # rustls 0.22 / rustls-webpki 0.102 are pulled in by rumqttc 0.24 and cannot
+  # be bumped within semver. Remove these when Task 13 lands.
+  { id = "RUSTSEC-2026-0346", reason = "fixed by rumqttc 0.25 upgrade (Task 13)" },
+  { id = "RUSTSEC-2026-0349", reason = "fixed by rumqttc 0.25 upgrade (Task 13)" },
+  { id = "RUSTSEC-2026-0049", reason = "fixed by rumqttc 0.25 upgrade (Task 13)" },
+  { id = "RUSTSEC-2026-0098", reason = "fixed by rumqttc 0.25 upgrade (Task 13)" },
+  { id = "RUSTSEC-2026-0099", reason = "fixed by rumqttc 0.25 upgrade (Task 13)" },
+  { id = "RUSTSEC-2026-0104", reason = "fixed by rumqttc 0.25 upgrade (Task 13)" },
+  { id = "RUSTSEC-2026-0382", reason = "fixed by rumqttc 0.25 upgrade (Task 13)" },
+  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is unmaintained but still correct; used by mqtt-zapp-core and rumqttc 0.24. Replace with rustls-pki-types PEM parsing alongside the rumqttc 0.25 upgrade (Task 13)" },
+  { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained (proc-macro, build time only); pulled in by ratatui 0.29. Goes away with a ratatui upgrade" },
+]
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "CDLA-Permissive-2.0",
+  "MPL-2.0",
+  # async_io_stream, pharos, ws_stream_tungstenite (rumqttc websocket deps)
+  "Unlicense",
+]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
