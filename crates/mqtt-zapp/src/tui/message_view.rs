@@ -570,8 +570,7 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
     }
     let payload = match &app.chart {
         Some(series) => {
-            let [chart, rest] =
-                Layout::vertical([Constraint::Min(5), Constraint::Percentage(50)]).areas(payload);
+            let [chart, rest] = chart_split(payload);
             render_chart(f, chart, app, &s, series.as_deref());
             rest
         }
@@ -579,6 +578,12 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
     };
     render_payload(f, payload, app);
     render_history(f, history, app, &s);
+}
+
+/// How an open chart splits the payload area: the chart on top, the
+/// payload pane below.
+pub(super) fn chart_split(area: Rect) -> [Rect; 2] {
+    Layout::vertical([Constraint::Min(5), Constraint::Percentage(50)]).areas(area)
 }
 
 type ChartKey = (usize, usize, Option<Stamp>, Option<String>);
@@ -635,7 +640,12 @@ fn render_chart(f: &mut Frame, area: Rect, app: &App, s: &Shown, path: Option<&s
     use ratatui::symbols::Marker;
     use ratatui::widgets::{Axis, Chart, Dataset, GraphType};
     let name = path.unwrap_or("value");
-    let block = theme::pane(&format!("chart · {name}"), false);
+    let series = app.chart_series();
+    let title = match series.iter().position(|s| s.as_deref() == path) {
+        Some(i) => format!("chart · {name} · {}/{}", i + 1, series.len()),
+        None => format!("chart · {name}"),
+    };
+    let block = theme::pane(&title, false);
     let points = chart_points(app, s, path);
     let points = &*points;
     if points.len() < 2 {
@@ -721,6 +731,19 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
     let max = body.len().saturating_sub(height as usize);
     let skip = app.payload_scroll.min(max);
     let take = height as usize;
+    app.hit.set(HitAreas {
+        payload_skip: skip,
+        ..app.hit.get()
+    });
+    // The charted value's line, highlighted.
+    let hl = app.chart_line();
+    let mark = |i: usize, line: Line<'static>| {
+        if hl == Some(skip + i) {
+            theme::select(line, false)
+        } else {
+            line
+        }
+    };
     if body.len() > take {
         let last = (skip + take).min(body.len());
         block = block.title_bottom(
@@ -736,13 +759,15 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
             .iter()
             .skip(skip)
             .take(take)
-            .map(|l| json_line(l))
+            .enumerate()
+            .map(|(i, l)| mark(i, json_line(l)))
             .collect(),
         Body::Plain(l) => l
             .iter()
             .skip(skip)
             .take(take)
-            .map(|l| Line::raw(l.as_str()))
+            .enumerate()
+            .map(|(i, l)| mark(i, Line::raw(l.clone())))
             .collect(),
         Body::Diff(l) => l
             .iter()

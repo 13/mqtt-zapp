@@ -28,13 +28,15 @@ pub struct HitAreas {
     pub header_copy: Rect,
     /// The payload pane's `⧉ copy` title; a click copies the payload.
     pub payload_copy: Rect,
+    /// First payload line the last frame drew (the clamped scroll).
+    pub payload_skip: usize,
     /// The payload pane's title on its top border; a click copies the payload.
     pub payload_title: Rect,
     /// The broker name in the top bar; a click opens the picker.
     pub header_broker: Rect,
 }
 
-fn inner(r: Rect) -> Rect {
+pub(super) fn inner(r: Rect) -> Rect {
     r.inner(Margin::new(1, 1))
 }
 
@@ -111,6 +113,11 @@ impl App {
         } else if hit.payload.contains(at) {
             self.dirty = true;
             self.focus = Focus::Payload;
+            // A click on a number charts it.
+            let body = inner(hit.payload);
+            if body.contains(at) {
+                self.chart_click(hit.payload_skip + usize::from(at.y - body.y));
+            }
         } else if hit.history.contains(at) {
             self.dirty = true;
             self.focus = Focus::History;
