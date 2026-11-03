@@ -4,6 +4,7 @@
 
 use super::keymap::{Action, Keymap};
 use super::picker::{PasswordState, PickerState};
+use super::profile_form::{ProfileEdit, ProfileForm, ProfileOutcome};
 use super::publish::{Field, FormOutcome, PublishForm};
 use super::rows::{Row, visible_rows};
 use crate::cli::Launch;
@@ -41,6 +42,8 @@ pub enum Mode {
     Stats,
     /// A yes/no question; see `App::confirm`.
     Confirm,
+    /// The add/edit profile form over the picker.
+    ProfileForm,
 }
 
 /// Which pane the j/k keys drive.
@@ -72,6 +75,11 @@ pub enum Effect {
         what: &'static str,
         text: String,
     },
+    /// Store a profile (and its keyring password); the result comes back
+    /// through `App::profile_saved` / `App::profile_save_failed`.
+    SaveProfile(ProfileEdit),
+    /// Delete the named profile, reported back like `SaveProfile`.
+    DeleteProfile(String),
 }
 
 // Hand-written so a connect password can never reach a debug log.
@@ -105,6 +113,8 @@ impl fmt::Debug for Effect {
                 };
                 write!(f, "Connect({}, {pw})", profile.name)
             }
+            Effect::SaveProfile(edit) => write!(f, "SaveProfile({edit:?})"),
+            Effect::DeleteProfile(name) => write!(f, "DeleteProfile({name})"),
         }
     }
 }
@@ -190,13 +200,22 @@ impl Note {
     }
 }
 
-/// A pending destructive action: what to ask, and the retained topics to
-/// clear on yes.
+/// A pending destructive action: what to ask, and what to do on yes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Confirm {
     pub prompt: String,
-    pub topics: Vec<String>,
+    pub action: ConfirmAction,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfirmAction {
+    /// The retained topics to clear.
+    ClearRetained(Vec<String>),
+    /// The profile to delete; asked from the picker.
+    DeleteProfile(String),
+}
+
+const STORE_BROKEN: &str = "profiles.toml has errors – fix it by hand first";
 
 pub struct App {
     pub tree: TopicTree,
@@ -254,6 +273,8 @@ pub struct App {
     pub sort: SortOrder,
     /// Set while in `Mode::Confirm`.
     pub confirm: Option<Confirm>,
+    /// Open while in `Mode::ProfileForm`.
+    pub profile_form: Option<ProfileForm>,
     /// Pane rectangles of the last frame, for mouse hit-testing.
     pub hit: Cell<HitAreas>,
 }
@@ -301,6 +322,7 @@ impl App {
             status_note: None,
             hit: Cell::new(HitAreas::default()),
             confirm: None,
+            profile_form: None,
             sort: settings.sort,
             chart: None,
             sent: HashMap::new(),
@@ -377,9 +399,89 @@ impl App {
                     return self.begin_connect(p);
                 }
             }
+            Action::AddProfile | Action::EditProfile | Action::DeleteProfile
+                if self.store_error.is_some() =>
+            {
+                self.set_note(Note::error(STORE_BROKEN), Instant::now());
+            }
+            Action::AddProfile => {
+                let taken = self
+                    .picker
+                    .profiles
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect();
+                self.profile_form = Some(ProfileForm::new(None, taken));
+                self.mode = Mode::ProfileForm;
+            }
+            Action::EditProfile => {
+                if let Some(p) = self.picker.selected() {
+                    let taken = self
+                        .picker
+                        .profiles
+                        .iter()
+                        .filter(|o| o.name != p.name)
+                        .map(|o| o.name.clone())
+                        .collect();
+                    self.profile_form = Some(ProfileForm::new(Some(p), taken));
+                    self.mode = Mode::ProfileForm;
+                }
+            }
+            Action::DeleteProfile => {
+                if let Some(p) = self.picker.selected() {
+                    self.confirm = Some(Confirm {
+                        prompt: format!("delete profile {}?", p.name),
+                        action: ConfirmAction::DeleteProfile(p.name.clone()),
+                    });
+                    self.mode = Mode::Confirm;
+                }
+            }
             _ => {}
         }
         Effect::None
+    }
+
+    /// Keys in the profile form; they bypass the keymap. A save keeps the
+    /// form open until `profile_saved` or `profile_save_failed`.
+    fn on_profile_form_key(&mut self, key: KeyEvent) -> Effect {
+        self.dirty = true;
+        let Some(form) = self.profile_form.as_mut() else {
+            self.mode = Mode::Picker;
+            return Effect::None;
+        };
+        match form.on_key(key) {
+            ProfileOutcome::Continue => Effect::None,
+            ProfileOutcome::Cancel => {
+                self.profile_form = None;
+                self.mode = Mode::Picker;
+                Effect::None
+            }
+            ProfileOutcome::Save(edit) => Effect::SaveProfile(edit),
+        }
+    }
+
+    /// A profile save or delete went through: show the new list, select
+    /// `select` (or keep the position), close the form.
+    #[allow(dead_code)] // called by Session in the next commit
+    pub fn profile_saved(&mut self, profiles: Vec<Profile>, select: Option<&str>, note: &str) {
+        self.picker.sel = select
+            .and_then(|n| profiles.iter().position(|p| p.name == n))
+            .unwrap_or(self.picker.sel)
+            .min(profiles.len().saturating_sub(1));
+        self.picker.profiles = profiles;
+        self.profile_form = None;
+        self.mode = Mode::Picker;
+        self.set_note(Note::info(note), Instant::now());
+    }
+
+    /// A profile save or delete failed: show why in the form, if open.
+    #[allow(dead_code)] // called by Session in the next commit
+    pub fn profile_save_failed(&mut self, err: String) {
+        match self.profile_form.as_mut() {
+            Some(form) => form.error = Some(err),
+            None => self.set_note(Note::error(err), Instant::now()),
+        }
+        self.dirty = true;
     }
 
     /// Keys in the password prompt. They bypass the keymap, so `q` and `j`
@@ -529,16 +631,26 @@ impl App {
                 Effect::None
             }
             Mode::Confirm => self.on_confirm_key(key),
+            Mode::ProfileForm => self.on_profile_form_key(key),
         }
     }
 
     /// `y` or enter confirms; any other key cancels.
     fn on_confirm_key(&mut self, key: KeyEvent) -> Effect {
         self.dirty = true;
-        self.mode = Mode::Browse;
         let confirm = self.confirm.take();
+        self.mode = match &confirm {
+            Some(Confirm {
+                action: ConfirmAction::DeleteProfile(_),
+                ..
+            }) => Mode::Picker,
+            _ => Mode::Browse,
+        };
         match (key.code, confirm) {
-            (KeyCode::Char('y') | KeyCode::Enter, Some(c)) => Effect::ClearRetained(c.topics),
+            (KeyCode::Char('y') | KeyCode::Enter, Some(c)) => match c.action {
+                ConfirmAction::ClearRetained(topics) => Effect::ClearRetained(topics),
+                ConfirmAction::DeleteProfile(name) => Effect::DeleteProfile(name),
+            },
             _ => {
                 self.set_note(Note::info("cancelled"), Instant::now());
                 Effect::None
@@ -577,7 +689,10 @@ impl App {
             (true, 1) => format!("clear 1 retained message under {topic}?"),
             (true, n) => format!("clear {n} retained messages under {topic}?"),
         };
-        self.confirm = Some(Confirm { prompt, topics });
+        self.confirm = Some(Confirm {
+            prompt,
+            action: ConfirmAction::ClearRetained(topics),
+        });
         self.mode = Mode::Confirm;
     }
 
@@ -797,6 +912,8 @@ impl App {
             }
             Action::Chart => self.cycle_chart(),
             Action::Stats => self.mode = Mode::Stats,
+            // Picker-only.
+            Action::AddProfile | Action::EditProfile | Action::DeleteProfile => {}
             Action::ExpandAll => self.expand_subtree(true),
             Action::CollapseAll => self.expand_subtree(false),
             Action::DeleteRetained => self.ask_clear_retained(false),
@@ -1069,7 +1186,10 @@ mod tests {
         a.handle_action(Action::ClearRetained);
         let c = a.confirm.as_ref().unwrap();
         assert_eq!(c.prompt, "clear 2 retained messages under a?");
-        let mut t = c.topics.clone();
+        let ConfirmAction::ClearRetained(t) = &c.action else {
+            panic!("{c:?}");
+        };
+        let mut t = t.clone();
         t.sort();
         assert_eq!(t, vec!["a/y", "a/y/z"]);
     }
@@ -1519,6 +1639,144 @@ mod tests {
     fn picker_app(profiles: Vec<Profile>) -> App {
         let store = ProfileStore { profiles };
         App::new(Launch::Picker, store, Settings::default()).unwrap()
+    }
+
+    fn press(a: &mut App, c: char) -> Effect {
+        a.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn add_key_opens_form_and_save_emits_effect() {
+        let mut a = picker_app(vec![profile("a", PasswordSource::None)]);
+        press(&mut a, 'a');
+        assert_eq!(a.mode, Mode::ProfileForm);
+        press(&mut a, 'n');
+        a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        press(&mut a, 'h');
+        let e = a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(
+            matches!(e, Effect::SaveProfile(ref ed) if ed.profile.name == "n" && ed.original.is_none()),
+            "{e:?}"
+        );
+        assert_eq!(a.mode, Mode::ProfileForm, "open until the save is done");
+    }
+
+    #[test]
+    fn add_refuses_existing_name() {
+        let mut a = picker_app(vec![profile("a", PasswordSource::None)]);
+        press(&mut a, 'a');
+        press(&mut a, 'a');
+        a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        press(&mut a, 'h');
+        let e = a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(matches!(e, Effect::None));
+        assert_eq!(
+            a.profile_form.as_ref().unwrap().error.as_deref(),
+            Some("profile 'a' already exists")
+        );
+    }
+
+    #[test]
+    fn edit_key_opens_selected_profile() {
+        let mut a = picker_app(vec![
+            profile("a", PasswordSource::None),
+            profile("b", PasswordSource::None),
+        ]);
+        a.picker.down();
+        press(&mut a, 'e');
+        assert_eq!(a.mode, Mode::ProfileForm);
+        let e = a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(
+            matches!(e, Effect::SaveProfile(ref ed) if ed.original.as_deref() == Some("b")),
+            "{e:?}"
+        );
+        a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(a.mode, Mode::Picker);
+        assert!(a.profile_form.is_none());
+    }
+
+    #[test]
+    fn profile_saved_closes_form_and_selects() {
+        let mut a = picker_app(vec![profile("a", PasswordSource::None)]);
+        press(&mut a, 'a');
+        a.profile_saved(
+            vec![
+                profile("a", PasswordSource::None),
+                profile("n", PasswordSource::None),
+            ],
+            Some("n"),
+            "saved n",
+        );
+        assert_eq!(a.mode, Mode::Picker);
+        assert!(a.profile_form.is_none());
+        assert_eq!(a.picker.sel, 1);
+        assert_eq!(a.note_at(Instant::now()).unwrap().text, "saved n");
+        // A delete leaves the selection clamped to the shorter list.
+        a.profile_saved(vec![profile("a", PasswordSource::None)], None, "deleted n");
+        assert_eq!(a.picker.sel, 0);
+    }
+
+    #[test]
+    fn profile_save_failed_keeps_form() {
+        let mut a = picker_app(vec![]);
+        press(&mut a, 'a');
+        a.profile_save_failed("disk full".into());
+        assert_eq!(a.mode, Mode::ProfileForm);
+        assert_eq!(
+            a.profile_form.as_ref().unwrap().error.as_deref(),
+            Some("disk full")
+        );
+        // Without a form (a failed delete) it is a note.
+        let mut a = picker_app(vec![profile("a", PasswordSource::None)]);
+        a.profile_save_failed("disk full".into());
+        let n = a.note_at(Instant::now()).unwrap();
+        assert!(n.error && n.text == "disk full");
+    }
+
+    #[test]
+    fn edit_and_delete_on_empty_picker_do_nothing() {
+        let mut a = picker_app(vec![]);
+        press(&mut a, 'e');
+        assert_eq!(a.mode, Mode::Picker);
+        press(&mut a, 'D');
+        assert_eq!(a.mode, Mode::Picker);
+        assert!(a.confirm.is_none());
+    }
+
+    #[test]
+    fn delete_confirms_then_returns_to_picker() {
+        let mut a = picker_app(vec![profile("a", PasswordSource::None)]);
+        press(&mut a, 'D');
+        assert_eq!(a.mode, Mode::Confirm);
+        assert_eq!(a.confirm.as_ref().unwrap().prompt, "delete profile a?");
+        let e = press(&mut a, 'y');
+        assert!(
+            matches!(e, Effect::DeleteProfile(ref n) if n == "a"),
+            "{e:?}"
+        );
+        assert_eq!(a.mode, Mode::Picker);
+        press(&mut a, 'D');
+        let e = press(&mut a, 'n');
+        assert!(matches!(e, Effect::None));
+        assert_eq!(a.mode, Mode::Picker);
+        assert_eq!(a.note_at(Instant::now()).unwrap().text, "cancelled");
+    }
+
+    #[test]
+    fn profile_keys_refused_when_store_broken() {
+        let mut a = picker_app(vec![]);
+        a.store_error = Some("parse error".into());
+        for c in ['a', 'e', 'D'] {
+            press(&mut a, c);
+            assert_eq!(a.mode, Mode::Picker, "{c}");
+            assert!(
+                a.note_at(Instant::now())
+                    .unwrap()
+                    .text
+                    .contains("profiles.toml has errors"),
+                "{c}"
+            );
+        }
     }
 
     #[test]

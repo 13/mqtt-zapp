@@ -6,7 +6,6 @@ mod app;
 mod keymap;
 mod message_view;
 mod picker;
-#[allow(dead_code)] // wired into the picker in the next commit
 mod profile_form;
 mod publish;
 mod rows;
@@ -114,6 +113,8 @@ impl Session {
                     Instant::now(),
                 );
             }
+            // Persisted in the next commit.
+            Effect::SaveProfile(_) | Effect::DeleteProfile(_) => {}
             Effect::Connect(profile, password) => {
                 self.disconnect();
                 app.reset_tree();

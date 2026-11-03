@@ -34,6 +34,9 @@ pub enum Action {
     CollapseAll,
     Chart,
     Stats,
+    AddProfile,
+    EditProfile,
+    DeleteProfile,
 }
 
 impl Action {
@@ -65,6 +68,9 @@ impl Action {
         (Action::CollapseAll, "collapse_all", &["H"]),
         (Action::Chart, "chart", &["c"]),
         (Action::Stats, "stats", &["S"]),
+        (Action::AddProfile, "add_profile", &["a"]),
+        (Action::EditProfile, "edit_profile", &["e"]),
+        (Action::DeleteProfile, "delete_profile", &["D"]),
     ];
 
     /// The snake_case name used in `[keys]`.
@@ -228,6 +234,16 @@ impl Keymap {
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn profile_actions_have_defaults() {
+        let k = Keymap::from_settings(&BTreeMap::new()).unwrap();
+        let ev = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        assert_eq!(k.lookup(ev('a')), Some(Action::AddProfile));
+        assert_eq!(k.lookup(ev('e')), Some(Action::EditProfile));
+        assert_eq!(k.lookup(ev('D')), Some(Action::DeleteProfile));
+        assert_eq!(Action::DeleteProfile.name(), "delete_profile");
+    }
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)

@@ -11,7 +11,7 @@ use ratatui::widgets::{Clear, Paragraph};
 use std::fmt;
 use unicode_width::UnicodeWidthStr;
 
-pub const EMPTY_HINT: &str = "no profiles – add one with: mqtt-zapp profile add --name … --host …";
+pub const EMPTY_HINT: &str = "no profiles – press a to add one";
 
 #[derive(Debug, Default)]
 pub struct PickerState {

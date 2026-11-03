@@ -39,16 +39,40 @@ pub fn render(f: &mut Frame, app: &mut App) {
         return;
     }
     match app.mode {
-        Mode::Picker | Mode::Password => render_front(f, app, area),
+        Mode::Picker | Mode::Password | Mode::ProfileForm => render_front(f, app, area),
+        Mode::Confirm if on_front(app) => render_front(f, app, area),
         _ => render_browse(f, app, area),
     }
     theme::apply(f.buffer_mut(), area, app.theme);
+}
+
+/// Whether a confirm question belongs to the picker (deleting a profile).
+fn on_front(app: &App) -> bool {
+    matches!(
+        app.confirm,
+        Some(super::app::Confirm {
+            action: super::app::ConfirmAction::DeleteProfile(_),
+            ..
+        })
+    )
 }
 
 /// The picker and the password prompt: a centred card above the footer.
 fn render_front(f: &mut Frame, app: &App, area: Rect) {
     let [main, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
     match (app.mode, &app.password) {
+        (Mode::ProfileForm, _) => {
+            let _ = super::picker::render_picker(f, main, &app.picker, None);
+            if let Some(form) = &app.profile_form {
+                super::profile_form::render(f, main, form);
+            }
+        }
+        (Mode::Confirm, _) => {
+            let _ = super::picker::render_picker(f, main, &app.picker, None);
+            if let Some(c) = &app.confirm {
+                render_confirm(f, main, c);
+            }
+        }
         (Mode::Password, Some(st)) => {
             if !app.picker.profiles.is_empty() {
                 let _ = super::picker::render_picker(f, main, &app.picker, None);
@@ -199,6 +223,15 @@ const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
         "tree",
         1,
         &[Action::CycleSort, Action::ExpandAll, Action::CollapseAll],
+    ),
+    (
+        "picker",
+        0,
+        &[
+            Action::AddProfile,
+            Action::EditProfile,
+            Action::DeleteProfile,
+        ],
     ),
 ];
 
@@ -510,6 +543,9 @@ fn hints(app: &App) -> Vec<(String, &'static str)> {
         ],
         (Mode::Picker, _) => vec![
             (k(Action::Select), "connect"),
+            (k(Action::AddProfile), "add"),
+            (k(Action::EditProfile), "edit"),
+            (k(Action::DeleteProfile), "delete"),
             (jk, "move"),
             (k(Action::Quit), "quit"),
         ],
@@ -517,6 +553,12 @@ fn hints(app: &App) -> Vec<(String, &'static str)> {
             vec![("enter".into(), "connect"), ("esc".into(), "quit")]
         }
         (Mode::Password, _) => vec![("enter".into(), "connect"), ("esc".into(), "back")],
+        (Mode::ProfileForm, _) => vec![
+            ("ctrl-s".into(), "save"),
+            ("tab".into(), "next"),
+            ("space".into(), "change"),
+            ("esc".into(), "cancel"),
+        ],
         (Mode::Confirm, _) => vec![("y".into(), "confirm"), ("esc".into(), "cancel")],
         (Mode::Publish, _) => vec![
             ("ctrl-s".into(), "send"),
@@ -1537,10 +1579,7 @@ mod tests {
     fn empty_picker_hint() {
         let mut a = picker_app(vec![]);
         let s = text(&draw(&mut a, 90, 24));
-        assert!(
-            s.contains("no profiles – add one with: mqtt-zapp profile add --name … --host …"),
-            "{s}"
-        );
+        assert!(s.contains("no profiles – press a to add one"), "{s}");
         assert!(!s.contains("load error"));
         a.store_error = Some("load error: bad toml".into());
         let s = text(&draw(&mut a, 90, 24));
@@ -1567,9 +1606,27 @@ mod tests {
         let other = s.lines().position(|l| l.contains("  home ")).unwrap() as u16;
         assert_ne!(b[(col, other)].bg, theme::SEL_BG);
         assert!(
-            last_line(&b).contains("enter connect  j/k move  q quit"),
+            last_line(&b).contains("enter connect  a add  e edit  D delete  j/k move  q quit"),
             "{s}"
         );
+    }
+
+    #[test]
+    fn profile_form_drawn_over_picker() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use mqtt_zapp_core::config::PasswordSource::None as N;
+        let mut a = picker_app(vec![profile("home", N)]);
+        a.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        let b = draw(&mut a, 80, 24);
+        let s = text(&b);
+        assert!(s.contains("add profile"), "{s}");
+        assert!(last_line(&b).contains("ctrl-s save"), "{s}");
+        // Deleting asks on the front screen too.
+        a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        a.handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE));
+        let s = text(&draw(&mut a, 80, 24));
+        assert!(s.contains("delete profile home?"), "{s}");
+        assert!(s.contains("home"), "picker behind it: {s}");
     }
 
     #[test]

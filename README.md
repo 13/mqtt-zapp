@@ -33,6 +33,11 @@ mqtt-zapp --host 192.168.1.10              # ad-hoc, plain mqtt on 1883
 
 ### Profiles
 
+In the picker, `a` adds a profile, `e` edits the selected one and `D` deletes
+it (after a yes/no). The form covers every field; `space` or `←`/`→` change the
+protocol and password source, and `ctrl-s` saves to `profiles.toml`. A keyring
+password typed there goes to the keyring, never the file. From the shell:
+
 ```sh
 # plain mqtt
 mqtt-zapp profile add --name home --host 192.168.1.10
@@ -49,8 +54,8 @@ mqtt-zapp profile add --name a --host h --user me --password-mode prompt
 mqtt-zapp profile add --name b --host h --user me --password-mode keyring
 ```
 
-The websocket path defaults to `/`. For a different one, edit `ws_path` in
-`profiles.toml` (for example `ws_path = "/mqtt"`).
+The websocket path defaults to `/`. Set a different one in the picker's form,
+or edit `ws_path` in `profiles.toml` (for example `ws_path = "/mqtt"`).
 
 **Passwords are never stored in the config files.** With the default `keyring`
 build feature they can live in the system keyring. The static musl release is
@@ -87,6 +92,9 @@ time.
 | `H` | `collapse_all` | Collapse the selected node and everything below it |
 | `c` | `chart` | Chart the payload, or cycle through its numeric JSON fields |
 | `S` | `stats` | Show broker statistics from `$SYS` |
+| `a` | `add_profile` | In the picker: add a profile |
+| `e` | `edit_profile` | In the picker: edit the selected profile |
+| `D` | `delete_profile` | In the picker: delete the selected profile |
 
 `?` shows the effective keys, including your remaps. The publish form and
 search input take typed text and do not use the keymap; the help lists their
@@ -135,4 +143,3 @@ Planned for Phase 1.x:
 
 - Sparkplug B decoding
 - MQTT 5
-- a profile editor in the TUI
