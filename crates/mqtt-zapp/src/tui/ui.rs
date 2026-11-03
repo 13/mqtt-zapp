@@ -272,7 +272,7 @@ fn single_line(s: &str) -> String {
 }
 
 /// Shortest key bound to `action` (`j` over `down`), or `?` when unbound.
-fn key_for(app: &App, action: Action) -> String {
+pub(super) fn key_for(app: &App, action: Action) -> String {
     app.keymap
         .bindings()
         .into_iter()
@@ -650,7 +650,11 @@ mod tests {
         assert!(last.starts_with("/wzr▏"), "{last}");
         assert!(last.ends_with("enter keep  esc clear"), "{last}");
         assert!(!s.contains("  b  1"), "non-matching row hidden: {s}");
-        let row = s.lines().position(|l| l.contains("esp-WZR1  ")).unwrap();
+        let tree_part = |l: &str| l.chars().take(40).collect::<String>();
+        let row = s
+            .lines()
+            .position(|l| tree_part(l).contains("esp-WZR1  "))
+            .unwrap();
         let line = s.lines().nth(row).unwrap();
         let line = &line[..line.char_indices().nth(40).unwrap().0]; // tree pane
         let col_of = |byte: usize| line[..byte].chars().count() as u16;

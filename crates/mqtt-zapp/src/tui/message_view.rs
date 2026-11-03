@@ -3,16 +3,17 @@
 //! from the broker is sanitized before it is drawn.
 
 use super::app::{App, Focus};
+use super::keymap::Action;
 use super::theme;
 use chrono::{DateTime, Local};
 use mqtt_zapp_core::diff::{ChangeKind, Diff, LineTag, diff};
-use mqtt_zapp_core::payload::{detect, pretty_lines, preview, sanitize};
+use mqtt_zapp_core::payload::{PayloadKind, detect, pretty_lines, preview, sanitize};
 use mqtt_zapp_core::{Message, TopicNode};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::SystemTime;
@@ -26,12 +27,14 @@ const HISTORY_ROWS: usize = 6;
 
 type Stamp = (SystemTime, usize);
 type CacheKey = (usize, Stamp, Option<Stamp>, bool);
+/// The built payload area plus the shown message's kind label (`JSON`, ...).
+type Built = (Rc<Body>, &'static str);
 
 /// The last computed `Body`, reused until the shown message(s) or the diff
 /// toggle change, so a frame costs nothing for big payloads.
 #[derive(Default)]
 pub struct BodyCache {
-    slot: RefCell<Option<(CacheKey, Rc<Body>)>>,
+    slot: RefCell<Option<(CacheKey, Built)>>,
     #[cfg(test)]
     builds: std::cell::Cell<u32>,
 }
@@ -96,7 +99,7 @@ fn shown(app: &App) -> Option<Shown<'_>> {
     })
 }
 
-fn body(app: &App) -> Option<Rc<Body>> {
+fn body(app: &App) -> Option<Built> {
     let s = shown(app)?;
     let stamp = |m: &Message| (m.received_at, m.payload.len());
     let key = (
@@ -105,24 +108,29 @@ fn body(app: &App) -> Option<Rc<Body>> {
         s.prev.map(stamp),
         app.show_diff,
     );
-    if let Some((k, b)) = &*app.body_cache.slot.borrow()
+    if let Some((k, (b, kind))) = &*app.body_cache.slot.borrow()
         && *k == key
     {
-        return Some(Rc::clone(b));
+        return Some((Rc::clone(b), kind));
     }
     #[cfg(test)]
     app.body_cache.builds.set(app.body_cache.builds.get() + 1);
-    let b = Rc::new(build_body(&s, app.show_diff));
-    *app.body_cache.slot.borrow_mut() = Some((key, Rc::clone(&b)));
-    Some(b)
+    let kind = detect(&s.msg.payload);
+    let label = match kind {
+        PayloadKind::Json(_) => "JSON",
+        PayloadKind::Text(_) => "TEXT",
+        PayloadKind::Binary => "BINARY",
+    };
+    let b = Rc::new(build_body(&s, kind, app.show_diff));
+    *app.body_cache.slot.borrow_mut() = Some((key, (Rc::clone(&b), label)));
+    Some((b, label))
 }
 
-fn build_body(s: &Shown, show_diff: bool) -> Body {
+fn build_body(s: &Shown, kind: PayloadKind, show_diff: bool) -> Body {
     if !show_diff {
-        let kind = detect(&s.msg.payload);
         let lines = pretty_lines(&kind, &s.msg.payload);
         return match kind {
-            mqtt_zapp_core::payload::PayloadKind::Json(_) => Body::Json(lines),
+            PayloadKind::Json(_) => Body::Json(lines),
             _ => Body::Plain(lines),
         };
     }
@@ -171,7 +179,7 @@ fn build_body(s: &Shown, show_diff: bool) -> Body {
 
 /// Number of lines the payload area scrolls over (for clamping).
 pub fn content_len(app: &App) -> usize {
-    body(app).map_or(0, |b| b.len())
+    body(app).map_or(0, |(b, _)| b.len())
 }
 
 fn one_line(s: &str) -> String {
@@ -182,25 +190,62 @@ fn clock(t: SystemTime, fmt: &str) -> String {
     DateTime::<Local>::from(t).format(fmt).to_string()
 }
 
-fn metadata(s: &Shown, topic: &str) -> String {
-    let mut out = format!("{} · qos {}", one_line(topic), s.msg.qos);
-    if s.msg.retain {
-        out.push_str(" · retained");
+/// `512 B`, `1.5 KiB`, `5.0 MiB`.
+fn human_bytes(n: usize) -> String {
+    const KIB: f64 = 1024.0;
+    match n as f64 {
+        x if x < KIB => format!("{n} B"),
+        x if x < KIB * KIB => format!("{:.1} KiB", x / KIB),
+        x => format!("{:.1} MiB", x / (KIB * KIB)),
     }
-    out.push_str(&format!(
-        " · {} B · {}",
-        s.msg.payload.len(),
-        clock(s.msg.received_at, "%H:%M:%S%.3f")
-    ));
-    out
+}
+
+/// `topic  QoS 1  RETAINED  JSON  5 B  12:00:00.000` as styled chips.
+fn metadata(s: &Shown, topic: &str, kind: &str) -> Line<'static> {
+    let muted = Style::new().fg(theme::MUTED);
+    let chip = Style::new()
+        .fg(theme::MUTED)
+        .add_modifier(Modifier::REVERSED);
+    let mut spans = vec![
+        Span::styled(
+            one_line(topic),
+            Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(format!(" QoS {} ", s.msg.qos), chip),
+    ];
+    if s.msg.retain {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            " RETAINED ",
+            Style::new().fg(Color::Black).bg(Color::Magenta),
+        ));
+    }
+    spans.extend([
+        Span::raw(" "),
+        Span::styled(format!(" {kind} "), chip),
+        Span::raw(" "),
+        Span::styled(human_bytes(s.msg.payload.len()), muted),
+        Span::raw(" "),
+        Span::styled(clock(s.msg.received_at, "%H:%M:%S%.3f"), muted),
+    ]);
+    Line::from(spans)
 }
 
 pub fn render_message(f: &mut Frame, area: Rect, app: &App) {
     let Some(s) = shown(app) else {
+        let block = theme::pane("message", false);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let [_, mid] = Layout::vertical([
+            Constraint::Length(inner.height.saturating_sub(1) / 2),
+            Constraint::Min(0),
+        ])
+        .areas(inner);
         let hint = Paragraph::new(HINT)
-            .style(Style::new().add_modifier(Modifier::DIM))
-            .block(Block::bordered().title("message"));
-        f.render_widget(hint, area);
+            .style(Style::new().fg(theme::MUTED))
+            .alignment(Alignment::Center);
+        f.render_widget(hint, mid);
         return;
     };
     let hist_rows = s.node.history.len().min(HISTORY_ROWS) as u16;
@@ -212,22 +257,33 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App) {
     .areas(area);
 
     let topic = app.tree.full_topic(app.selected.unwrap_or_default());
-    f.render_widget(Paragraph::new(metadata(&s, &topic)), meta);
+    let kind = body(app).map_or("", |(_, k)| k);
+    f.render_widget(Paragraph::new(metadata(&s, &topic, kind)), meta);
     render_payload(f, payload, app);
     render_history(f, history, app, &s);
 }
 
 fn render_payload(f: &mut Frame, area: Rect, app: &App) {
     let title = if app.show_diff { "diff" } else { "payload" };
-    let block = theme::pane(title, app.focus == Focus::Payload);
+    let mut block = theme::pane(title, app.focus == Focus::Payload);
     let height = block.inner(area).height;
     app.payload_height.set(height);
-    let Some(body) = body(app) else { return };
+    let Some((body, _)) = body(app) else { return };
     let body = &*body;
     // The stored scroll may predate a resize or a new message.
     let max = body.len().saturating_sub(height as usize);
     let skip = app.payload_scroll.min(max);
     let take = height as usize;
+    if body.len() > take {
+        let last = (skip + take).min(body.len());
+        block = block.title_bottom(
+            Line::styled(
+                format!(" {}-{last}/{} ", skip + 1, body.len()),
+                Style::new().fg(theme::MUTED),
+            )
+            .right_aligned(),
+        );
+    }
     let lines: Vec<Line> = match body {
         Body::Json(l) => l
             .iter()
@@ -257,11 +313,14 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
 
 fn render_history(f: &mut Frame, area: Rect, app: &App, s: &Shown) {
     let title = match app.history_sel {
-        None => "history (live)",
-        Some(_) => "history (frozen)",
+        None => "history · live".to_owned(),
+        Some(_) => format!(
+            "history · paused ({} to newest)",
+            super::ui::key_for(app, Action::Down)
+        ),
     };
     let focused = app.focus == Focus::History;
-    let block = theme::pane(title, focused);
+    let block = theme::pane(&title, focused);
     let height = block.inner(area).height as usize;
     let h = &s.node.history;
     // Newest first: row `r` is history index `len - 1 - r`.
@@ -274,17 +333,18 @@ fn render_history(f: &mut Frame, area: Rect, app: &App, s: &Shown) {
         .skip(offset)
         .take(height)
         .map(|(row, m)| {
-            let text = format!(
-                "{}  {}",
-                clock(m.received_at, "%H:%M:%S"),
-                preview(&m.payload, HISTORY_PREVIEW)
-            );
-            let style = if Some(row) == sel_row && app.history_sel.is_some() {
-                theme::selection(focused)
+            let line = Line::from(vec![
+                Span::styled(
+                    clock(m.received_at, "%H:%M:%S"),
+                    Style::new().fg(theme::MUTED),
+                ),
+                Span::raw(format!("  {}", preview(&m.payload, HISTORY_PREVIEW))),
+            ]);
+            if Some(row) == sel_row && app.history_sel.is_some() {
+                line.style(theme::selection(focused))
             } else {
-                Style::new()
-            };
-            Line::styled(text, style)
+                line
+            }
         })
         .collect();
     f.render_widget(Paragraph::new(lines).block(block), area);
@@ -488,21 +548,70 @@ mod tests {
         let mut a = app_depth(10);
         send(&mut a, T, b"hello", true);
         a.selected = a.tree.find(T);
-        let l = lines(&draw(&a));
-        let m = l.iter().find(|r| r.contains("dev/x")).unwrap();
-        assert!(m.contains("qos 1"), "{m}");
-        assert!(m.contains("retained"), "{m}");
+        let b = draw(&a);
+        let l = lines(&b);
+        let y = l.iter().position(|r| r.contains("dev/x")).unwrap();
+        let m = &l[y];
+        assert!(m.contains(" QoS 1 "), "{m}");
+        assert!(m.contains(" RETAINED "), "{m}");
+        assert!(m.contains(" TEXT "), "{m}");
         assert!(m.contains("5 B"), "{m}");
-        let t = m.split(" · ").last().unwrap().trim();
+        let x = m[..m.find("RETAINED").unwrap()].chars().count() as u16;
+        assert_eq!(b[(x, y as u16)].bg, Color::Magenta);
+        let t = m.split(' ').rfind(|w| !w.is_empty()).unwrap();
         assert_eq!(t.len(), 12, "HH:MM:SS.mmm in {t:?}");
         assert_eq!(&t[2..3], ":");
         assert_eq!(&t[8..9], ".");
     }
 
     #[test]
+    fn human_bytes_units() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(1023), "1023 B");
+        assert_eq!(human_bytes(1536), "1.5 KiB");
+        assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MiB");
+    }
+
+    #[test]
+    fn meta_shows_json_kind() {
+        let a = app_with(&[br#"{"a":1}"#]);
+        let s = text(&draw(&a));
+        assert!(s.contains(" JSON "), "{s}");
+        let a = app_with(&[&[0xff, 0x00]]);
+        assert!(text(&draw(&a)).contains(" BINARY "));
+    }
+
+    #[test]
+    fn payload_scroll_indicator() {
+        let body = (0..50)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut a = app_with(&[body.as_bytes()]);
+        let _ = draw(&a);
+        let s = text(&draw(&a));
+        assert!(s.contains("/50"), "{s}");
+        a.handle_action(Action::ScrollDown);
+        let h = usize::from(a.payload_height.get());
+        let s = text(&draw(&a));
+        let want = format!("{}-{}/50", h / 2 + 1, h / 2 + h);
+        assert!(s.contains(&want), "{want}: {s}");
+        let a = app_with(&[b"short"]);
+        assert!(!text(&draw(&a)).contains("/1"));
+    }
+
+    #[test]
+    fn history_title_says_live_or_paused() {
+        let mut a = app_with(&[b"1", b"2"]);
+        assert!(text(&draw(&a)).contains("history · live"));
+        a.history_sel = Some(0);
+        assert!(text(&draw(&a)).contains("history · paused (j to newest)"));
+    }
+
+    #[test]
     fn not_retained_is_not_marked() {
         let a = app_with(&[b"hello"]);
-        assert!(!text(&draw(&a)).contains("retained"));
+        assert!(!text(&draw(&a)).contains("RETAINED"));
     }
 
     #[test]
