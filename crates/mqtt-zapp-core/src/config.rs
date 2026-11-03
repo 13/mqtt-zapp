@@ -180,6 +180,7 @@ pub struct Settings {
     /// Cap on payload bytes kept in all topics' history together, in MiB.
     pub max_history_mb: usize,
     /// Payloads longer than this many KiB are cut and marked truncated.
+    /// 0 means no cap.
     pub max_payload_kb: usize,
     /// Cap on topic levels in the tree; messages that need more are refused.
     pub max_topics: usize,

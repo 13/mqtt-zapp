@@ -131,7 +131,13 @@ fn body(app: &App) -> Option<Built> {
     }
     #[cfg(test)]
     app.body_cache.builds.set(app.body_cache.builds.get() + 1);
-    let kind = detect(&s.msg.payload);
+    let kind = match detect(&s.msg.payload) {
+        // A cut payload shows as text even when its prefix parses as JSON.
+        PayloadKind::Json(_) if s.msg.truncated_from.is_some() => {
+            PayloadKind::Text(String::from_utf8_lossy(&s.msg.payload).into_owned())
+        }
+        k => k,
+    };
     let label = match kind {
         PayloadKind::Json(_) => "JSON",
         PayloadKind::Text(_) => "TEXT",
@@ -145,7 +151,7 @@ fn body(app: &App) -> Option<Built> {
 fn build_body(s: &Shown, kind: PayloadKind, show_diff: bool) -> Body {
     if !show_diff {
         let mut lines = pretty_lines(&kind, &s.msg.payload);
-        // A cut payload shows as plain text: the marker is not JSON.
+        // `body` already made a cut JSON payload text; the marker is not JSON.
         return match (kind, s.msg.truncated_from) {
             (_, Some(n)) => {
                 lines.push(format!("… truncated ({n} bytes)"));

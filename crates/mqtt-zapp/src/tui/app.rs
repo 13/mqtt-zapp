@@ -271,7 +271,8 @@ pub struct App {
     pub keymap: Keymap,
     history_depth: usize,
     max_history_bytes: usize,
-    /// Payloads are cut to this many bytes on arrival.
+    /// Payloads are cut to this many bytes on arrival (`max_payload_kb`
+    /// 0: `usize::MAX`, no cap).
     max_payload_bytes: usize,
     max_topics: usize,
     /// New nodes at this depth or less start expanded.
@@ -363,7 +364,10 @@ impl App {
             keymap: Keymap::from_settings(&settings.keys)?,
             history_depth: settings.history_depth,
             max_history_bytes: settings.max_history_mb.saturating_mul(1024 * 1024),
-            max_payload_bytes: settings.max_payload_kb.saturating_mul(1024),
+            max_payload_bytes: match settings.max_payload_kb {
+                0 => usize::MAX,
+                kb => kb.saturating_mul(1024),
+            },
             max_topics: settings.max_topics,
             auto_expand: settings.auto_expand,
             pending_connect,

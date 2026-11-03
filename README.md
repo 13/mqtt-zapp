@@ -239,7 +239,8 @@ config dir. Set `MQTT_ZAPP_CONFIG_DIR` to use another directory.
 history_depth = 200      # messages kept per topic (default 100)
 max_history_mb = 256     # payload bytes kept across all topics' history; each
                          # topic always keeps its latest message (default 256)
-max_payload_kb = 16384   # longer payloads are cut and marked truncated (default 16384)
+max_payload_kb = 16384   # longer payloads are cut and marked truncated; 0: no cap
+                         # (default 16384)
 max_topics = 200000      # topic levels kept; messages on new topics past it are
                          # refused and counted in the header (default 200000)
 auto_expand = 1          # new topics this many levels deep start expanded (default 0)

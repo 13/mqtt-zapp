@@ -144,6 +144,23 @@ enum Polled {
     Err(String),
 }
 
+/// A received publish as a `Message`, its payload copied once.
+///
+/// rumqttc reads packets into a shared `BytesMut` (10 KiB or more) and hands
+/// out each payload as a frozen slice of it, so keeping that `Bytes` would
+/// pin the whole read chunk: a 4-byte `latest` could hold megabytes alive
+/// and `max_history_mb` would no longer bound real memory. The copy is the
+/// only one; `latest` and history share it.
+fn incoming(payload: &[u8], qos: u8, retain: bool) -> Message {
+    Message {
+        payload: bytes::Bytes::copy_from_slice(payload),
+        qos,
+        retain,
+        received_at: SystemTime::now(),
+        truncated_from: None,
+    }
+}
+
 impl Loop {
     /// Forget the requests rumqttc kept across a failed connection (in flight
     /// or queued), so a clear or publish made while disconnected is never
@@ -156,18 +173,11 @@ impl Loop {
     }
 
     async fn poll(&mut self) -> Polled {
-        let now = SystemTime::now;
         match self {
             Loop::V4(l) => match l.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => Polled::ConnAck,
                 Ok(Event::Incoming(Packet::Publish(p))) => Polled::Publish {
-                    msg: Message {
-                        payload: p.payload,
-                        qos: p.qos as u8,
-                        retain: p.retain,
-                        received_at: now(),
-                        truncated_from: None,
-                    },
+                    msg: incoming(&p.payload, p.qos as u8, p.retain),
                     topic: p.topic,
                 },
                 Ok(Event::Outgoing(Outgoing::Disconnect)) => Polled::OutgoingDisconnect,
@@ -177,13 +187,7 @@ impl Loop {
             Loop::V5(l) => match l.poll().await {
                 Ok(v5::Event::Incoming(v5::Incoming::ConnAck(_))) => Polled::ConnAck,
                 Ok(v5::Event::Incoming(v5::Incoming::Publish(p))) => Polled::Publish {
-                    msg: Message {
-                        payload: p.payload,
-                        qos: p.qos as u8,
-                        retain: p.retain,
-                        received_at: now(),
-                        truncated_from: None,
-                    },
+                    msg: incoming(&p.payload, p.qos as u8, p.retain),
                     topic: String::from_utf8_lossy(&p.topic).into_owned(),
                 },
                 Ok(v5::Event::Outgoing(Outgoing::Disconnect)) => Polled::OutgoingDisconnect,
@@ -569,6 +573,21 @@ mod insecure {
 mod tests {
     use super::*;
     use crate::config::PasswordSource;
+
+    #[test]
+    fn incoming_payload_does_not_alias_the_read_buffer() {
+        // rumqttc hands out the payload as a slice of its shared read chunk.
+        let chunk = bytes::Bytes::from(vec![7u8; 64 * 1024]);
+        let p = chunk.slice(100..104);
+        let m = incoming(&p, 1, true);
+        assert_eq!(&m.payload[..], &[7u8; 4][..]);
+        assert_eq!((m.qos, m.retain, m.truncated_from), (1, true, None));
+        let range = chunk.as_ptr_range();
+        assert!(
+            !range.contains(&m.payload.as_ptr()),
+            "the stored payload must not pin the read chunk"
+        );
+    }
 
     fn profile(host: &str, protocol: Protocol, ws_path: &str) -> Profile {
         Profile {

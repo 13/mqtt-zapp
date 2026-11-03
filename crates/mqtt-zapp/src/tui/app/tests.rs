@@ -1655,3 +1655,19 @@ fn security_warning_cleartext_password() {
     let p = warn_profile(Protocol::Mqtts, false, true, PasswordSource::Prompt);
     assert_eq!(w(&p), None, "verified tls is fine");
 }
+
+#[test]
+fn zero_payload_cap_means_unlimited() {
+    let settings = Settings {
+        max_payload_kb: 0,
+        ..Settings::default()
+    };
+    let mut a = App::new(Launch::Picker, ProfileStore::default(), settings).unwrap();
+    a.mode = Mode::Browse;
+    let big = "x".repeat(3000);
+    a.apply_core_event(msg("t", &big));
+    let n = a.tree.node(a.tree.find("t").unwrap());
+    let m = n.latest.as_ref().unwrap();
+    assert_eq!((m.payload.len(), m.truncated_from), (3000, None));
+    assert!(n.retained, "a non-empty retained payload stays retained");
+}

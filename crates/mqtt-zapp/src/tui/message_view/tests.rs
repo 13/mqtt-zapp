@@ -1092,3 +1092,27 @@ fn truncated_json_renders_as_text_with_marker() {
         let _ = draw(&a);
     }
 }
+
+#[test]
+fn truncated_prefix_that_parses_as_json_is_labelled_text() {
+    let settings = Settings {
+        max_payload_kb: 1,
+        ..Settings::default()
+    };
+    let mut a = App::new(Launch::Picker, ProfileStore::default(), settings).unwrap();
+    a.mode = Mode::Browse;
+    // Valid JSON in the first 1 KiB, padding after it.
+    let json = format!("{{\"a\":1}}{}", " ".repeat(2000));
+    send(&mut a, T, json.as_bytes(), false);
+    a.selected = a.tree.find(T);
+    let (body, kind) = body(&a).unwrap();
+    assert_eq!(kind, "TEXT");
+    let Body::Plain(l) = &*body else {
+        panic!("not plain text");
+    };
+    assert!(
+        l[0].starts_with("{\"a\":1}"),
+        "raw text, not pretty JSON: {l:?}"
+    );
+    assert_eq!(l.last().unwrap(), "… truncated (2007 bytes)");
+}
