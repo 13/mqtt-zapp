@@ -626,9 +626,6 @@ impl App {
             .is_some_and(|t| now.saturating_duration_since(t) < FLASH)
     }
 
-    /// The tree pane's rows, cached until the tree's shape, the expanded
-    /// set, the filter or the sort changes (Count and Recent: or a second
-    /// passes). Cheap to call per frame and per key.
     /// The rows the last frame drew (or `rows()` before any frame).
     pub(super) fn drawn_rows(&self) -> Rc<[Row]> {
         self.drawn_rows
@@ -637,10 +634,14 @@ impl App {
             .unwrap_or_else(|| self.rows())
     }
 
+    /// Record the rows this frame drew, for the next mouse click.
     pub(super) fn set_drawn_rows(&self, rows: &Rc<[Row]>) {
         *self.drawn_rows.borrow_mut() = Some(Rc::clone(rows));
     }
 
+    /// The tree pane's rows, cached until the tree's shape, the expanded
+    /// set, the filter or the sort changes (Count and Recent: or a second
+    /// passes). Cheap to call per frame and per key.
     pub fn rows(&self) -> Rc<[Row]> {
         let key = RowsKey {
             shape: self.tree.shape_gen(),
