@@ -40,9 +40,37 @@ pub fn sanitize(s: &str) -> String {
         match c {
             '\n' => out.push('\n'),
             '\t' => out.push_str("    "),
-            c if c.is_control() => out.push('\u{fffd}'),
+            c if c.is_control() || is_invisible_format(c) => out.push('\u{fffd}'),
             c => out.push(c),
         }
+    }
+    out
+}
+
+/// Upper bound on bytes handed to the clipboard.
+pub const CLIPBOARD_MAX: usize = 1 << 20;
+
+/// Bidi controls and zero-width characters that hide or reorder text.
+/// U+200D (ZWJ) is deliberately excluded: emoji sequences need it.
+fn is_invisible_format(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{061C}' | '\u{200B}' | '\u{200C}' | '\u{200E}' | '\u{200F}'
+        | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}'
+        | '\u{FEFF}')
+}
+
+/// Text for the clipboard: keeps `\n` and `\t`, drops other controls and invisible
+/// format characters, and stops at a char boundary at or below `max` bytes.
+pub fn clipboard_safe(s: &str, max: usize) -> String {
+    let mut out = String::with_capacity(s.len().min(max));
+    for c in s.chars() {
+        if (c.is_control() && c != '\n' && c != '\t') || is_invisible_format(c) {
+            continue;
+        }
+        if out.len() + c.len_utf8() > max {
+            break;
+        }
+        out.push(c);
     }
     out
 }
@@ -252,6 +280,25 @@ pub fn preview(payload: &[u8], max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_replaces_bidi_and_zero_width() {
+        assert_eq!(sanitize("x/\u{202E}evil\u{200B}"), "x/\u{fffd}evil\u{fffd}");
+        assert_eq!(sanitize("👩\u{200D}💻"), "👩\u{200D}💻");
+    }
+
+    #[test]
+    fn clipboard_safe_strips_escapes_keeps_newlines() {
+        assert_eq!(
+            clipboard_safe("a\x1b[201~\nb\tc\u{202E}", 100),
+            "a[201~\nb\tc"
+        );
+    }
+
+    #[test]
+    fn clipboard_safe_cuts_on_char_boundary() {
+        assert_eq!(clipboard_safe("aé", 2), "a");
+    }
 
     fn pretty(p: &[u8]) -> Vec<String> {
         pretty_lines(&detect(p), p)

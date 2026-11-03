@@ -155,7 +155,10 @@ impl App {
         match self.rows().get(idx) {
             Some(row) => Effect::Copy {
                 what: "topic",
-                text: self.tree.full_topic(row.id),
+                text: mqtt_zapp_core::payload::clipboard_safe(
+                    &self.tree.full_topic(row.id),
+                    mqtt_zapp_core::payload::CLIPBOARD_MAX,
+                ),
             },
             None => Effect::None,
         }

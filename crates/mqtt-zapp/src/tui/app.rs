@@ -1056,7 +1056,10 @@ impl App {
         match text {
             Some(text) => Effect::Copy {
                 what: if topic { "topic" } else { "payload" },
-                text,
+                text: mqtt_zapp_core::payload::clipboard_safe(
+                    &text,
+                    mqtt_zapp_core::payload::CLIPBOARD_MAX,
+                ),
             },
             None => {
                 self.set_note(Note::info("nothing to copy"), Instant::now());

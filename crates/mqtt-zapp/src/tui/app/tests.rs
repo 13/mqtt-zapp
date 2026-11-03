@@ -57,6 +57,17 @@ fn y_copies_topic_and_Y_copies_shown_payload() {
     }
 }
 
+#[test]
+fn copied_payload_is_sanitized() {
+    let mut a = browse(&[]);
+    a.apply_core_event(msg("x/y", "ok\x1b]52;c;x\x07"));
+    a.selected = a.tree.find("x/y");
+    match a.handle_action(Action::CopyPayload) {
+        Effect::Copy { text, .. } => assert_eq!(text, "ok]52;c;x"),
+        e => panic!("{e:?}"),
+    }
+}
+
 fn plain(topic: &str, p: &str) -> CoreEvent {
     match msg(topic, p) {
         CoreEvent::Message { topic, mut msg } => {
