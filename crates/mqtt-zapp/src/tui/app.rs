@@ -559,8 +559,11 @@ impl App {
         let mut stack = vec![id];
         while let Some(n) = stack.pop() {
             let node = self.tree.node(n);
-            if is_retained(node) {
-                topics.push(self.tree.full_topic(n));
+            // `$` topics (e.g. `$SYS`) belong to the broker; clients cannot
+            // clear them.
+            let topic = self.tree.full_topic(n);
+            if is_retained(node) && !topic.starts_with('$') {
+                topics.push(topic);
             }
             if subtree {
                 stack.extend(node.children.values());
@@ -1070,6 +1073,18 @@ mod tests {
         let mut t = c.topics.clone();
         t.sort();
         assert_eq!(t, vec!["a/y", "a/y/z"]);
+    }
+
+    #[test]
+    fn sys_topics_are_never_cleared() {
+        let mut a = browse(&["$SYS/broker/version", "$SYS/broker/uptime"]);
+        a.selected = a.tree.find("$SYS");
+        a.handle_action(Action::ClearRetained);
+        assert_eq!(a.mode, Mode::Browse);
+        assert_eq!(
+            a.note_at(Instant::now()),
+            Some(&Note::info("no retained messages here"))
+        );
     }
 
     #[test]
