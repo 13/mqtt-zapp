@@ -1271,3 +1271,20 @@ fn history_wheel_and_jk_agree() {
     assert!(wheel.history_sel.is_some());
     assert_eq!(wheel.history_sel, keys.history_sel);
 }
+
+#[test]
+fn click_payload_title_copies_payload() {
+    let mut a = app_with(&[("dev/x", b"hello")]);
+    a.selected = a.tree.find("dev/x");
+    let b = draw(&mut a, 100, 24);
+    let (x, y) = find_at(&b, " payload ");
+    assert_eq!(copied(click(&mut a, x + 1, y)), ("payload", "hello".into()));
+    assert_eq!(copied(click(&mut a, x + 7, y)), ("payload", "hello".into()));
+    // The bare border right of the title does not copy.
+    assert!(!matches!(click(&mut a, x + 12, y), Effect::Copy { .. }));
+    // Focused (` ● payload `) the title is wider and still copies.
+    a.focus = crate::tui::app::Focus::Payload;
+    let b = draw(&mut a, 100, 24);
+    let (x, y) = find_at(&b, "● payload ");
+    assert_eq!(copied(click(&mut a, x + 8, y)), ("payload", "hello".into()));
+}

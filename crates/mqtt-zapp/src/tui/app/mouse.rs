@@ -28,6 +28,8 @@ pub struct HitAreas {
     pub header_copy: Rect,
     /// The payload pane's `⧉ copy` title; a click copies the payload.
     pub payload_copy: Rect,
+    /// The payload pane's title on its top border; a click copies the payload.
+    pub payload_title: Rect,
     /// The broker name in the top bar; a click opens the picker.
     pub header_broker: Rect,
 }
@@ -99,7 +101,7 @@ impl App {
         if hit.header_copy.contains(at) || hit.header_topic.contains(at) {
             return self.copy(true);
         }
-        if hit.payload_copy.contains(at) {
+        if hit.payload_copy.contains(at) || hit.payload_title.contains(at) {
             return self.copy(false);
         }
         if hit.tree.contains(at) {

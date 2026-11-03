@@ -305,8 +305,20 @@ fn fit_topic(topic: &str, width: usize) -> (String, String) {
 
 /// The copy buttons on the header card and the payload pane's title.
 const COPY_LABEL: &str = " ⧉ copy ";
-/// The one-row header's copy button.
+/// The one-row header's copy button, and the borders' when the text does
+/// not fit.
 const COMPACT_COPY: &str = " ⧉ ";
+
+/// The copy button for a `width`-column border whose left title needs
+/// `title_w` columns: `⧉ copy` only when the whole title fits beside it
+/// (corners and one `─` between), else just `⧉`.
+fn copy_label(title_w: usize, width: u16) -> &'static str {
+    if 2 + title_w + 1 + COPY_LABEL.width() <= usize::from(width) {
+        COPY_LABEL
+    } else {
+        COMPACT_COPY
+    }
+}
 
 /// Between topic levels in the header: the topic as-is, `muh/wst/status`.
 const SEP: &str = "/";
@@ -434,6 +446,7 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
             header_topic: Rect::default(),
             header_copy: Rect::default(),
             payload_copy: Rect::default(),
+            payload_title: Rect::default(),
             ..app.hit.get()
         });
         let inner = block.inner(area);
@@ -471,7 +484,8 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
     let kind = body(app).map_or("", |(_, k)| k);
     let now = SystemTime::now();
     if card {
-        let copy_w = COPY_LABEL.width() as u16;
+        let label = copy_label(one_line(&topic).width() + 2, meta.width);
+        let copy_w = label.width() as u16;
         // Corners, one `─` between the two titles, the copy label.
         let room = usize::from(meta.width).saturating_sub(2 + 1 + usize::from(copy_w));
         let title = card_title(&topic, room);
@@ -480,7 +494,7 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
             .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(theme::MUTED))
             .title(title)
-            .title(Line::styled(COPY_LABEL, Style::new().fg(theme::MUTED)).right_aligned());
+            .title(Line::styled(label, Style::new().fg(theme::MUTED)).right_aligned());
         let inner = block.inner(meta);
         let row = header_lines(&s, kind, &app.timestamp_format, now, inner.width);
         app.hit.set(HitAreas {
@@ -643,16 +657,19 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
     let Some((body, _)) = body(app) else {
         app.hit.set(HitAreas {
             payload_copy: Rect::default(),
+            payload_title: Rect::default(),
             ..app.hit.get()
         });
         return;
     };
     let body = &*body;
     let focused = app.focus == Focus::Payload;
-    let copy_w = COPY_LABEL.width() as u16;
+    let title_w = theme::pane_title_width(title, focused);
+    let label = copy_label(title_w, area.width);
+    let copy_w = label.width() as u16;
     block = block.title(
         Line::styled(
-            COPY_LABEL,
+            label,
             Style::new().fg(if focused { theme::ACCENT } else { theme::MUTED }),
         )
         .right_aligned(),
@@ -662,6 +679,12 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
             x: (area.x + area.width).saturating_sub(1 + copy_w),
             y: area.y,
             width: copy_w.min(area.width.saturating_sub(2)),
+            height: 1,
+        },
+        payload_title: Rect {
+            x: area.x + 1,
+            y: area.y,
+            width: (title_w as u16).min(area.width.saturating_sub(2 + 1 + copy_w)),
             height: 1,
         },
         ..app.hit.get()
@@ -736,10 +759,7 @@ fn render_history(f: &mut Frame, area: Rect, app: &App, s: &Shown) {
         .map(|(row, m)| {
             let marked = s.base == Some(h.len() - 1 - row);
             let line = Line::from(vec![
-                Span::styled(
-                    clock(m.received_at, "%H:%M:%S"),
-                    Style::new().fg(theme::MUTED),
-                ),
+                Span::styled(clock(m.received_at, "%H:%M:%S"), theme::TITLE),
                 Span::styled(
                     if marked { " ◆ " } else { "  " },
                     Style::new().fg(theme::ACCENT),

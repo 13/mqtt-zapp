@@ -795,12 +795,12 @@ fn card_title_never_reaches_copy_button() {
     for w in 20..80u16 {
         let r = card_row0(topic, w);
         assert!(r.ends_with('╮'), "{w}: {r}");
-        assert_eq!(r.matches("⧉ copy").count(), 1, "{w}: {r}");
-        let copy = r.find("⧉ copy").unwrap();
+        assert_eq!(r.matches('⧉').count(), 1, "{w}: {r}");
+        let copy = r.find('⧉').unwrap();
         if let Some(leaf) = r.find("leaf") {
             assert!(leaf + 4 < copy, "{w}: {r}");
         }
-        if usize::from(w) >= 2 + 1 + 8 + 6 {
+        if usize::from(w) >= 2 + 1 + 3 + 6 {
             assert!(r.contains("leaf "), "{w}: {r}");
         }
     }
@@ -809,7 +809,7 @@ fn card_title_never_reaches_copy_button() {
 #[test]
 fn narrow_card_keeps_copy_button() {
     let r = card_row0("a/b/c", 12);
-    assert!(r.contains("⧉ copy"), "{r}");
+    assert!(r.contains('⧉'), "{r}");
 }
 
 /// Cells of row `y` whose text starts at the first occurrence of `needle`.
@@ -849,4 +849,45 @@ fn history_k_from_live_stays_live() {
     assert_eq!(a.history_sel, None);
     a.handle_action(Action::Down);
     assert_eq!(a.history_sel, Some(2));
+}
+
+#[test]
+fn history_times_are_bold_in_the_text_colour() {
+    let a = app_with(&[b"first-payload", b"second-payload"]);
+    let b = draw(&a);
+    let l = lines(&b);
+    let y = l.iter().rposition(|r| r.contains("first-payload")).unwrap() as u16;
+    let x = l[y as usize].find(|c: char| c.is_ascii_digit()).unwrap();
+    let x = l[y as usize][..x].chars().count() as u16;
+    let c = &b[(x, y)];
+    assert_eq!(c.fg, Color::Reset, "{}", l[y as usize]);
+    assert!(c.modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn copy_text_only_when_the_whole_title_fits() {
+    // `╭ a/b/c ─ ⧉ copy ╮` needs 2 + 7 + 1 + 8 = 18 columns.
+    assert!(card_row0("a/b/c", 18).contains("⧉ copy"));
+    let r = card_row0("a/b/c", 17);
+    assert!(r.contains(" ⧉ ") && !r.contains("copy"), "{r}");
+    assert!(r.contains("a/b/c"), "the topic keeps the room: {r}");
+    // A topic too long for the card: only the glyph, the topic gets the rest.
+    let r = card_row0("a/very/long/topic/path/with/many/levels/leaf", 40);
+    assert!(!r.contains("copy") && r.contains("leaf"), "{r}");
+}
+
+#[test]
+fn payload_copy_text_only_when_it_fits() {
+    let mut a = app_depth(10);
+    send(&mut a, T, b"x", false);
+    a.selected = a.tree.find(T);
+    // `╭ payload ─ ⧉ copy ╮` needs 2 + 9 + 1 + 8 = 20 columns.
+    for (w, full) in [(20u16, true), (19, false)] {
+        let mut t = Terminal::new(TestBackend::new(w, 30)).unwrap();
+        t.draw(|f| render_message(f, f.area(), &a, false)).unwrap();
+        let l = lines(t.backend().buffer());
+        let r = l.iter().find(|r| r.contains("payload")).unwrap();
+        assert_eq!(r.contains("⧉ copy"), full, "{w}: {r}");
+        assert!(r.contains('⧉'), "{w}: {r}");
+    }
 }

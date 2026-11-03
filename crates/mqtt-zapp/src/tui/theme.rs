@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType};
+use unicode_width::UnicodeWidthStr;
 
 pub const ACCENT: Color = Color::Cyan;
 pub const MUTED: Color = Color::DarkGray;
@@ -30,6 +31,11 @@ pub const TITLE: Style = Style::new().fg(Color::Reset).add_modifier(Modifier::BO
 /// Text drawn on a muted border that should read in the text colour (the
 /// border's fg would otherwise show through spans without one).
 pub const TEXT: Style = Style::new().fg(Color::Reset);
+
+/// Columns `pane(title, focused)` uses for its title on the top border.
+pub fn pane_title_width(title: &str, focused: bool) -> usize {
+    sanitize(title).replace('\n', " ").width() + if focused { 4 } else { 2 }
+}
 
 pub fn pane(title: &str, focused: bool) -> Block<'static> {
     let title = sanitize(title).replace('\n', " ");
