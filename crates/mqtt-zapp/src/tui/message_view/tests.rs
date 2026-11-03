@@ -150,7 +150,7 @@ fn live_view_follows_latest() {
     assert_eq!(s.matches("second-payload").count(), 2, "{s}");
 }
 
-/// The card's badge row: the line just below the path row.
+/// The card's badge row: the line just below the title border.
 fn badge_row(l: &[String]) -> (usize, &String) {
     let y = l.iter().position(|r| r.contains("dev/x")).unwrap() + 1;
     (y, &l[y])
@@ -214,28 +214,26 @@ fn header_card_draws_box_path_and_badges() {
     a.selected = a.tree.find(topic);
     let b = draw(&a);
     let l = lines(&b);
-    assert!(l[0].starts_with('╭'), "{}", l[0]);
-    assert!(l[3].starts_with('╰'), "{}", l[3]);
     assert!(
-        l[1].contains("tasmota/tele/tasmota_A1B2C3/SENSOR"),
+        l[0].starts_with("╭ tasmota/tele/tasmota_A1B2C3/SENSOR ─"),
+        "{}",
+        l[0]
+    );
+    assert!(l[0].contains("⧉ copy ╮"), "{}", l[0]);
+    let x = l[0][..l[0].find("SENSOR").unwrap()].chars().count() as u16;
+    assert_eq!(b[(x, 0)].fg, theme::ACCENT);
+    assert!(b[(x, 0)].modifier.contains(Modifier::BOLD));
+    assert_eq!(b[(x - 1, 0)].fg, theme::MUTED);
+    assert!(l[1].contains(" JSON "), "{}", l[1]);
+    let jx = l[1][..l[1].find("JSON").unwrap()].chars().count() as u16;
+    assert_eq!(b[(jx, 1)].bg, theme::ACCENT);
+    assert!(
+        l[1].contains(" QoS 1 ") && l[1].contains(" RETAINED "),
         "{}",
         l[1]
     );
-    let x = l[1][..l[1].find("SENSOR").unwrap()].chars().count() as u16;
-    assert_eq!(b[(x, 1)].fg, theme::ACCENT);
-    assert!(b[(x, 1)].modifier.contains(Modifier::BOLD));
-    assert_eq!(b[(x - 1, 1)].symbol(), "/");
-    assert_eq!(b[(x - 1, 1)].fg, theme::MUTED);
-    let px = l[1][..l[1].find("tasmota").unwrap()].chars().count() as u16;
-    assert_eq!(b[(px, 1)].fg, theme::MUTED);
-    assert!(l[2].contains(" JSON "), "{}", l[2]);
-    let jx = l[2][..l[2].find("JSON").unwrap()].chars().count() as u16;
-    assert_eq!(b[(jx, 2)].bg, theme::ACCENT);
-    assert!(
-        l[2].contains(" QoS 1 ") && l[2].contains(" RETAINED "),
-        "{}",
-        l[2]
-    );
+    assert!(l[2].starts_with('╰'), "{}", l[2]);
+    assert!(l[3].contains("payload"), "payload right below: {}", l[3]);
 }
 
 #[test]
@@ -269,10 +267,10 @@ fn header_row_never_overflows() {
     let b = t.backend().buffer();
     let l = lines(b);
     // Wide chars occupy two cells (the second reads as a blank here).
-    assert!(l[1].ends_with('│'), "{:?}", l[1]);
-    assert!(l[1].contains("温 度"), "leaf kept: {:?}", l[1]);
-    let x = (0..40).find(|&x| b[(x, 1)].symbol() == "温").unwrap();
-    assert_eq!(b[(x, 1)].fg, theme::ACCENT);
+    assert!(l[0].ends_with('╮'), "{:?}", l[0]);
+    assert!(l[0].contains("温 度"), "leaf kept: {:?}", l[0]);
+    let x = (0..40).find(|&x| b[(x, 0)].symbol() == "温").unwrap();
+    assert_eq!(b[(x, 0)].fg, theme::ACCENT);
 }
 
 #[test]
@@ -777,4 +775,36 @@ fn plain_path_edge_topics() {
             fit(t, w);
         }
     }
+}
+
+fn card_row0(topic: &str, w: u16) -> String {
+    let mut a = app_depth(10);
+    send(&mut a, topic, b"1", false);
+    a.selected = a.tree.find(topic);
+    let mut t = Terminal::new(TestBackend::new(w, 30)).unwrap();
+    t.draw(|f| render_message(f, f.area(), &a, false)).unwrap();
+    lines(t.backend().buffer())[0].clone()
+}
+
+#[test]
+fn card_title_never_reaches_copy_button() {
+    let topic = "a/very/long/topic/path/with/many/levels/leaf";
+    for w in 20..80u16 {
+        let r = card_row0(topic, w);
+        assert!(r.ends_with('╮'), "{w}: {r}");
+        assert_eq!(r.matches("⧉ copy").count(), 1, "{w}: {r}");
+        let copy = r.find("⧉ copy").unwrap();
+        if let Some(leaf) = r.find("leaf") {
+            assert!(leaf + 4 < copy, "{w}: {r}");
+        }
+        if usize::from(w) >= 2 + 1 + 8 + 6 {
+            assert!(r.contains("leaf "), "{w}: {r}");
+        }
+    }
+}
+
+#[test]
+fn narrow_card_keeps_copy_button() {
+    let r = card_row0("a/b/c", 12);
+    assert!(r.contains("⧉ copy"), "{r}");
 }

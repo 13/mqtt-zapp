@@ -348,23 +348,31 @@ fn width_of(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.content.width()).sum()
 }
 
-/// The card's two inner rows for a `width`-column interior.
+/// The card's title, ` muh/sensors/200/json `, fitted into `room` columns
+/// (padding included); empty when there is no room for any of it.
+fn card_title(topic: &str, room: usize) -> Line<'static> {
+    if room < 3 {
+        return Line::default();
+    }
+    let (parents, leaf) = fit_topic(topic, room - 2);
+    Line::from(vec![
+        Span::raw(" "),
+        Span::styled(parents, Style::new().fg(theme::MUTED)),
+        leaf_span(&leaf),
+        Span::raw(" "),
+    ])
+}
+
+/// The card's inner row for a `width`-column interior: badges, `time · age`.
 fn header_lines(
     s: &Shown,
-    topic: &str,
     kind: &str,
     time_fmt: &str,
     now: SystemTime,
     width: u16,
-) -> [Line<'static>; 2] {
+) -> Line<'static> {
     let width = width as usize;
     let muted = Style::new().fg(theme::MUTED);
-    let (parents, leaf) = fit_topic(topic, width.saturating_sub(1));
-    let path = Line::from(vec![
-        Span::raw(" "),
-        Span::styled(parents, muted),
-        leaf_span(&leaf),
-    ]);
     let mut left = vec![Span::raw(" ")];
     left.extend(badges(s, kind));
     let clock = clock(s.msg.received_at, time_fmt);
@@ -378,7 +386,7 @@ fn header_lines(
     let gap = width.saturating_sub(used + right.width());
     left.push(Span::raw(" ".repeat(gap)));
     left.push(Span::styled(right, muted));
-    [path, Line::from(left)]
+    Line::from(left)
 }
 
 /// One row: path with the leaf highlighted, the badges, `time · age`.
@@ -438,7 +446,7 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
     // payload keeps room in short (stacked) layouts; with history focused it
     // keeps at least one row so the focus stays visible.
     let card = !stacked && area.height >= HEADER_CARD_MIN_HEIGHT;
-    let header_rows = if card { 4 } else { 1 };
+    let header_rows = if card { 3 } else { 1 };
     let half = area.height.saturating_sub(header_rows) / 2;
     let mut hist_rows = (s.node.history.len().min(HISTORY_ROWS) as u16).min(half.saturating_sub(2));
     if app.focus == Focus::History {
@@ -457,14 +465,24 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
     let now = SystemTime::now();
     if card {
         let copy_w = COPY_LABEL.width() as u16;
+        // Corners, one `─` between the two titles, the copy label.
+        let room = usize::from(meta.width).saturating_sub(2 + 1 + usize::from(copy_w));
+        let title = card_title(&topic, room);
+        let title_w = title.width() as u16;
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(theme::MUTED))
+            .title(title)
             .title(Line::styled(COPY_LABEL, Style::new().fg(theme::MUTED)).right_aligned());
         let inner = block.inner(meta);
-        let rows = header_lines(&s, &topic, kind, &app.timestamp_format, now, inner.width);
+        let row = header_lines(&s, kind, &app.timestamp_format, now, inner.width);
         app.hit.set(HitAreas {
-            header_topic: Rect { height: 1, ..inner },
+            header_topic: Rect {
+                x: meta.x + 1,
+                y: meta.y,
+                width: title_w,
+                height: 1,
+            },
             header_copy: Rect {
                 x: (meta.x + meta.width).saturating_sub(1 + copy_w),
                 y: meta.y,
@@ -473,7 +491,7 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
             },
             ..app.hit.get()
         });
-        f.render_widget(Paragraph::new(rows.to_vec()).block(block), meta);
+        f.render_widget(Paragraph::new(row).block(block), meta);
     } else {
         // ` ⧉ ` at the right end; the row is cut short of it.
         let glyph_w = COMPACT_COPY.width() as u16;

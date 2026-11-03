@@ -107,10 +107,16 @@ fn click_header_path_copies_topic() {
     let mut a = app_with(&[("dev/x", b"hello")]);
     a.selected = a.tree.find("dev/x");
     let b = draw(&mut a, 100, 24);
-    let (x, y) = find_at(&b, "│ dev/x ");
+    // The topic is the card's title, on its top border (first message row).
+    let (x, y) = find_at(&b, "╭ dev/x ");
+    assert_eq!(y, 1);
     // `d` and the leaf `x` both copy the topic.
     assert_eq!(copied(click(&mut a, x + 2, y)), ("topic", "dev/x".into()));
     assert_eq!(copied(click(&mut a, x + 6, y)), ("topic", "dev/x".into()));
+    // The bare border between the title and `⧉ copy` does nothing.
+    let (cx, _) = find_all(&b, "⧉ copy")[0];
+    let mid = (x + 8 + cx) / 2;
+    assert!(matches!(click(&mut a, mid, y), Effect::None));
 }
 
 #[test]
