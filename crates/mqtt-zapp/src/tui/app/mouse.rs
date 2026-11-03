@@ -36,7 +36,7 @@ pub struct HitAreas {
     pub header_broker: Rect,
 }
 
-fn inner(r: Rect) -> Rect {
+pub(super) fn inner(r: Rect) -> Rect {
     r.inner(Margin::new(1, 1))
 }
 

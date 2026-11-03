@@ -570,8 +570,7 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
     }
     let payload = match &app.chart {
         Some(series) => {
-            let [chart, rest] =
-                Layout::vertical([Constraint::Min(5), Constraint::Percentage(50)]).areas(payload);
+            let [chart, rest] = chart_split(payload);
             render_chart(f, chart, app, &s, series.as_deref());
             rest
         }
@@ -579,6 +578,12 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
     };
     render_payload(f, payload, app);
     render_history(f, history, app, &s);
+}
+
+/// How an open chart splits the payload area: the chart on top, the
+/// payload pane below.
+pub(super) fn chart_split(area: Rect) -> [Rect; 2] {
+    Layout::vertical([Constraint::Min(5), Constraint::Percentage(50)]).areas(area)
 }
 
 type ChartKey = (usize, usize, Option<Stamp>, Option<String>);

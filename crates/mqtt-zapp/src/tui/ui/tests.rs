@@ -1337,6 +1337,33 @@ fn click_numeric_line_charts_it() {
 }
 
 #[test]
+fn click_same_spot_twice_toggles() {
+    // Opening the chart shrinks the payload pane; the clicked line must stay
+    // under the pointer so a second click there turns the chart off.
+    let body: String = (0..20)
+        .map(|i| format!("\"k{i}\":{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let p = format!("{{{body}}}");
+    let mut a = app_with(&[("dev/x", p.as_bytes()), ("dev/x", p.as_bytes())]);
+    a.selected = a.tree.find("dev/x");
+    let b = draw(&mut a, 100, 30);
+    let y = text(&b)
+        .lines()
+        .collect::<Vec<_>>()
+        .iter()
+        .rposition(|r| r.contains("\"k15\": 15"))
+        .unwrap() as u16;
+    click(&mut a, 70, y);
+    assert_eq!(a.chart, Some(Some("k15".into())));
+    let b = draw(&mut a, 100, 30);
+    let row = text(&b).lines().nth(usize::from(y)).unwrap().to_owned();
+    assert!(row.contains("\"k15\": 15"), "row {y} is now {row:?}");
+    click(&mut a, 70, y);
+    assert_eq!(a.chart, None);
+}
+
+#[test]
 fn click_numeric_line_when_scrolled() {
     let body: String = (0..60)
         .map(|i| format!("\"k{i}\":{i}"))

@@ -1014,10 +1014,26 @@ fn cycle_scrolls_highlight_into_view() {
     for _ in 0..30 {
         let _ = draw(&a);
         a.handle_action(Action::Chart);
+        // Check against the pane as drawn after the press.
+        let _ = draw(&a);
         let l = a.chart_line().unwrap();
         let (s, h) = (a.payload_scroll, usize::from(a.payload_height.get()));
         assert!(l >= s && l < s + h, "line {l} outside {s}..{}", s + h);
     }
+}
+
+#[test]
+fn first_c_shows_line_in_shrunk_pane() {
+    // Line 9 sits in the top half of the tall pane, but below the pane the
+    // chart leaves once it opens.
+    let p = br#"{"a":"x","b":"x","c":"x","d":"x","e":"x","f":"x","g":"x","i":"x","n":1}"#;
+    let mut a = app_with(&[p, p]);
+    let _ = draw(&a);
+    a.handle_action(Action::Chart);
+    let _ = draw(&a);
+    let l = a.chart_line().unwrap();
+    let (s, h) = (a.payload_scroll, usize::from(a.payload_height.get()));
+    assert!(l >= s && l < s + h, "line {l} outside {s}..{}", s + h);
 }
 
 #[test]

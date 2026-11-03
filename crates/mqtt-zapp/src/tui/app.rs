@@ -10,6 +10,7 @@ use super::rows::{Row, visible_rows};
 use crate::cli::Launch;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use mouse::inner;
 use mqtt_zapp_core::client::{ConnState, CoreEvent};
 use mqtt_zapp_core::config::{
     DEFAULT_TIMESTAMP_FORMAT, PasswordSource, Profile, ProfileStore, Settings, SortOrder, ThemeName,
@@ -925,6 +926,7 @@ impl App {
                 .position(|s| s == cur)
                 .and_then(|i| series.get(i + 1).cloned()),
         };
+        let view = self.charted_body();
         self.chart = next;
         let note = match (&self.chart, series.is_empty()) {
             (_, true) => "no numeric values to chart".to_owned(),
@@ -932,7 +934,7 @@ impl App {
             (Some(s), _) => format!("chart: {}", s.as_deref().unwrap_or("value")),
         };
         self.set_note(Note::info(note), Instant::now());
-        self.scroll_to_chart_line();
+        self.scroll_to_chart_line(usize::from(view.height));
     }
 
     /// What `c` cycles through for the shown payload, in order: the plain
@@ -980,21 +982,45 @@ impl App {
             self.chart = None;
             "chart off".to_owned()
         } else {
+            let hit = self.hit.get();
+            let (old, new) = (inner(hit.payload), self.charted_body());
             let note = format!("chart: {}", path.as_deref().unwrap_or("value"));
             self.chart = Some(path);
+            if old != new {
+                // The chart just opened and moved the pane: keep the clicked
+                // line under the pointer, or else in view.
+                let y = old.y + u16::try_from(line.saturating_sub(hit.payload_skip)).unwrap_or(0);
+                if y >= new.y && y < new.bottom() {
+                    self.payload_scroll = line - usize::from(y - new.y);
+                } else {
+                    self.scroll_to_chart_line(usize::from(new.height));
+                }
+            }
             note
         };
         self.set_note(Note::info(note), Instant::now());
     }
 
-    /// Scroll the payload so the charted line shows. Opening the chart takes
-    /// up to half the pane, so a line is only left alone in the top half;
-    /// otherwise it goes near the top.
-    fn scroll_to_chart_line(&mut self) {
+    /// The payload pane's body as it will be with the chart open, going by
+    /// the last frame's layout.
+    fn charted_body(&self) -> ratatui::layout::Rect {
+        let pane = self.hit.get().payload;
+        if self.chart.is_some() {
+            inner(pane)
+        } else {
+            inner(super::message_view::chart_split(pane)[1])
+        }
+    }
+
+    /// Scroll the payload just enough that the charted line shows in a
+    /// pane body `height` rows tall.
+    fn scroll_to_chart_line(&mut self, height: usize) {
         let Some(l) = self.chart_line() else { return };
-        let half = (usize::from(self.payload_height.get()) / 2).max(1);
-        if l < self.payload_scroll || l >= self.payload_scroll + half {
-            self.payload_scroll = l.saturating_sub(1);
+        let height = height.max(1);
+        if l < self.payload_scroll {
+            self.payload_scroll = l;
+        } else if l >= self.payload_scroll + height {
+            self.payload_scroll = l + 1 - height;
         }
     }
 
