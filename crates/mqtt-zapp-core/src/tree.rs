@@ -1,5 +1,6 @@
 use crate::Message;
 use serde::Serialize;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Instant;
 
@@ -122,9 +123,79 @@ impl TopicTree {
     }
 }
 
+/// Split into runs of ASCII digits and runs of everything else.
+fn runs(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut digit = None;
+    for (i, c) in s.char_indices() {
+        let d = c.is_ascii_digit();
+        if digit.is_some_and(|prev| prev != d) {
+            out.push(&s[start..i]);
+            start = i;
+        }
+        digit = Some(d);
+    }
+    if start < s.len() {
+        out.push(&s[start..]);
+    }
+    out
+}
+
+/// Natural order: digit runs compare by value (`tasmota_2` < `tasmota_10`),
+/// text runs case-insensitively. Ties are broken by shorter digit runs
+/// (`x1` < `x01`), then by plain byte order, so the order is total.
+pub fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let (ra, rb) = (runs(a), runs(b));
+    let is_num = |r: &str| r.as_bytes()[0].is_ascii_digit();
+    for (x, y) in ra.iter().zip(&rb) {
+        let ord = match (is_num(x), is_num(y)) {
+            (true, true) => {
+                let (tx, ty) = (x.trim_start_matches('0'), y.trim_start_matches('0'));
+                tx.len().cmp(&ty.len()).then_with(|| tx.cmp(ty))
+            }
+            (false, false) => x
+                .chars()
+                .flat_map(char::to_lowercase)
+                .cmp(y.chars().flat_map(char::to_lowercase)),
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+        };
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    ra.len()
+        .cmp(&rb.len())
+        .then_with(|| {
+            ra.iter()
+                .zip(&rb)
+                .map(|(x, y)| x.len().cmp(&y.len()))
+                .find(|o| *o != Ordering::Equal)
+                .unwrap_or(Ordering::Equal)
+        })
+        .then_with(|| a.cmp(b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn natural_cmp_orders() {
+        use std::cmp::Ordering::*;
+        assert_eq!(natural_cmp("tasmota_2", "tasmota_10"), Less);
+        assert_eq!(natural_cmp("a", "B"), Less);
+        assert_eq!(natural_cmp("", "a"), Less);
+        assert_ne!(natural_cmp("x01", "x1"), Equal);
+        assert_eq!(natural_cmp("x01", "x1"), natural_cmp("x1", "x01").reverse());
+        assert_eq!(natural_cmp("x1", "x1"), Equal);
+        let big = "9".repeat(30);
+        assert_eq!(natural_cmp(&big, "10"), Greater);
+        let mut v = vec!["s10", "s9", "S1", "s1", "s", "s01"];
+        v.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(v, vec!["s", "S1", "s1", "s01", "s9", "s10"]);
+    }
     use crate::Message;
     use std::time::SystemTime;
 

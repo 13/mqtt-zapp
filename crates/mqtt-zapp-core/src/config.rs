@@ -95,11 +95,44 @@ pub struct ProfileStore {
     pub profiles: Vec<Profile>,
 }
 
+/// Order of sibling topics in the tree.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortOrder {
+    /// Natural name order (`tasmota_2` before `tasmota_10`).
+    #[default]
+    Name,
+    /// Most messages first.
+    Count,
+    /// Most recently updated first.
+    Recent,
+}
+
+impl SortOrder {
+    pub fn name(self) -> &'static str {
+        match self {
+            SortOrder::Name => "name",
+            SortOrder::Count => "count",
+            SortOrder::Recent => "recent",
+        }
+    }
+
+    /// name → count → recent → name.
+    pub fn next(self) -> SortOrder {
+        match self {
+            SortOrder::Name => SortOrder::Count,
+            SortOrder::Count => SortOrder::Recent,
+            SortOrder::Recent => SortOrder::Name,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub history_depth: usize,
     pub keys: BTreeMap<String, String>,
+    pub sort: SortOrder,
 }
 
 impl Default for Settings {
@@ -107,6 +140,7 @@ impl Default for Settings {
         Self {
             history_depth: 100,
             keys: BTreeMap::new(),
+            sort: SortOrder::Name,
         }
     }
 }
@@ -170,6 +204,13 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_sort_parses() {
+        let s: Settings = toml::from_str("sort = \"recent\"").unwrap();
+        assert_eq!(s.sort, SortOrder::Recent);
+        assert_eq!(Settings::default().sort, SortOrder::Name);
+    }
     use std::sync::Mutex;
 
     static LOCK: Mutex<()> = Mutex::new(());

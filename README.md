@@ -82,6 +82,9 @@ time.
 | `Y` | `copy_payload` | Copy the shown payload to the clipboard (OSC 52) |
 | `x` | `delete_retained` | Delete the retained message of the selected topic (asks first) |
 | `X` | `clear_retained` | Clear every retained message in the subtree (asks first) |
+| `s` | `sort` | Cycle the tree order: name (natural), message count, most recent |
+| `L` | `expand_all` | Expand the selected node and everything below it |
+| `H` | `collapse_all` | Collapse the selected node and everything below it |
 
 `?` shows the effective keys, including your remaps. The publish form and
 search input take typed text and do not use the keymap; the help lists their

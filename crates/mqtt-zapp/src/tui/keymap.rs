@@ -29,6 +29,9 @@ pub enum Action {
     CopyPayload,
     DeleteRetained,
     ClearRetained,
+    CycleSort,
+    ExpandAll,
+    CollapseAll,
 }
 
 impl Action {
@@ -55,6 +58,9 @@ impl Action {
         (Action::CopyPayload, "copy_payload", &["Y"]),
         (Action::DeleteRetained, "delete_retained", &["x"]),
         (Action::ClearRetained, "clear_retained", &["X"]),
+        (Action::CycleSort, "sort", &["s"]),
+        (Action::ExpandAll, "expand_all", &["L"]),
+        (Action::CollapseAll, "collapse_all", &["H"]),
     ];
 
     /// The snake_case name used in `[keys]`.

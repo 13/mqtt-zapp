@@ -1,6 +1,8 @@
 //! Flattening the topic tree into the rows the tree pane shows.
 
+use mqtt_zapp_core::config::SortOrder;
 use mqtt_zapp_core::search::Filter;
+use mqtt_zapp_core::tree::natural_cmp;
 use mqtt_zapp_core::{NodeId, TopicTree};
 use std::collections::HashSet;
 
@@ -19,20 +21,33 @@ pub fn visible_rows(
     tree: &TopicTree,
     expanded: &HashSet<NodeId>,
     filter: Option<&Filter>,
+    sort: SortOrder,
 ) -> Vec<Row> {
     let shown = |id: &NodeId| filter.is_none_or(|f| f.visible.contains(id));
+    let order = |a: &NodeId, b: &NodeId| {
+        let (x, y) = (tree.node(*a), tree.node(*b));
+        let by_name = || natural_cmp(&x.name, &y.name);
+        match sort {
+            SortOrder::Name => by_name(),
+            SortOrder::Count => y.msg_count.cmp(&x.msg_count).then_with(by_name),
+            // `None` (never updated) sorts last.
+            SortOrder::Recent => y.last_update.cmp(&x.last_update).then_with(by_name),
+        }
+    };
     let mut rows = Vec::new();
     // Explicit stack: topics can be arbitrarily deep.
     let mut stack: Vec<(NodeId, u16)> = Vec::new();
     let push_children = |stack: &mut Vec<(NodeId, u16)>, id: NodeId, depth: u16| {
-        stack.extend(
-            tree.node(id)
-                .children
-                .values()
-                .rev()
-                .filter(|c| shown(c))
-                .map(|&c| (c, depth)),
-        );
+        let mut kids: Vec<NodeId> = tree
+            .node(id)
+            .children
+            .values()
+            .copied()
+            .filter(shown)
+            .collect();
+        kids.sort_by(order);
+        // Reversed: the stack pops the first child first.
+        stack.extend(kids.into_iter().rev().map(|c| (c, depth)));
     };
     push_children(&mut stack, TopicTree::ROOT, 0);
     while let Some((id, depth)) = stack.pop() {
@@ -54,6 +69,7 @@ pub fn visible_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mqtt_zapp_core::config::SortOrder;
     use mqtt_zapp_core::search;
     use mqtt_zapp_core::{Message, TopicTree};
     use std::collections::HashSet;
@@ -68,6 +84,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sort_by_name_count_and_recent() {
+        let mut t = TopicTree::new(1);
+        for topic in ["n10", "n9", "n9", "n9", "n2"] {
+            t.insert(topic, m("x"));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let rows = |t: &TopicTree, o| names(t, &visible_rows(t, &HashSet::new(), None, o));
+        assert_eq!(rows(&t, SortOrder::Name), vec!["n2", "n9", "n10"]);
+        assert_eq!(rows(&t, SortOrder::Count), vec!["n9", "n2", "n10"]);
+        assert_eq!(rows(&t, SortOrder::Recent), vec!["n2", "n9", "n10"]);
+        t.insert("n10", m("y"));
+        assert_eq!(rows(&t, SortOrder::Recent), vec!["n10", "n2", "n9"]);
+    }
+
     fn names(t: &TopicTree, rows: &[Row]) -> Vec<String> {
         rows.iter().map(|r| t.node(r.id).name.clone()).collect()
     }
@@ -78,11 +109,11 @@ mod tests {
         t.insert("a/b", m("1"));
         t.insert("a/c", m("2"));
         let a = t.find("a").unwrap();
-        let rows = visible_rows(&t, &HashSet::new(), None);
+        let rows = visible_rows(&t, &HashSet::new(), None, SortOrder::Name);
         assert_eq!(names(&t, &rows), ["a"]);
         assert!(!rows[0].expanded);
         assert!(rows[0].has_children);
-        let rows = visible_rows(&t, &HashSet::from([a]), None);
+        let rows = visible_rows(&t, &HashSet::from([a]), None, SortOrder::Name);
         assert_eq!(names(&t, &rows), ["a", "b", "c"]);
         assert_eq!(rows.iter().map(|r| r.depth).collect::<Vec<_>>(), [0, 1, 1]);
         assert!(rows[0].expanded);
@@ -95,7 +126,7 @@ mod tests {
         t.insert("a/wzr", m("1"));
         t.insert("b/c", m("2"));
         let f = search::filter(&t, "wzr").unwrap();
-        let rows = visible_rows(&t, &HashSet::new(), Some(&f));
+        let rows = visible_rows(&t, &HashSet::new(), Some(&f), SortOrder::Name);
         assert_eq!(names(&t, &rows), ["a", "wzr"]);
         assert!(rows[0].expanded);
     }
@@ -107,7 +138,7 @@ mod tests {
             t.insert(s, m("v"));
         }
         let all: HashSet<_> = (1..t.len()).collect();
-        let rows = visible_rows(&t, &all, None);
+        let rows = visible_rows(&t, &all, None, SortOrder::Name);
         assert_eq!(names(&t, &rows), ["a", "x", "z", "1", "b", "y"]);
     }
 }

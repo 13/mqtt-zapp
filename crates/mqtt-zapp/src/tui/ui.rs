@@ -163,6 +163,11 @@ const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
         1,
         &[Action::DeleteRetained, Action::ClearRetained],
     ),
+    (
+        "tree",
+        1,
+        &[Action::CycleSort, Action::ExpandAll, Action::CollapseAll],
+    ),
 ];
 
 /// Keys that bypass the keymap, shown in the third help column.

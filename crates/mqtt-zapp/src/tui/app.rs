@@ -10,7 +10,7 @@ use crate::cli::Launch;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use mqtt_zapp_core::client::{ConnState, CoreEvent};
-use mqtt_zapp_core::config::{PasswordSource, Profile, ProfileStore, Settings};
+use mqtt_zapp_core::config::{PasswordSource, Profile, ProfileStore, Settings, SortOrder};
 use mqtt_zapp_core::search::{self, Filter};
 use mqtt_zapp_core::secrets::load_password;
 use mqtt_zapp_core::{NodeId, TopicTree};
@@ -215,6 +215,8 @@ pub struct App {
     pub publish: Option<PublishForm>,
     /// A transient footer message (publish result) and when it was set.
     pub status_note: Option<(Note, Instant)>,
+    /// Order of sibling topics; `s` cycles it.
+    pub sort: SortOrder,
     /// Set while in `Mode::Confirm`.
     pub confirm: Option<Confirm>,
     /// Pane rectangles of the last frame, for mouse hit-testing.
@@ -263,6 +265,7 @@ impl App {
             status_note: None,
             hit: Cell::new(HitAreas::default()),
             confirm: None,
+            sort: settings.sort,
         })
     }
 
@@ -454,7 +457,7 @@ impl App {
     }
 
     pub fn rows(&self) -> Vec<Row> {
-        visible_rows(&self.tree, &self.expanded, self.filter.as_ref())
+        visible_rows(&self.tree, &self.expanded, self.filter.as_ref(), self.sort)
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
@@ -685,12 +688,36 @@ impl App {
             Action::Cancel => self.clear_search(),
             Action::Publish => self.open_publish(),
             Action::Help => self.mode = Mode::Help,
+            Action::CycleSort => {
+                self.sort = self.sort.next();
+                self.set_note(
+                    Note::info(format!("sort: {}", self.sort.name())),
+                    Instant::now(),
+                );
+            }
+            Action::ExpandAll => self.expand_subtree(true),
+            Action::CollapseAll => self.expand_subtree(false),
             Action::DeleteRetained => self.ask_clear_retained(false),
             Action::ClearRetained => self.ask_clear_retained(true),
             Action::CopyTopic => return self.copy(true),
             Action::CopyPayload => return self.copy(false),
         }
         Effect::None
+    }
+
+    /// Expand (or collapse) the selected node and every node below it.
+    fn expand_subtree(&mut self, expand: bool) {
+        let Some(id) = self.selected else { return };
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            let kids = &self.tree.node(n).children;
+            if expand && !kids.is_empty() {
+                self.expanded.insert(n);
+            } else if !expand {
+                self.expanded.remove(&n);
+            }
+            stack.extend(kids.values());
+        }
     }
 
     /// Copy the selected topic, or the payload on screen (history-aware).
@@ -929,6 +956,36 @@ mod tests {
         a.selected = None;
         a.handle_action(Action::ClearRetained);
         assert_eq!(a.mode, Mode::Browse);
+    }
+
+    #[test]
+    fn s_cycles_sort_and_notes() {
+        use mqtt_zapp_core::config::SortOrder;
+        let mut a = browse(&["a"]);
+        assert_eq!(a.sort, SortOrder::Name);
+        a.handle_action(Action::CycleSort);
+        assert_eq!(a.sort, SortOrder::Count);
+        assert_eq!(a.note_at(Instant::now()), Some(&Note::info("sort: count")));
+        a.handle_action(Action::CycleSort);
+        assert_eq!(a.sort, SortOrder::Recent);
+        a.handle_action(Action::CycleSort);
+        assert_eq!(a.sort, SortOrder::Name);
+    }
+
+    #[test]
+    fn expand_all_and_collapse_all_subtree() {
+        let mut a = browse(&["a/b/c", "a/d/e", "a/f", "z/y"]);
+        a.selected = a.tree.find("a");
+        a.handle_action(Action::ExpandAll);
+        let ids = |a: &App, ts: &[&str]| {
+            ts.iter()
+                .map(|t| a.tree.find(t).unwrap())
+                .collect::<HashSet<_>>()
+        };
+        assert_eq!(a.expanded, ids(&a, &["a", "a/b", "a/d"]));
+        a.expanded.insert(a.tree.find("z").unwrap());
+        a.handle_action(Action::CollapseAll);
+        assert_eq!(a.expanded, ids(&a, &["z"]));
     }
 
     fn sel(a: &App) -> String {
