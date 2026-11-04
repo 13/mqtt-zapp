@@ -285,9 +285,13 @@ pub enum ConfirmAction {
     ClearRetained(Vec<String>),
     /// The profile to delete; asked from the picker.
     DeleteProfile(String),
-    /// Remove `topic` and its subtree from the list, clearing what is
-    /// retained there on the broker (looked up again on confirm).
-    DeleteTopic(String),
+    /// Remove `topic` and its subtree from the list, clearing the retained
+    /// topics the prompt counted. Looked up again on confirm: if more
+    /// arrived, the prompt is asked again with the new count.
+    DeleteTopic {
+        topic: String,
+        retained: Vec<String>,
+    },
 }
 
 const STORE_BROKEN: &str = "profiles.toml has errors – fix it by hand first";

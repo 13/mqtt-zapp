@@ -252,7 +252,10 @@ fn confirm_rows(prompt: &str, w: u16, h: u16) -> Vec<String> {
     use crate::tui::app::{Confirm, ConfirmAction};
     let c = Confirm {
         prompt: prompt.to_owned(),
-        action: ConfirmAction::DeleteTopic("t".into()),
+        action: ConfirmAction::DeleteTopic {
+            topic: "t".into(),
+            retained: vec![],
+        },
     };
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
     t.draw(|f| render_confirm(f, f.area(), &c)).unwrap();

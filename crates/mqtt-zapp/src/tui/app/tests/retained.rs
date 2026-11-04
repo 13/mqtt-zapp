@@ -254,3 +254,64 @@ fn retained_arriving_during_the_confirm_is_cleared_too() {
         e => panic!("{e:?}"),
     }
 }
+
+#[test]
+fn delete_topic_asks_again_when_more_retained_arrived() {
+    let mut a = browse(&[]);
+    a.apply_core_event(plain("a/b", "1"));
+    a.selected = a.tree.find("a/b");
+    del_key(&mut a);
+    assert!(
+        a.confirm
+            .as_ref()
+            .unwrap()
+            .prompt
+            .contains("nothing retained")
+    );
+    // A retained message arrives under it while the prompt is up.
+    a.apply_core_event(msg("a/b/c", "r"));
+    assert!(matches!(
+        a.handle_key(key(KeyCode::Char('y'))),
+        Effect::None
+    ));
+    assert_eq!(a.mode, Mode::Confirm, "asks again, nothing cleared yet");
+    assert_eq!(
+        a.confirm.as_ref().unwrap().prompt,
+        "delete a/b and clear 1 retained on the broker?"
+    );
+    assert!(a.tree.find("a/b").is_some(), "not removed yet");
+    match a.handle_key(key(KeyCode::Char('y'))) {
+        Effect::ClearRetained(t) => assert_eq!(t, ["a/b/c"]),
+        e => panic!("{e:?}"),
+    }
+}
+
+#[test]
+fn delete_topic_offline_is_refused() {
+    let mut a = browse(&["a/b"]);
+    a.conn_state = ConnState::Disconnected {
+        reason: "x".into(),
+        retry_in_ms: 1000,
+    };
+    a.selected = a.tree.find("a/b");
+    del_key(&mut a);
+    assert_eq!(a.mode, Mode::Browse, "no prompt");
+    assert_eq!(
+        a.note_at(Instant::now()),
+        Some(&Note::error("not connected"))
+    );
+    assert!(a.tree.find("a/b").is_some());
+}
+
+#[test]
+fn clear_retained_offline_is_refused() {
+    let mut a = browse(&["a/b"]);
+    a.conn_state = ConnState::Connecting;
+    a.selected = a.tree.find("a/b");
+    a.handle_action(Action::DeleteRetained);
+    assert_eq!(a.mode, Mode::Browse, "no prompt");
+    assert_eq!(
+        a.note_at(Instant::now()),
+        Some(&Note::error("not connected"))
+    );
+}
