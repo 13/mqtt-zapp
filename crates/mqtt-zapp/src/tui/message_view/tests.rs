@@ -1878,3 +1878,31 @@ fn history_uses_timestamp_format() {
         .as_bytes();
     assert!(t[2] == b':' && t[5] != b':', "{row}");
 }
+
+#[test]
+fn closing_the_chart_with_wrap_on_keeps_the_top_line() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let fields: Vec<String> = (0..30)
+        .map(|i| format!("\"k{i}\":\"{}\",\"n{i}\":{i}", "w".repeat(250)))
+        .collect();
+    let p = format!("{{{}}}", fields.join(","));
+    let mut a = app_with(&[p.as_bytes()]);
+    a.mode = Mode::Browse;
+    a.wrap = true;
+    let _ = draw(&a);
+    a.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+    assert!(a.chart.is_some());
+    let _ = draw(&a);
+    // Chart open: the scroll counts lines.
+    a.payload_scroll = 20;
+    let _ = draw(&a);
+    assert_eq!(a.hit.get().payload_skip, 20);
+    a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(a.chart.is_none());
+    let _ = draw(&a);
+    assert_eq!(
+        a.hit.get().payload_skip,
+        20,
+        "same line on top, now wrapped"
+    );
+}

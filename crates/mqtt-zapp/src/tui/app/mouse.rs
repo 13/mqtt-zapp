@@ -44,6 +44,12 @@ pub(super) fn inner(r: Rect) -> Rect {
 
 impl App {
     pub fn handle_mouse(&mut self, ev: MouseEvent) -> Effect {
+        let effect = self.route_mouse(ev);
+        self.sync_scroll_unit();
+        effect
+    }
+
+    fn route_mouse(&mut self, ev: MouseEvent) -> Effect {
         let at = Position::new(ev.column, ev.row);
         let hit = self.hit.get();
         let wheel = match ev.kind {

@@ -88,11 +88,11 @@ impl Body {
     }
 
     /// Each line's text, as drawn (for counting wrapped rows).
-    fn texts(&self) -> Box<dyn Iterator<Item = String> + '_> {
+    fn texts(&self) -> Box<dyn Iterator<Item = &str> + '_> {
         match self {
-            Body::Json(l) | Body::Plain(l) => Box::new(l.iter().cloned()),
-            Body::Diff(l) => Box::new(l.iter().map(|(_, t)| t.clone())),
-            Body::Note(n) => Box::new(std::iter::once(n.clone())),
+            Body::Json(l) | Body::Plain(l) => Box::new(l.iter().map(String::as_str)),
+            Body::Diff(l) => Box::new(l.iter().map(|(_, t)| t.as_str())),
+            Body::Note(n) => Box::new(std::iter::once(n.as_str())),
         }
     }
 }
@@ -266,7 +266,7 @@ fn build_body(s: &Shown, kind: PayloadKind, show_diff: bool) -> Body {
 
 /// Whether payload lines wrap now: `z` is on and no chart is shown (the
 /// chart addresses whole lines).
-fn wrapping(app: &App) -> bool {
+pub(in crate::tui) fn wrapping(app: &App) -> bool {
     app.wrap && app.chart.is_none()
 }
 
@@ -278,9 +278,46 @@ pub fn content_len(app: &App) -> usize {
         return b.len();
     }
     let width = usize::from(app.payload_width.get()).max(1);
-    b.texts()
-        .map(|t| wrap_line(Line::raw(t), width).len())
-        .sum()
+    b.texts().map(|t| rows_of(t, width)).sum()
+}
+
+/// Rows `text` wraps to at `width`, cut as `wrap_line` cuts it; counted
+/// without building the rows, so a long payload costs no allocation.
+fn rows_of(text: &str, width: usize) -> usize {
+    let width = width.max(1);
+    let (mut rows, mut used) = (1, 0);
+    for c in text.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > width && used > 0 {
+            rows += 1;
+            used = 0;
+        }
+        used += w;
+    }
+    rows
+}
+
+/// Wrapped rows above body line `line`, at the last frame's width: where
+/// a scroll by lines lands once it counts rows.
+pub(in crate::tui) fn rows_before(app: &App, line: usize) -> usize {
+    let Some((b, _)) = body(app) else { return 0 };
+    let width = usize::from(app.payload_width.get()).max(1);
+    b.texts().take(line).map(|t| rows_of(t, width)).sum()
+}
+
+/// The body line holding wrapped row `row`: where a scroll by rows lands
+/// once it counts lines.
+pub(in crate::tui) fn line_at_row(app: &App, row: usize) -> usize {
+    let Some((b, _)) = body(app) else { return 0 };
+    let width = usize::from(app.payload_width.get()).max(1);
+    let mut seen = 0;
+    for (i, t) in b.texts().enumerate() {
+        seen += rows_of(t, width);
+        if seen > row {
+            return i;
+        }
+    }
+    b.len().saturating_sub(1)
 }
 
 /// `line` cut into rows of at most `width` columns, keeping span styles. A
@@ -618,11 +655,26 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
     let max = total.saturating_sub(take);
     let skip = app.payload_scroll.min(max);
     let rows: Vec<(usize, Line<'static>)> = if wrap {
-        (0..body.len())
-            .flat_map(|i| wrap_line(styled(i), width).into_iter().map(move |r| (i, r)))
-            .skip(skip)
-            .take(take)
-            .collect()
+        // Lines above the view are only counted; only visible ones wrap.
+        let mut rows = Vec::with_capacity(take);
+        let mut row = 0;
+        for (i, t) in body.texts().enumerate() {
+            if rows.len() >= take {
+                break;
+            }
+            let n = rows_of(t, width);
+            if row + n > skip {
+                let room = take - rows.len();
+                let cut = wrap_line(styled(i), width).into_iter();
+                rows.extend(
+                    cut.skip(skip.saturating_sub(row))
+                        .take(room)
+                        .map(|r| (i, r)),
+                );
+            }
+            row += n;
+        }
+        rows
     } else {
         (skip..body.len().min(skip + take))
             .map(|i| (i, styled(i)))

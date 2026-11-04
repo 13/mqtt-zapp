@@ -4,6 +4,12 @@ use super::*;
 
 impl App {
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
+        let effect = self.route_key(key);
+        self.sync_scroll_unit();
+        effect
+    }
+
+    fn route_key(&mut self, key: KeyEvent) -> Effect {
         if key.kind == KeyEventKind::Release {
             return Effect::None;
         }

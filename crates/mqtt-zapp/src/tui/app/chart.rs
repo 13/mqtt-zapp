@@ -250,6 +250,8 @@ impl App {
     /// pane body `height` rows tall.
     fn scroll_to_chart_line(&mut self, height: usize) {
         let Some(l) = self.chart_line() else { return };
+        // A chart is open, so the scroll counts lines from here on.
+        self.scroll_in_rows = false;
         let height = height.max(1);
         if l < self.payload_scroll {
             self.payload_scroll = l;

@@ -430,6 +430,9 @@ pub struct App {
     /// `z`: long payload lines wrap at the pane edge instead of being cut.
     /// Per session; off while a chart is shown (it addresses whole lines).
     pub wrap: bool,
+    /// Whether `payload_scroll` counts wrapped rows (else body lines): what
+    /// `wrapping` said when it was last set, so a flip converts it.
+    pub(super) scroll_in_rows: bool,
     /// The mode the help overlay goes back to: browse or the picker.
     pub help_return: Mode,
     /// A first ctrl-c or esc that would throw work away, and when.
@@ -611,6 +614,7 @@ impl App {
             armed: None,
             help_return: Mode::Browse,
             wrap: false,
+            scroll_in_rows: false,
             await_reply: None,
             ack_unsent: VecDeque::new(),
             ack_inflight: HashMap::new(),
@@ -946,6 +950,22 @@ impl App {
         if !parts.is_empty() {
             self.set_note(Note::error(parts.join("; ")), now);
         }
+    }
+
+    /// Wrapping turns on or off when the chart opens or closes and when
+    /// `z` is pressed; the scroll then switches between rows and lines,
+    /// keeping the same body line on top.
+    pub(super) fn sync_scroll_unit(&mut self) {
+        let rows = super::message_view::wrapping(self);
+        if rows == self.scroll_in_rows {
+            return;
+        }
+        self.payload_scroll = if rows {
+            super::message_view::rows_before(self, self.payload_scroll)
+        } else {
+            super::message_view::line_at_row(self, self.payload_scroll)
+        };
+        self.scroll_in_rows = rows;
     }
 
     /// Show `note`: the answer to what the user just did, so it always
