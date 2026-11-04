@@ -436,6 +436,7 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     /// Natural order: digit runs compare by value (`tasmota_2` < `tasmota_10`),
     /// text runs case-insensitively. Ties are broken by shorter digit runs
@@ -519,7 +520,7 @@ mod tests {
     fn props_bytes_count_toward_history_bytes() {
         let mut t = TopicTree::new(5);
         let mut m = msg("abc");
-        m.props = Some(Box::new(crate::payload::Props {
+        m.props = Some(Arc::new(crate::payload::Props {
             content_type: Some("text/plain".into()),
             user: vec![("k".into(), "vv".into())],
             ..Default::default()
@@ -529,6 +530,24 @@ mod tests {
         let a = t.find("a").unwrap();
         t.remove(a);
         assert_eq!(t.history_bytes(), 0);
+    }
+
+    #[test]
+    fn latest_and_history_share_props() {
+        let mut t = TopicTree::new(5);
+        let mut m = msg("abc");
+        m.props = Some(Arc::new(crate::payload::Props {
+            content_type: Some("text/plain".into()),
+            ..Default::default()
+        }));
+        t.insert("a", m);
+        let node = t.node(t.find("a").unwrap());
+        let latest = node.latest.as_ref().unwrap();
+        let history = node.history.back().unwrap();
+        assert!(Arc::ptr_eq(
+            latest.props.as_ref().unwrap(),
+            history.props.as_ref().unwrap()
+        ));
     }
 
     #[test]

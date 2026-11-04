@@ -1214,7 +1214,7 @@ fn app_with_props(props: Props) -> App {
             received_at: SystemTime::now(),
             truncated_from: None,
             sparkplug: false,
-            props: Some(Box::new(props)),
+            props: Some(std::sync::Arc::new(props)),
         },
     });
     a.selected = a.tree.find(T);

@@ -167,7 +167,7 @@ fn incoming(
     payload: &[u8],
     qos: u8,
     retain: bool,
-    props: Option<Box<Props>>,
+    props: Option<Arc<Props>>,
 ) -> Message {
     let decoded = (sparkplug::is_sparkplug_topic(topic) && payload.len() <= SPARKPLUG_MAX)
         .then(|| sparkplug::decode(payload))
@@ -237,7 +237,7 @@ impl Loop {
                             p.properties
                                 .map(props_from_v5)
                                 .filter(|p| !p.is_empty())
-                                .map(Box::new),
+                                .map(Arc::new),
                         ),
                         topic,
                     }

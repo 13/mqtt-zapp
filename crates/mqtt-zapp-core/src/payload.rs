@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use serde::Serialize;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 #[derive(Clone, Debug, Serialize)]
@@ -12,8 +13,8 @@ pub struct Message {
     /// The payload's length on the wire when `truncate_to` cut it.
     pub truncated_from: Option<usize>,
     /// MQTT 5 publish properties worth showing; `None` when there are none.
-    /// Boxed: serde's `rc` feature (needed for `Arc`) is not enabled.
-    pub props: Option<Box<Props>>,
+    /// Shared (`Arc`): `latest` and its history entries point at one copy.
+    pub props: Option<Arc<Props>>,
     /// The payload is the JSON form of a decoded Sparkplug B message.
     pub sparkplug: bool,
 }
