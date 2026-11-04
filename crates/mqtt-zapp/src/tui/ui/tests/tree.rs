@@ -277,3 +277,73 @@ fn history_j_moves_highlight_down_the_screen() {
     a.handle_key(k('k'));
     assert_eq!(history_highlight_y(&draw(&mut a, 100, 30)), Some(first));
 }
+
+fn aged_app(stale_after_s: u64) -> App {
+    let settings = Settings {
+        stale_after_s,
+        auto_expand: 5,
+        ..Settings::default()
+    };
+    let mut a = App::new(Launch::Picker, ProfileStore::default(), settings).unwrap();
+    a.mode = Mode::Browse;
+    a.apply_core_event(CoreEvent::Message {
+        topic: "zzz/jjj".into(),
+        msg: Message {
+            payload: Bytes::from_static(b"1"),
+            qos: 0,
+            retain: false,
+            received_at: SystemTime::now() - std::time::Duration::from_secs(3600),
+            truncated_from: None,
+            sparkplug: false,
+            wire_len: None,
+            props: None,
+        },
+    });
+    a
+}
+
+fn dimmed_cell(b: &Buffer, ch: &str) -> Option<bool> {
+    b.content
+        .iter()
+        .find(|c| c.symbol() == ch)
+        .map(|c| c.modifier.contains(ratatui::style::Modifier::DIM))
+}
+
+#[test]
+fn device_row_marked_offline() {
+    let mut a = aged_app(0);
+    a.apply_core_event(CoreEvent::Message {
+        topic: "tasmota/x/LWT".into(),
+        msg: Message {
+            payload: Bytes::from_static(b"Offline"),
+            qos: 0,
+            retain: false,
+            received_at: SystemTime::now(),
+            truncated_from: None,
+            sparkplug: false,
+            wire_len: None,
+            props: None,
+        },
+    });
+    let s = text(&draw(&mut a, 80, 12));
+    let x = s.lines().find(|l| l.contains(" x")).unwrap();
+    assert!(x.contains(" offline"), "{s}");
+}
+
+#[test]
+fn stale_rows_dimmed() {
+    let mut a = aged_app(300);
+    let b = draw(&mut a, 80, 12);
+    let s = text(&b);
+    assert!(s.contains(" stale"), "{s}");
+    assert_eq!(dimmed_cell(&b, "j"), Some(true), "{s}");
+}
+
+#[test]
+fn stale_off_by_default() {
+    let mut a = aged_app(0);
+    let b = draw(&mut a, 80, 12);
+    let s = text(&b);
+    assert!(!s.contains(" stale"), "{s}");
+    assert_eq!(dimmed_cell(&b, "j"), Some(false), "{s}");
+}

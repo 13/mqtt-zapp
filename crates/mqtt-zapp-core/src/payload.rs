@@ -433,9 +433,57 @@ pub fn preview(payload: &[u8], max_chars: usize) -> String {
     }
 }
 
+/// Whether a status leaf's payload says the device is offline.
+pub fn says_offline(leaf: &str, payload: &[u8]) -> bool {
+    const STATUS: [&str; 6] = [
+        "lwt",
+        "online",
+        "status",
+        "state",
+        "connected",
+        "availability",
+    ];
+    let leaf = leaf.to_ascii_lowercase();
+    if leaf.is_empty() || !STATUS.contains(&leaf.as_str()) {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(payload) else {
+        return false;
+    };
+    let text = text.trim().to_ascii_lowercase();
+    match text.as_str() {
+        "offline" | "disconnected" | "dead" | "lost" => true,
+        "false" | "0" => leaf == "online" || leaf == "connected",
+        _ if text.starts_with('{') => {
+            serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|v| {
+                ["online", "connected"]
+                    .iter()
+                    .any(|k| v.get(k) == Some(&serde_json::Value::Bool(false)))
+            })
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_offline_cases() {
+        assert!(says_offline("LWT", b"Offline"));
+        assert!(says_offline("online", b"false"));
+        assert!(says_offline("status", b"{\"online\":false}"));
+    }
+
+    #[test]
+    fn offline_only_for_status_topics() {
+        assert!(!says_offline("SENSOR", b"0"));
+        assert!(!says_offline("POWER", b"OFF"));
+        assert!(!says_offline("state", b"{\"state\":\"OFF\"}"));
+        assert!(!says_offline("online", b"true"));
+        assert!(!says_offline("temperature", b"offline"));
+    }
 
     #[test]
     fn props_summary_order() {

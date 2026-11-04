@@ -25,7 +25,7 @@ the feature set of MQTT Explorer.
 
 ## ✨ Features
 
-- 🌳 **Live topic tree:** message and topic counts per level, retained markers, and natural, count or recent sorting.
+- 🌳 **Live topic tree:** message and topic counts per level, retained markers, a red `offline` chip on devices whose `LWT`/`status` says so, and natural, count or recent sorting.
 - 🔍 **Pretty payloads:** JSON is pretty-printed, and the diff shows what changed since the previous message, or since one you mark.
 - 🏭 **Sparkplug B:** `spBv1.0/…` payloads are decoded to JSON, so you can search, diff and chart their metrics; metric names from BIRTH replace aliases.
 - 📈 **Charts:** plot any numeric field from a topic's history. `c` cycles through the fields, or click a number to chart it.
@@ -278,6 +278,7 @@ max_payload_kb = 16384   # longer payloads are cut and marked truncated; 0: no c
 max_topics = 200000      # topic levels kept; messages on new topics past it are
                          # refused and counted in the header (default 200000)
 auto_expand = 1          # new topics this many levels deep start expanded (default 0)
+stale_after_s = 300      # dim topics silent this long (default 0: off)
 sort = "name"            # tree order: name (natural), count, recent; `s` cycles
 theme = "dark"           # dark, light or mono; NO_COLOR forces mono
 timestamp_format = "%H:%M:%S%.3f"   # strftime for the message time

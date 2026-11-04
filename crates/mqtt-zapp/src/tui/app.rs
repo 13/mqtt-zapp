@@ -322,6 +322,8 @@ pub struct App {
     max_topics: usize,
     /// New nodes at this depth or less start expanded.
     auto_expand: usize,
+    /// Dim topics silent this many seconds (0: off).
+    pub stale_after_s: u64,
     pending_connect: Option<Profile>,
     pub picker: PickerState,
     /// Set while in `Mode::Password`.
@@ -455,6 +457,7 @@ impl App {
             },
             max_topics: settings.max_topics,
             auto_expand: settings.auto_expand,
+            stale_after_s: settings.stale_after_s,
             pending_connect,
             picker: PickerState::new(store.profiles, &Default::default()),
             password: None,

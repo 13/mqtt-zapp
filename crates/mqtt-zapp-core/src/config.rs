@@ -186,6 +186,9 @@ pub struct Settings {
     pub max_topics: usize,
     /// New topics this many levels deep or less open expanded (0: none).
     pub auto_expand: usize,
+    /// Topics silent this many seconds are drawn dim and marked stale
+    /// (0: off).
+    pub stale_after_s: u64,
 }
 
 impl Default for Settings {
@@ -200,6 +203,7 @@ impl Default for Settings {
             max_payload_kb: 16384,
             max_topics: 200_000,
             auto_expand: 0,
+            stale_after_s: 0,
         }
     }
 }
