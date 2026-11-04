@@ -198,6 +198,10 @@ mqtt-zapp sub --host broker.lan --sub 'sensors/#' --format jsonl -n 100 \
 echo '{"on":true}' | mqtt-zapp pub --profile home -t lights/porch/set --stdin -q 1 -r
 ```
 
+The text format is for people: backslash, newline and other control characters
+in a payload are escaped, and a space in a topic is `\x20`. Scripts should parse
+`--format jsonl`.
+
 `sub --retained-only` prints what the broker has stored and exits at the first
 live message or after 2 s of silence. `pub` takes `-m TEXT`, `-f FILE` or
 `--stdin`. Ctrl-c, `-n` and a closed pipe (`| head`) all end `sub` with exit 0.

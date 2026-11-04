@@ -22,6 +22,30 @@ impl Drop for Broker {
 }
 
 fn start(auth: bool) -> Option<Broker> {
+    start_mode(auth, false)
+}
+
+/// A broker whose dynamic-security plugin denies every publish by default
+/// (a v5 client gets PUBACK 0x87); `None` without the plugin.
+fn start_deny_publish() -> Option<Broker> {
+    start_mode(false, true)
+}
+
+fn dynsec_plugin() -> Option<String> {
+    [
+        "/usr/lib/mosquitto_dynamic_security.so",
+        "/usr/lib/x86_64-linux-gnu/mosquitto_dynamic_security.so",
+        "/usr/lib64/mosquitto_dynamic_security.so",
+        "/usr/local/lib/mosquitto_dynamic_security.so",
+    ]
+    .into_iter()
+    .map(String::from)
+    .chain(std::env::var("MOSQUITTO_DYNSEC_PLUGIN"))
+    .rev() // the env override wins
+    .find(|p| std::path::Path::new(p).exists())
+}
+
+fn start_mode(auth: bool, deny_publish: bool) -> Option<Broker> {
     let tool = |name: &str| {
         Command::new(name)
             .arg("-h")
@@ -36,7 +60,23 @@ fn start(auth: bool) -> Option<Broker> {
     }
     let dir = tempfile::tempdir().unwrap();
     let mut conf = String::new();
-    if auth {
+    if deny_publish {
+        let Some(plugin) = dynsec_plugin() else {
+            eprintln!("SKIP: mosquitto dynamic-security plugin not found");
+            return None;
+        };
+        let dynsec = dir.path().join("dynsec.json");
+        std::fs::write(
+            &dynsec,
+            r#"{"defaultACLAccess":{"publishClientToBroker":false,"publishBrokerToClient":true,
+"subscribe":true,"unsubscribe":true},"clients":[],"groups":[],"roles":[]}"#,
+        )
+        .unwrap();
+        conf += &format!(
+            "allow_anonymous true\nplugin {plugin}\nplugin_opt_config_file {}\n",
+            dynsec.display()
+        );
+    } else if auth {
         let pw = dir.path().join("passwd");
         let ok = Command::new("mosquitto_passwd")
             .args(["-b", "-c"])
@@ -344,7 +384,11 @@ fn pub_auth_failure_exits_2() {
         None,
     );
     assert_eq!(o.code, Some(2), "stderr: {}", o.stderr);
-    assert!(!o.stderr.trim().is_empty());
+    assert!(
+        o.stderr.starts_with("error: connection failed:") && !o.stderr.contains("Usage"),
+        "{}",
+        o.stderr
+    );
     assert_eq!(o.stdout, "");
 }
 
@@ -390,5 +434,53 @@ fn connect_failure_exits_2() {
         None,
     );
     assert_eq!(o.code, Some(2));
-    assert!(!o.stderr.trim().is_empty());
+    assert!(
+        o.stderr.starts_with("error: connection failed:") && !o.stderr.contains("Usage"),
+        "{}",
+        o.stderr
+    );
+}
+
+#[test]
+fn pub_fails_on_a_refused_v5_publish() {
+    let Some(b) = start_deny_publish() else {
+        return;
+    };
+    let h = Home::new();
+    let p = b.port.to_string();
+    for q in ["1", "2"] {
+        let o = run(
+            h.cmd(&[
+                "pub",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                &p,
+                "--mqtt-version",
+                "5",
+                "-t",
+                "zapp/denied",
+                "-m",
+                "x",
+                "-q",
+                q,
+            ]),
+            None,
+        );
+        assert_eq!(o.code, Some(2), "qos {q}: {}", o.stderr);
+        assert!(
+            o.stderr.contains("publish refused: NotAuthorized"),
+            "qos {q}: {}",
+            o.stderr
+        );
+    }
+}
+
+#[test]
+fn sub_text_format_escapes_backslash_and_topic_space() {
+    let Some(b) = start(false) else { return };
+    let h = Home::new();
+    publish(&h, &b, "zapp/a b", "x\\ny\nz", true);
+    let o = sub(&h, &b, &["--retained-only"]);
+    assert_eq!(o.stdout, "zapp/a\\x20b x\\\\ny\\nz\n");
 }

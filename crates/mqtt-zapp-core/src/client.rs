@@ -108,6 +108,9 @@ pub enum CoreEvent {
     /// QoS 2). Best effort, like `PublishSent`.
     PublishAcked {
         pkid: u16,
+        /// MQTT 5: why the broker refused it (reason code 0x80 or above,
+        /// with its reason string); `None` when it was accepted.
+        failure: Option<String>,
     },
 }
 
@@ -270,7 +273,7 @@ enum Polled {
     },
     OutgoingDisconnect,
     PublishSent(u16),
-    PublishAcked(u16),
+    PublishAcked(u16, Option<String>),
     Other,
     Err(String),
     /// The broker refused our credentials: retrying cannot help.
@@ -414,6 +417,53 @@ fn suback_refusals_v5(
         .collect()
 }
 
+/// `Debug` name of a refusing reason code, with the broker's reason string.
+fn refusal(code: &dyn std::fmt::Debug, reason_string: Option<&str>) -> String {
+    match reason_string.filter(|r| !r.is_empty()) {
+        Some(r) => format!("{code:?}: {}", clip_text(r)),
+        None => format!("{code:?}"),
+    }
+}
+
+/// Why a v5 PUBACK refused the publish (reason code 0x80 or above).
+fn puback_failure(a: &v5::mqttbytes::v5::PubAck) -> Option<String> {
+    use v5::mqttbytes::v5::PubAckReason as R;
+    (!matches!(a.reason, R::Success | R::NoMatchingSubscribers)).then(|| {
+        refusal(
+            &a.reason,
+            a.properties
+                .as_ref()
+                .and_then(|p| p.reason_string.as_deref()),
+        )
+    })
+}
+
+/// Why a v5 PUBREC refused a QoS 2 publish.
+fn pubrec_failure(a: &v5::mqttbytes::v5::PubRec) -> Option<String> {
+    use v5::mqttbytes::v5::PubRecReason as R;
+    (!matches!(a.reason, R::Success | R::NoMatchingSubscribers)).then(|| {
+        refusal(
+            &a.reason,
+            a.properties
+                .as_ref()
+                .and_then(|p| p.reason_string.as_deref()),
+        )
+    })
+}
+
+/// Why a v5 PUBCOMP failed (only "packet identifier not found" exists).
+fn pubcomp_failure(a: &v5::mqttbytes::v5::PubComp) -> Option<String> {
+    use v5::mqttbytes::v5::PubCompReason as R;
+    (!matches!(a.reason, R::Success)).then(|| {
+        refusal(
+            &a.reason,
+            a.properties
+                .as_ref()
+                .and_then(|p| p.reason_string.as_deref()),
+        )
+    })
+}
+
 /// Which filters each outgoing SUBSCRIBE carried, so a SUBACK's codes can be
 /// named. The request channel is FIFO and the loop reports each SUBSCRIBE as
 /// `Outgoing::Subscribe(pkid)` in that order, so batches queued by `run` are
@@ -471,8 +521,8 @@ impl Loop {
                 },
                 Ok(Event::Outgoing(Outgoing::Disconnect)) => Polled::OutgoingDisconnect,
                 Ok(Event::Outgoing(Outgoing::Publish(pkid))) => Polled::PublishSent(pkid),
-                Ok(Event::Incoming(Packet::PubAck(a))) => Polled::PublishAcked(a.pkid),
-                Ok(Event::Incoming(Packet::PubComp(a))) => Polled::PublishAcked(a.pkid),
+                Ok(Event::Incoming(Packet::PubAck(a))) => Polled::PublishAcked(a.pkid, None),
+                Ok(Event::Incoming(Packet::PubComp(a))) => Polled::PublishAcked(a.pkid, None),
                 Ok(_) => Polled::Other,
                 Err(e) => classify_v4(e),
             },
@@ -521,8 +571,18 @@ impl Loop {
                 }
                 Ok(v5::Event::Outgoing(Outgoing::Disconnect)) => Polled::OutgoingDisconnect,
                 Ok(v5::Event::Outgoing(Outgoing::Publish(pkid))) => Polled::PublishSent(pkid),
-                Ok(v5::Event::Incoming(v5::Incoming::PubAck(a))) => Polled::PublishAcked(a.pkid),
-                Ok(v5::Event::Incoming(v5::Incoming::PubComp(a))) => Polled::PublishAcked(a.pkid),
+                Ok(v5::Event::Incoming(v5::Incoming::PubAck(a))) => {
+                    Polled::PublishAcked(a.pkid, puback_failure(&a))
+                }
+                Ok(v5::Event::Incoming(v5::Incoming::PubComp(a))) => {
+                    Polled::PublishAcked(a.pkid, pubcomp_failure(&a))
+                }
+                // A QoS 2 publish the broker refuses ends here, no PUBCOMP follows.
+                Ok(v5::Event::Incoming(v5::Incoming::PubRec(a)))
+                    if pubrec_failure(&a).is_some() =>
+                {
+                    Polled::PublishAcked(a.pkid, pubrec_failure(&a))
+                }
                 Ok(_) => Polled::Other,
                 Err(e) => classify_v5(e),
             },
@@ -711,9 +771,9 @@ async fn run(
                 flush_dropped(&tx, &mut dropped);
                 let _ = tx.try_send(CoreEvent::PublishSent { pkid });
             }
-            Polled::PublishAcked(pkid) => {
+            Polled::PublishAcked(pkid, failure) => {
                 flush_dropped(&tx, &mut dropped);
-                let _ = tx.try_send(CoreEvent::PublishAcked { pkid });
+                let _ = tx.try_send(CoreEvent::PublishAcked { pkid, failure });
             }
             Polled::AuthRefused(reason) => {
                 eventloop.drop_pending();
@@ -1072,6 +1132,32 @@ mod tests {
             panic!()
         };
         assert_eq!(r, "server disconnected: ServerShuttingDown");
+    }
+
+    #[test]
+    fn v5_publish_acks_map_refusals() {
+        use v5::mqttbytes::v5::{
+            PubAck, PubAckProperties, PubAckReason, PubComp, PubCompReason, PubRec, PubRecReason,
+        };
+        let mut a = PubAck::new(7, None);
+        assert_eq!(puback_failure(&a), None);
+        a.reason = PubAckReason::NoMatchingSubscribers;
+        assert_eq!(puback_failure(&a), None, "0x10 is a success code");
+        a.reason = PubAckReason::NotAuthorized;
+        assert_eq!(puback_failure(&a).as_deref(), Some("NotAuthorized"));
+        a.properties = Some(PubAckProperties {
+            reason_string: Some("no\nway".into()),
+            user_properties: vec![],
+        });
+        assert_eq!(puback_failure(&a).as_deref(), Some("NotAuthorized: no way"));
+        let mut c = PubComp::new(7, None);
+        assert_eq!(pubcomp_failure(&c), None);
+        c.reason = PubCompReason::PacketIdentifierNotFound;
+        assert!(pubcomp_failure(&c).is_some());
+        let mut r = PubRec::new(7, None);
+        assert_eq!(pubrec_failure(&r), None);
+        r.reason = PubRecReason::QuotaExceeded;
+        assert_eq!(pubrec_failure(&r).as_deref(), Some("QuotaExceeded"));
     }
 
     #[test]

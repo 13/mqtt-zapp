@@ -11,6 +11,13 @@ use std::io::{ErrorKind, LineWriter, Read, Write};
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 
+/// `eprintln!` without the panic when stderr is closed.
+macro_rules! warn {
+    ($($arg:tt)*) => {{
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
 const FAIL: i32 = 2;
 /// `--retained-only` stops after this much silence.
 const RETAINED_IDLE: Duration = Duration::from_secs(2);
@@ -18,12 +25,16 @@ const RETAINED_IDLE: Duration = Duration::from_secs(2);
 const ACK_TIMEOUT: Duration = Duration::from_secs(10);
 const CLOSE_WAIT: Duration = Duration::from_secs(1);
 
-/// A payload as one line of text: invalid UTF-8 becomes `<base64:…>`, and
-/// line breaks and other control characters are escaped.
-fn escape(s: &str) -> String {
+/// A payload as one line of text: invalid UTF-8 becomes `<base64:…>`;
+/// backslash is `\\`, line breaks and other control characters are
+/// escaped, and a space in the topic is `\x20`, so the topic ends at the
+/// first space. For people: scripts should read `--format jsonl`.
+fn escape(s: &str, topic: bool) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
+            '\\' => out.push_str("\\\\"),
+            ' ' if topic => out.push_str("\\x20"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
@@ -37,10 +48,10 @@ fn escape(s: &str) -> String {
 /// `<topic> <payload>` without the line end.
 pub fn text_line(topic: &str, body: &[u8]) -> String {
     let body = match std::str::from_utf8(body) {
-        Ok(t) => escape(t),
+        Ok(t) => escape(t, false),
         Err(_) => format!("<base64:{}>", payload::base64(body)),
     };
-    format!("{} {body}", escape(topic))
+    format!("{} {body}", escape(topic, true))
 }
 
 /// The password a headless run can use. Prompting is impossible without a
@@ -81,7 +92,7 @@ async fn open(
 }
 
 fn report(e: &anyhow::Error) -> i32 {
-    eprintln!("error: {e:#}");
+    warn!("error: {e:#}");
     FAIL
 }
 
@@ -103,7 +114,7 @@ pub async fn sub(cmd: &SubCmd) -> i32 {
     match (stop, flushed) {
         (Stop::Fail(c), _) => c,
         (Stop::Done, Err(e)) if e.kind() != ErrorKind::BrokenPipe => {
-            eprintln!("error: writing to stdout: {e}");
+            warn!("error: writing to stdout: {e}");
             1
         }
         (Stop::Done, _) => 0,
@@ -115,18 +126,16 @@ async fn sub_loop(cmd: &SubCmd, rx: &mut Receiver<CoreEvent>, out: &mut impl Wri
     if cmd.count == Some(0) {
         return Stop::Done;
     }
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    // Armed once; only a message pushes it back.
+    let idle = tokio::time::sleep(RETAINED_IDLE);
+    tokio::pin!(idle);
     loop {
-        let idle = async {
-            if cmd.retained_only {
-                tokio::time::sleep(RETAINED_IDLE).await;
-            } else {
-                std::future::pending::<()>().await;
-            }
-        };
         let ev = tokio::select! {
             ev = rx.recv() => ev,
-            _ = tokio::signal::ctrl_c() => return Stop::Done,
-            () = idle => return Stop::Done,
+            _ = &mut ctrl_c => return Stop::Done,
+            () = &mut idle, if cmd.retained_only => return Stop::Done,
         };
         match ev {
             Some(CoreEvent::Message { topic, msg }) => {
@@ -144,28 +153,30 @@ async fn sub_loop(cmd: &SubCmd, rx: &mut Receiver<CoreEvent>, out: &mut impl Wri
                     return if e.kind() == ErrorKind::BrokenPipe {
                         Stop::Done
                     } else {
-                        eprintln!("error: writing to stdout: {e}");
+                        warn!("error: writing to stdout: {e}");
                         Stop::Fail(1)
                     };
                 }
                 seen += 1;
+                idle.as_mut()
+                    .reset(tokio::time::Instant::now() + RETAINED_IDLE);
                 if cmd.count.is_some_and(|n| seen >= n) {
                     return Stop::Done;
                 }
             }
             Some(CoreEvent::SubRefused { filter, reason }) => {
-                eprintln!("warning: subscription '{filter}' refused: {reason}");
+                warn!("warning: subscription '{filter}' refused: {reason}");
             }
             Some(CoreEvent::State(ConnState::Failed { reason })) => {
-                eprintln!("error: connection failed: {reason}");
+                warn!("error: connection failed: {reason}");
                 return Stop::Fail(FAIL);
             }
             Some(CoreEvent::State(ConnState::Disconnected { reason, .. })) => {
-                eprintln!("warning: disconnected: {reason}; reconnecting");
+                warn!("warning: disconnected: {reason}; reconnecting");
             }
             Some(_) => {}
             None => {
-                eprintln!(
+                warn!(
                     "error: connection failed: {}",
                     mqtt_zapp_core::client::TASK_ENDED
                 );
@@ -208,6 +219,9 @@ async fn publish_once(cmd: &PubCmd) -> Result<()> {
         loop {
             match rx.recv().await {
                 Some(CoreEvent::PublishSent { .. }) if cmd.qos == 0 => return Ok(()),
+                Some(CoreEvent::PublishAcked {
+                    failure: Some(why), ..
+                }) => bail!("publish refused: {why}"),
                 Some(CoreEvent::PublishAcked { .. }) => return Ok(()),
                 Some(CoreEvent::State(
                     ConnState::Failed { reason } | ConnState::Disconnected { reason, .. },
@@ -233,6 +247,8 @@ mod tests {
         assert_eq!(text_line("a/b", b"hello"), "a/b hello");
         assert_eq!(text_line("a/b", b"l1\nl2\r\n"), "a/b l1\\nl2\\r\\n");
         assert_eq!(text_line("a/b", b""), "a/b ");
+        assert_eq!(text_line("a b/c", b"x y"), "a\\x20b/c x y");
+        assert_eq!(text_line("a/b", b"c:\\dir\\n"), "a/b c:\\\\dir\\\\n");
         assert_eq!(text_line("a/b", &[0xff, 0x00, 0x01]), "a/b <base64:/wAB>");
         assert_eq!(text_line("a/b", b"\x1b[31mred"), "a/b \\u{1b}[31mred");
         assert_eq!(text_line("t\nx", b"p"), "t\\nx p");
