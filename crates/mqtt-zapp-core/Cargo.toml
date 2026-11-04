@@ -10,7 +10,7 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 similar = "2"
 toml = "0.8"
-directories = "5"
+directories = "6"
 rand = "0.10"
 anyhow = "1"
 keyring = { version = "3", optional = true, features = ["sync-secret-service", "crypto-rust"] }
