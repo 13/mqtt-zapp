@@ -208,6 +208,7 @@ any other key, `enter` included, cancels.
 - `"quoted words"` match as one phrase.
 - `ctrl-r` switches the input to a case-insensitive regular expression. An invalid one shows its error and keeps the last valid filter.
 - Only the first 64 KiB of a payload is searched.
+- Matches are underlined in the tree and in the payload.
 
 ### ⚠️ Header warnings
 

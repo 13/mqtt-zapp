@@ -1782,3 +1782,18 @@ fn header_shows_frozen_badge() {
     assert!(!top.contains("dropped"), "{top}");
     assert!(top.contains("❄ frozen"), "{top}");
 }
+
+#[test]
+fn chart_click_with_active_filter_hits_same_line() {
+    let mut a = app_with(&[
+        ("dev/x", br#"{"t":21.5,"h":40}"#),
+        ("dev/x", br#"{"t":22,"h":41}"#),
+    ]);
+    a.selected = a.tree.find("dev/x");
+    let f = mqtt_zapp_core::search::filter(&a.tree, "h", mqtt_zapp_core::search::QueryMode::Plain)
+        .unwrap();
+    a.set_filter(f);
+    let b = draw(&mut a, 100, 30);
+    click_payload_row(&mut a, &b, "\"h\": 41");
+    assert_eq!(a.chart, Some(Some("h".into())));
+}

@@ -1294,3 +1294,94 @@ fn props_row_counts_capped_pairs_in_more() {
     assert!(row.contains("k31=v"), "{row:?}");
     assert!(row.contains("+268 more"), "{row:?}");
 }
+
+fn set_query(a: &mut App, q: &str, regex: bool) {
+    use mqtt_zapp_core::search::{QueryMode, filter};
+    let mode = if regex {
+        QueryMode::Regex
+    } else {
+        QueryMode::Plain
+    };
+    let f = filter(&a.tree, q, mode).unwrap();
+    a.set_filter(f);
+}
+
+/// Row of the first line containing `needle`.
+fn row_of(b: &Buffer, needle: &str) -> u16 {
+    lines(b)
+        .iter()
+        .position(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("{needle}: {}", text(b))) as u16
+}
+
+#[test]
+fn payload_highlights_filter_terms() {
+    let mut a = app_with(&[br#"{"id":"WZR-7"}"#]);
+    set_query(&mut a, "wzr", false);
+    let b = draw(&a);
+    let y = row_of(&b, "WZR");
+    let c = cell_at(&b, y, "WZR");
+    assert_eq!(c.symbol(), "W");
+    let x = (0..b.area.width)
+        .find(|&x| b[(x, y)].symbol() == "W")
+        .unwrap();
+    for (i, want) in [(0, true), (1, true), (2, true), (3, false)] {
+        let m = b[(x + i, y)]
+            .modifier
+            .contains(super::super::ui::MATCH_MODIFIER);
+        assert_eq!(m, want, "cell +{i}");
+    }
+    assert!(
+        !b[(x - 1, y)]
+            .modifier
+            .contains(super::super::ui::MATCH_MODIFIER)
+    );
+}
+
+#[test]
+fn payload_highlight_keeps_json_colours() {
+    let mut a = app_with(&[br#"{"id":"WZR-7"}"#]);
+    set_query(&mut a, "wzr", false);
+    let b = draw(&a);
+    let y = row_of(&b, "WZR");
+    let x = (0..b.area.width)
+        .find(|&x| b[(x, y)].symbol() == "W")
+        .unwrap();
+    assert_eq!(b[(x, y)].fg, Color::Green);
+    assert!(
+        b[(x, y)]
+            .modifier
+            .contains(super::super::ui::MATCH_MODIFIER)
+    );
+}
+
+#[test]
+fn payload_highlight_skips_empty_matches() {
+    let mut a = app_with(&[br#"{"k":"bab"}"#]);
+    set_query(&mut a, "a*", true);
+    let b = draw(&a);
+    let y = row_of(&b, "bab");
+    let x = (0..b.area.width)
+        .find(|&x| b[(x, y)].symbol() == "b")
+        .unwrap();
+    let m = |i: u16| {
+        b[(x + i, y)]
+            .modifier
+            .contains(super::super::ui::MATCH_MODIFIER)
+    };
+    assert!(!m(0) && m(1) && !m(2));
+}
+
+#[test]
+fn payload_highlight_off_in_diff_view() {
+    let mut a = app_with(&[br#"{"id":"WZR-7"}"#, br#"{"id":"WZR-8"}"#]);
+    set_query(&mut a, "wzr", false);
+    a.show_diff = true;
+    let b = draw(&a);
+    let m = super::super::ui::MATCH_MODIFIER;
+    for y in 0..b.area.height {
+        for x in 0..b.area.width {
+            assert!(!b[(x, y)].modifier.contains(m), "({x},{y})");
+        }
+    }
+}

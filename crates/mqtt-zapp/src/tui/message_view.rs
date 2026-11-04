@@ -15,6 +15,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 use std::cell::RefCell;
+use std::ops::Range;
 use std::rc::Rc;
 use std::time::SystemTime;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -777,20 +778,26 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
             .right_aligned(),
         );
     }
+    // Search matches, underlined; not in the diff, whose lines are not payload.
+    let filter = app.filter.as_ref().filter(|_| !app.show_diff);
+    let matched = |text: &str, line: Line<'static>| match filter {
+        Some(f) => mark_matches(line, &f.ranges(text)),
+        None => line,
+    };
     let lines: Vec<Line> = match body {
         Body::Json(l) => l
             .iter()
             .skip(skip)
             .take(take)
             .enumerate()
-            .map(|(i, l)| mark(i, json_line(l)))
+            .map(|(i, l)| mark(i, matched(l, json_line(l))))
             .collect(),
         Body::Plain(l) => l
             .iter()
             .skip(skip)
             .take(take)
             .enumerate()
-            .map(|(i, l)| mark(i, Line::raw(l.clone())))
+            .map(|(i, l)| mark(i, matched(l, Line::raw(l.clone()))))
             .collect(),
         Body::Diff(l) => l
             .iter()
@@ -852,6 +859,41 @@ fn render_history(f: &mut Frame, area: Rect, app: &App, s: &Shown) {
         })
         .collect();
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Add `MATCH_MODIFIER` to the parts of `line` inside `ranges` (byte offsets
+/// into its concatenated text), splitting spans at the boundaries. Colours are
+/// kept; empty ranges are skipped.
+fn mark_matches(line: Line<'static>, ranges: &[Range<usize>]) -> Line<'static> {
+    if ranges.iter().all(Range::is_empty) {
+        return line;
+    }
+    let mut out = Vec::new();
+    let mut at = 0;
+    for span in line.spans {
+        let (end, style) = (at + span.content.len(), span.style);
+        let mut pos = 0;
+        for r in ranges {
+            let (s, e) = (r.start.max(at), r.end.min(end));
+            if s >= e {
+                continue;
+            }
+            let (s, e) = (s - at, e - at);
+            if s > pos {
+                out.push(Span::styled(span.content[pos..s].to_owned(), style));
+            }
+            out.push(Span::styled(
+                span.content[s..e].to_owned(),
+                style.add_modifier(super::ui::MATCH_MODIFIER),
+            ));
+            pos = e;
+        }
+        if pos < span.content.len() {
+            out.push(Span::styled(span.content[pos..].to_owned(), style));
+        }
+        at = end;
+    }
+    Line { spans: out, ..line }
 }
 
 /// Colour one line of pretty-printed JSON: keys cyan, strings green, numbers
