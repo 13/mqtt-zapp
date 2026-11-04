@@ -39,9 +39,11 @@ fn app() -> App {
     App::new(Launch::Picker, ProfileStore::default(), Settings::default()).unwrap()
 }
 
+/// A connected session showing `topics`.
 fn browse(topics: &[&str]) -> App {
     let mut a = app();
     a.mode = Mode::Browse;
+    a.conn_state = ConnState::Connected;
     for t in topics {
         a.apply_core_event(msg(t, "v"));
     }

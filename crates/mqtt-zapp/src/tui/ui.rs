@@ -150,9 +150,15 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let [message, form_area] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(form_h)]).areas(message);
+    app.message_shown.set(message.height > 0);
     if message.height > 0 {
         super::message_view::settle_history_focus(app, message, stacked);
         super::message_view::render_message(f, message, app, stacked);
+    } else {
+        app.history_shown.set(false);
+        if app.focus != Focus::Tree {
+            app.focus = Focus::Tree;
+        }
     }
     let focused = app.mode == Mode::Publish;
     if let Some(form) = app.publish.as_mut() {

@@ -51,6 +51,13 @@ impl App {
                 retain,
                 props,
             } => {
+                // Refused here, not after: an offline send is not "sent".
+                if !self.conn_state.is_connected() {
+                    if let Some(form) = self.publish.as_mut() {
+                        form.error = Some("not connected".into());
+                    }
+                    return Effect::None;
+                }
                 self.remember_sent(&topic, &payload);
                 self.await_reply = props
                     .as_ref()
@@ -177,47 +184,65 @@ impl App {
             .selected
             .map(|id| self.tree.full_topic(id))
             .unwrap_or_default();
-        let mut note = None;
         let v5 = self
             .session_profile
             .as_ref()
             .is_some_and(|p| p.mqtt_version == mqtt_zapp_core::config::MqttVersion::V5);
-        let mut form = PublishForm::new(&topic, v5);
-        if !resend
-            && let Some(draft) = self
-                .publish_draft
-                .take_if(|d| d.topic_text() == topic && d.v5 == v5)
-        {
-            form = draft;
-            form.error = None;
-            note = Some("draft restored");
-        }
-        if self.focus == Focus::History
-            && self.history_sel.is_some()
-            && let Some(m) = crate::tui::message_view::shown_message(self)
-        {
-            if m.truncated_from.is_some() {
-                note = Some("can't re-send: payload was truncated");
-            } else if let Ok(text) = std::str::from_utf8(&m.payload)
-                && text.chars().any(mqtt_zapp_core::payload::is_unsafe_char)
-            {
-                // The form could not show it exactly, so it would not send it
-                // exactly either.
-                note = Some("can't re-send: control characters");
-            } else if let Ok(text) = std::str::from_utf8(&m.payload) {
-                form = PublishForm::prefilled(&topic, text, m.qos, m.retain, v5);
-                if m.sparkplug {
-                    note = Some("re-sending Sparkplug as JSON");
+        let mut note = None;
+        let mut form = None;
+        if resend && let Some(m) = crate::tui::message_view::shown_message(self) {
+            match resend_text(m) {
+                Ok(text) => {
+                    form = Some(PublishForm::prefilled(&topic, text, m.qos, m.retain, v5));
+                    if m.sparkplug {
+                        note = Some("re-sending Sparkplug as JSON");
+                    }
                 }
-            } else {
-                note = Some("can't re-send: binary payload");
+                Err(why) => note = Some(why),
             }
         }
-        self.publish = Some(form);
+        match form {
+            Some(new) => {
+                // The form it replaces is kept as the draft for its topic.
+                if let Some(old) = self.publish.take().filter(|f| !f.is_blank()) {
+                    self.publish_draft = Some(old);
+                }
+                self.publish = Some(new);
+            }
+            // A refused re-send leaves an open form as it was.
+            None if self.publish.is_some() => {}
+            None => {
+                let mut new = PublishForm::new(&topic, v5);
+                if !resend
+                    && let Some(draft) = self
+                        .publish_draft
+                        .take_if(|d| d.topic_text() == topic && d.v5 == v5)
+                {
+                    new = draft;
+                    new.error = None;
+                    note = Some("draft restored");
+                }
+                self.publish = Some(new);
+            }
+        }
         self.sent_walk = None;
         self.mode = Mode::Publish;
+        self.dirty = true;
         if let Some(n) = note {
             self.set_note(Note::info(n), Instant::now());
         }
     }
+}
+
+/// The text of `m` for the form, or why it can't be re-sent exactly.
+fn resend_text(m: &mqtt_zapp_core::Message) -> Result<&str, &'static str> {
+    if m.truncated_from.is_some() {
+        return Err("can't re-send: payload was truncated");
+    }
+    let text = std::str::from_utf8(&m.payload).map_err(|_| "can't re-send: binary payload")?;
+    // The form could not show it exactly, so it would not send it exactly.
+    if text.chars().any(mqtt_zapp_core::payload::is_unsafe_char) {
+        return Err("can't re-send: control characters");
+    }
+    Ok(text)
 }

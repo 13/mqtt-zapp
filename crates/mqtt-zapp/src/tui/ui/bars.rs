@@ -24,34 +24,33 @@ pub(super) fn hints(app: &App) -> Vec<(String, &'static str)> {
     match (app.mode, app.focus) {
         (Mode::Browse, Focus::Tree) => vec![
             (k(Action::Search), "search"),
-            (
-                k(Action::Publish),
-                if app.publish.is_some() {
-                    "back to form"
-                } else {
-                    "publish"
-                },
-            ),
+            (k(Action::Publish), back_or_publish(app)),
             (k(Action::Help), "help"),
             (k(Action::Quit), "quit"),
             (k(Action::FocusNext), "focus"),
             (k(Action::Select), "expand"),
         ],
-        (Mode::Browse, Focus::Payload) => vec![
-            (jk, "scroll"),
-            (k(Action::ToggleDiff), "diff"),
-            (k(Action::FocusNext), "focus"),
-            (k(Action::Help), "help"),
-            (k(Action::Quit), "quit"),
-        ],
-        (Mode::Browse, Focus::History) => vec![
-            (jk, "older/newer"),
-            (k(Action::ToggleDiff), "diff"),
-            (k(Action::MarkDiffBase), "mark"),
-            (k(Action::FocusNext), "focus"),
-            (k(Action::Help), "help"),
-            (k(Action::Quit), "quit"),
-        ],
+        (Mode::Browse, Focus::Payload) => [(jk, "scroll")]
+            .into_iter()
+            .chain(back_to_form(app))
+            .chain([
+                (k(Action::ToggleDiff), "diff"),
+                (k(Action::FocusNext), "focus"),
+                (k(Action::Help), "help"),
+                (k(Action::Quit), "quit"),
+            ])
+            .collect(),
+        (Mode::Browse, Focus::History) => [(jk, "older/newer")]
+            .into_iter()
+            .chain(back_to_form(app))
+            .chain([
+                (k(Action::ToggleDiff), "diff"),
+                (k(Action::MarkDiffBase), "mark"),
+                (k(Action::FocusNext), "focus"),
+                (k(Action::Help), "help"),
+                (k(Action::Quit), "quit"),
+            ])
+            .collect(),
         (Mode::Picker, _) => vec![
             (k(Action::Select), "connect"),
             (k(Action::AddProfile), "add"),
@@ -87,6 +86,28 @@ pub(super) fn hints(app: &App) -> Vec<(String, &'static str)> {
         (Mode::Publish, _) => publish_hints(app),
         _ => vec![],
     }
+}
+
+/// What the publish key does outside a history entry: open the form, or go
+/// back to the one left open.
+fn back_or_publish(app: &App) -> &'static str {
+    if app.publish.is_some() {
+        "back to form"
+    } else {
+        "publish"
+    }
+}
+
+/// The publish key's hint beside the message panes, only while a form is
+/// open: there `p` goes back to it (or, on a history entry, re-sends).
+fn back_to_form(app: &App) -> Option<(String, &'static str)> {
+    let label = match (app.focus, app.history_sel) {
+        (Focus::History, Some(_)) => "re-send",
+        _ => "back to form",
+    };
+    app.publish
+        .is_some()
+        .then(|| (key_for(app, Action::Publish), label))
 }
 
 /// The publish form's hints: the focused field's keys after send, then the

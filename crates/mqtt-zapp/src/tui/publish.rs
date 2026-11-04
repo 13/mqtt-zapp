@@ -484,9 +484,16 @@ fn payload_title(form: &PublishForm) -> Line<'static> {
 pub fn render(f: &mut Frame, area: Rect, form: &mut PublishForm) {
     form.hits.clear();
     f.render_widget(Clear, area);
+    // The thick border marks focus, so an inactive form keeps the rounded
+    // one even with an error.
+    let border = if form.active {
+        BorderType::Thick
+    } else {
+        BorderType::Rounded
+    };
     let block = match &form.error {
         Some(_) => Block::bordered()
-            .border_type(BorderType::Thick)
+            .border_type(border)
             .title(Span::styled(
                 " publish ",
                 Style::new().fg(theme::ERR).add_modifier(Modifier::BOLD),

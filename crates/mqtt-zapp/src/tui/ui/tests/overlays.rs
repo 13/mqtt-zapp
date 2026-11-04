@@ -507,3 +507,43 @@ fn left_form_stays_drawn_unfocused_and_a_click_returns() {
     assert_eq!(a.mode, Mode::Browse);
     assert!(a.publish.is_some());
 }
+
+#[test]
+fn tab_skips_hidden_message_pane() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut a = app_with(&[("a", b"1")]);
+    a.handle_action(Action::Down);
+    a.handle_action(Action::Publish);
+    a.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    draw(&mut a, 79, 24);
+    assert!(
+        !a.message_shown.get(),
+        "stacked 79x24: the form fills the pane"
+    );
+    a.handle_action(Action::FocusNext);
+    assert_eq!(a.mode, Mode::Publish);
+}
+
+#[test]
+fn inactive_form_error_has_no_thick_border() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut a = app_with(&[("a", b"1")]);
+    a.handle_action(Action::Publish);
+    // Empty topic: the send fails and the form shows its error.
+    a.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    a.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
+    a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    assert!(a.publish.as_ref().unwrap().error.is_some());
+    draw(&mut a, 120, 40);
+    // A click on the tree leaves the form without a key reaching it.
+    mouse(
+        &mut a,
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        2,
+        2,
+    );
+    assert_eq!(a.mode, Mode::Browse);
+    let s = text(&draw(&mut a, 120, 40));
+    let row = s.lines().find(|l| l.contains(" publish ")).unwrap();
+    assert!(row.contains('╭') && !row.contains('┏'), "{row}");
+}

@@ -400,3 +400,53 @@ fn paste_goes_into_the_focused_field() {
     a.handle_paste("/x\nignored");
     assert_eq!(a.publish.as_ref().unwrap().topic_text(), "t/x");
 }
+
+#[test]
+fn resend_keeps_the_open_form_as_draft() {
+    let mut a = resend_app(|_| {});
+    a.focus = Focus::Tree;
+    a.handle_action(Action::Publish);
+    a.handle_key(key(KeyCode::Tab));
+    type_str(&mut a, "mine");
+    a.handle_key(ctrl_key('o'));
+    a.focus = Focus::History;
+    a.history_sel = Some(0);
+    a.handle_action(Action::Publish);
+    assert_eq!(payload_of(&a), "old");
+    let draft = a.publish_draft.as_ref().expect("old form kept");
+    assert_eq!(draft.payload_text(), "mine");
+}
+
+#[test]
+fn refused_resend_leaves_the_open_form_alone() {
+    let mut a = resend_app(|m| m.payload = Bytes::from_static(&[0xff, 0x00]));
+    a.focus = Focus::Tree;
+    a.handle_action(Action::Publish);
+    a.handle_key(key(KeyCode::Tab));
+    type_str(&mut a, "mine");
+    a.handle_key(ctrl_key('o'));
+    a.focus = Focus::History;
+    a.history_sel = Some(0);
+    a.handle_action(Action::Publish);
+    assert_eq!(a.mode, Mode::Publish);
+    assert_eq!(payload_of(&a), "mine");
+    let note = &a.status_note.as_ref().unwrap().0.text;
+    assert_eq!(note, "can't re-send: binary payload");
+}
+
+#[test]
+fn offline_send_stays_in_the_form() {
+    let mut a = browse(&["t"]);
+    a.conn_state = ConnState::Disconnected {
+        reason: "x".into(),
+        retry_in_ms: 1000,
+    };
+    a.selected = a.tree.find("t");
+    a.handle_action(Action::Publish);
+    a.handle_key(key(KeyCode::Tab));
+    type_str(&mut a, "on");
+    assert!(matches!(a.handle_key(ctrl_key('s')), Effect::None));
+    let form = a.publish.as_ref().unwrap();
+    assert_eq!(form.error.as_deref(), Some("not connected"));
+    assert!(a.sent.is_empty(), "not recorded as sent");
+}

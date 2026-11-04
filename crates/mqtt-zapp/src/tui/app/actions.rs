@@ -24,6 +24,8 @@ impl App {
             Action::Down => self.move_selection(|i, n| (i + 1).min(n - 1)),
             Action::FocusNext => {
                 self.focus = match self.focus {
+                    // The docked form can take the whole message pane.
+                    Focus::Tree if !self.message_shown.get() => Focus::Tree,
                     Focus::Tree => Focus::Payload,
                     Focus::Payload if self.history_shown.get() => Focus::History,
                     Focus::Payload | Focus::History => Focus::Tree,

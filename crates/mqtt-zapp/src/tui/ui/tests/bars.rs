@@ -526,3 +526,14 @@ fn header_shows_auth_failure_with_hint() {
     assert!(top.contains("pick the profile again to retry"), "{top}");
     assert!(!top.contains('\x1b'), "{top}");
 }
+
+#[test]
+fn payload_focus_hints_back_to_an_open_form() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut a = app_with(&[("a", b"1")]);
+    a.handle_action(Action::Publish);
+    a.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    a.focus = Focus::Payload;
+    let last = last_line(&draw(&mut a, 140, 30));
+    assert!(last.contains("p back to form"), "{last}");
+}

@@ -440,6 +440,9 @@ pub struct App {
     /// Whether the last frame had room for the history box without forcing
     /// it open; Tab only visits it then.
     pub history_shown: Cell<bool>,
+    /// Whether the last frame drew the message pane: the docked publish
+    /// form can take all of its rows.
+    pub message_shown: Cell<bool>,
     /// The rows the last frame drew, so mouse clicks hit what was on screen.
     drawn_rows: RefCell<Option<Rc<[Row]>>>,
     /// When this `App` was made: Count and Recent rows refresh once a
@@ -555,6 +558,7 @@ impl App {
             status_note: None,
             hit: Cell::new(HitAreas::default()),
             history_shown: Cell::new(false),
+            message_shown: Cell::new(true),
             drawn_rows: RefCell::new(None),
             confirm: None,
             field_picker: None,
