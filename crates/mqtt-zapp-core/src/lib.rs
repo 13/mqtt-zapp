@@ -1,6 +1,7 @@
 pub mod client;
 pub mod config;
 pub mod diff;
+pub mod export;
 pub mod payload;
 pub mod search;
 pub mod secrets;

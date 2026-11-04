@@ -86,6 +86,8 @@ impl App {
             }
             Action::ToggleStar => return self.toggle_star(),
             Action::StarredOnly => self.toggle_starred_only(),
+            Action::SavePayload => self.save_payload(),
+            Action::SaveHistory => self.save_history(),
             // Picker-only.
             Action::AddProfile
             | Action::EditProfile

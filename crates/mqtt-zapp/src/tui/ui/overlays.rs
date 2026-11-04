@@ -170,6 +170,8 @@ pub(super) const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
             Action::Freeze,
             Action::ToggleStar,
             Action::StarredOnly,
+            Action::SavePayload,
+            Action::SaveHistory,
             Action::Help,
             Action::Cancel,
             Action::Quit,

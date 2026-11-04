@@ -48,6 +48,8 @@ pub enum Action {
     Freeze,
     ToggleStar,
     StarredOnly,
+    SavePayload,
+    SaveHistory,
 }
 
 impl Action {
@@ -93,6 +95,8 @@ impl Action {
         (Action::Freeze, "freeze", &["f"]),
         (Action::ToggleStar, "star", &["*"]),
         (Action::StarredOnly, "starred_only", &["'"]),
+        (Action::SavePayload, "save_payload", &["w"]),
+        (Action::SaveHistory, "save_history", &["W"]),
     ];
 
     /// The snake_case name used in `[keys]`.

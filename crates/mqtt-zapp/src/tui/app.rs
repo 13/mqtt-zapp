@@ -24,6 +24,7 @@ use mqtt_zapp_core::{NodeId, TopicTree};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -34,6 +35,7 @@ mod keys;
 mod mouse;
 mod publish;
 mod retained;
+mod save;
 mod search;
 mod star;
 pub use mouse::HitAreas;
@@ -391,6 +393,8 @@ pub struct App {
     pub starred_only: bool,
     /// Bumped when `favorites` changes, for the rows cache.
     star_gen: u64,
+    /// Where `w` and `W` write; the current directory unless a test says so.
+    pub save_dir: PathBuf,
 }
 
 /// Everything `visible_rows` depends on, cheaply comparable.
@@ -496,6 +500,7 @@ impl App {
             favorites: BTreeMap::new(),
             starred_only: false,
             star_gen: 0,
+            save_dir: PathBuf::from("."),
         })
     }
 

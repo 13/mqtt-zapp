@@ -14,6 +14,7 @@ mod nav;
 mod picker;
 mod publish;
 mod retained;
+mod save;
 mod search;
 mod star;
 

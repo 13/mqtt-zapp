@@ -23,6 +23,7 @@ tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 tokio-util = "0.7"
 rustls-native-certs = "0.8"
 regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [features]
 default = ["keyring"]
