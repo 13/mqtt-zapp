@@ -14,11 +14,14 @@ pub(super) fn fit_preview(payload: &[u8], room: usize) -> String {
 }
 
 pub(super) fn render_history(f: &mut Frame, area: Rect, app: &App, s: &Shown) {
+    // The position counts from the newest entry (1), as the list shows them.
     let title = match app.history_sel {
         None => "history · live".to_owned(),
-        Some(_) => format!(
-            "history · paused ({} to newest)",
-            crate::tui::ui::key_for(app, Action::Up)
+        Some(i) => format!(
+            "history · paused · {}/{} ({} to newest)",
+            s.node.history.len().saturating_sub(i),
+            s.node.history.len(),
+            crate::tui::ui::key_for(app, Action::Top)
         ),
     };
     let focused = app.pane_focused(Focus::History);

@@ -1021,6 +1021,21 @@ impl App {
         }
     }
 
+    /// `g` in the history list: back to the newest entry, which is live.
+    fn history_newest(&mut self) {
+        self.history_sel = None;
+        self.payload_scroll = 0;
+    }
+
+    /// `G` in the history list: the oldest entry (none with one entry: the
+    /// only one is live).
+    fn history_oldest(&mut self) {
+        if self.history_len() >= 2 {
+            self.history_sel = Some(0);
+            self.payload_scroll = 0;
+        }
+    }
+
     /// `k` in the history list (up the screen): towards newer entries; the
     /// newest entry is live.
     fn history_newer(&mut self) {

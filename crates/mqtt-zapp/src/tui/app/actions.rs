@@ -15,9 +15,11 @@ impl App {
             Action::Down if self.focus == Focus::Payload => self.scroll_payload_by(1),
             Action::Top if self.focus == Focus::Payload => self.payload_scroll = 0,
             Action::Bottom if self.focus == Focus::Payload => self.scroll_payload_by(isize::MAX),
-            // Tree-only keys do nothing while the payload has focus.
+            Action::Top if self.focus == Focus::History => self.history_newest(),
+            Action::Bottom if self.focus == Focus::History => self.history_oldest(),
+            // Tree-only keys do nothing while the payload or history has focus.
             Action::Collapse | Action::Expand | Action::ToggleExpand | Action::Select
-                if self.focus == Focus::Payload => {}
+                if self.focus != Focus::Tree => {}
             Action::Up => self.move_selection(|i, _| i.saturating_sub(1)),
             Action::Down => self.move_selection(|i, n| (i + 1).min(n - 1)),
             Action::FocusNext => {

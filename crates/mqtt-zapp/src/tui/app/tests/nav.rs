@@ -570,3 +570,34 @@ fn copy_refuses_huge_text() {
         Effect::Copy { .. }
     ));
 }
+
+#[test]
+fn history_g_and_shift_g_jump_to_newest_and_oldest() {
+    let mut a = history_app(10, &["1", "2", "3"]);
+    a.focus = Focus::History;
+    a.handle_action(Action::Bottom);
+    assert_eq!(a.history_sel, Some(0), "oldest");
+    assert_eq!(sel(&a), "t");
+    a.handle_action(Action::Top);
+    assert_eq!(a.history_sel, None, "live");
+    assert_eq!(sel(&a), "t");
+}
+
+#[test]
+fn tree_keys_do_nothing_in_history() {
+    let mut a = browse(&["a/b", "c"]);
+    a.selected = a.tree.find("a/b");
+    a.expanded.insert(a.tree.find("a").unwrap());
+    a.focus = Focus::History;
+    let expanded = a.expanded.as_set().clone();
+    for x in [
+        Action::Collapse,
+        Action::Expand,
+        Action::ToggleExpand,
+        Action::Select,
+    ] {
+        a.handle_action(x);
+        assert_eq!(sel(&a), "a/b", "{x:?}");
+        assert_eq!(a.expanded.as_set(), &expanded, "{x:?}");
+    }
+}
