@@ -1082,7 +1082,7 @@ fn truncated_json_renders_as_text_with_marker() {
     assert_eq!(json.len(), 2048);
     send(&mut a, T, json.as_bytes(), false);
     a.selected = a.tree.find(T);
-    let m = a.tree.node(a.selected.unwrap()).latest.as_ref().unwrap();
+    let m = a.tree.node(a.selected.unwrap()).latest().unwrap();
     assert_eq!((m.payload.len(), m.truncated_from), (1024, Some(2048)));
     let (body, kind) = body(&a).unwrap();
     assert_eq!(kind, "TEXT");

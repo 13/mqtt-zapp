@@ -912,13 +912,13 @@ impl App {
         let Some(id) = self.selected else { return };
         let mut stack = vec![id];
         while let Some(n) = stack.pop() {
-            let kids = &self.tree.node(n).children;
-            if expand && !kids.is_empty() {
+            let node = self.tree.node(n);
+            if expand && !node.children.is_empty() {
                 self.expanded.insert(n);
             } else if !expand {
                 self.expanded.remove(&n);
             }
-            stack.extend(kids.values());
+            stack.extend(node.child_ids());
         }
     }
 

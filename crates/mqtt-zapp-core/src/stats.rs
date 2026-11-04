@@ -25,7 +25,7 @@ pub fn broker_stats(tree: &TopicTree) -> Vec<(&'static str, String)> {
     STATS
         .iter()
         .filter_map(|&(label, topic)| {
-            let m = tree.node(tree.find(topic)?).latest.as_ref()?;
+            let m = tree.node(tree.find(topic)?).latest()?;
             let text = String::from_utf8_lossy(&m.payload);
             Some((label, sanitize(text.trim()).replace('\n', " ")))
         })

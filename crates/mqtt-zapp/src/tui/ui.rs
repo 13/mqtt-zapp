@@ -275,7 +275,7 @@ fn row_spans<'a>(
         Span::styled(format!("{marker} "), Style::new().fg(theme::ACCENT)),
     ];
     let mut name_style = Style::new();
-    if node.latest.is_some() {
+    if node.latest().is_some() {
         name_style = name_style.add_modifier(Modifier::BOLD);
     }
     if flash {
@@ -290,14 +290,13 @@ fn row_spans<'a>(
     }
     let offline = node_offline(tree, row.id);
     let stale = !offline
-        && stale_before
-            .is_some_and(|before| node.latest.as_ref().is_some_and(|m| m.received_at < before));
+        && stale_before.is_some_and(|before| node.latest().is_some_and(|m| m.received_at < before));
     if offline {
         spans.push(Span::styled(" offline", Style::new().fg(theme::ERR)));
     } else if stale {
         spans.push(Span::styled(" stale", Style::new().fg(theme::MUTED)));
     }
-    if let Some(m) = &node.latest {
+    if let Some(m) = node.latest() {
         spans.push(Span::raw("  "));
         highlight(
             &mut spans,
@@ -329,11 +328,10 @@ fn row_spans<'a>(
 fn node_offline(tree: &TopicTree, id: NodeId) -> bool {
     let node = tree.node(id);
     let says = |n: &TopicNode| {
-        n.latest
-            .as_ref()
+        n.latest()
             .is_some_and(|m| says_offline(&n.name, &m.payload))
     };
-    says(node) || node.children.values().any(|&c| says(tree.node(c)))
+    says(node) || node.child_ids().any(|c| says(tree.node(c)))
 }
 
 /// Push `text` as spans, styling the byte ranges where `query` matches.

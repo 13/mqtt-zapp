@@ -27,7 +27,7 @@ impl App {
         };
         let node = self.tree.node(id);
         let msgs: Vec<&Message> = if node.history.is_empty() {
-            node.latest.iter().collect()
+            node.latest().into_iter().collect()
         } else {
             node.history.iter().collect()
         };

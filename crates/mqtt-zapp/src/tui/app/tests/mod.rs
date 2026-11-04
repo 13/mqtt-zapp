@@ -364,7 +364,7 @@ fn zero_payload_cap_means_unlimited() {
     let big = "x".repeat(3000);
     a.apply_core_event(msg("t", &big));
     let n = a.tree.node(a.tree.find("t").unwrap());
-    let m = n.latest.as_ref().unwrap();
+    let m = n.latest().unwrap();
     assert_eq!((m.payload.len(), m.truncated_from), (3000, None));
     assert!(n.retained, "a non-empty retained payload stays retained");
 }

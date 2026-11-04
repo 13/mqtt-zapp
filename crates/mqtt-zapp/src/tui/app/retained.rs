@@ -40,7 +40,7 @@ impl App {
                 topics.push(topic);
             }
             if subtree {
-                stack.extend(node.children.values());
+                stack.extend(node.child_ids());
             }
         }
         topics

@@ -2,8 +2,9 @@
 
 use mqtt_zapp_core::config::SortOrder;
 use mqtt_zapp_core::search::Filter;
+use mqtt_zapp_core::tree::{NaturalKey, natural_key};
 use mqtt_zapp_core::{NodeId, TopicTree};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -27,13 +28,9 @@ pub fn visible_rows(
     let shown = |id: &NodeId| {
         filter.is_none_or(|f| f.visible.contains(id)) && only.is_none_or(|o| o.contains(id))
     };
-    let order = |a: &NodeId, b: &NodeId| {
+    let order = |a: &NodeId, b: &NodeId, keys: &HashMap<NodeId, NaturalKey>| {
         let (x, y) = (tree.node(*a), tree.node(*b));
-        let by_name = || {
-            x.sort_key
-                .cmp(&y.sort_key)
-                .then_with(|| x.name.cmp(&y.name))
-        };
+        let by_name = || keys[a].cmp(&keys[b]).then_with(|| x.name.cmp(&y.name));
         match sort {
             SortOrder::Name => by_name(),
             SortOrder::Count => y.msg_count.cmp(&x.msg_count).then_with(by_name),
@@ -45,20 +42,19 @@ pub fn visible_rows(
     // Explicit stack: topics can be arbitrarily deep.
     let mut stack: Vec<(NodeId, u16)> = Vec::new();
     let push_children = |stack: &mut Vec<(NodeId, u16)>, id: NodeId, depth: u16| {
-        let mut kids: Vec<NodeId> = tree
-            .node(id)
-            .children
-            .values()
-            .copied()
-            .filter(shown)
+        let mut kids: Vec<NodeId> = tree.node(id).child_ids().filter(shown).collect();
+        // Natural keys are built here, once per rebuild of the (cached) rows.
+        let keys: HashMap<NodeId, NaturalKey> = kids
+            .iter()
+            .map(|&k| (k, natural_key(&tree.node(k).name)))
             .collect();
-        kids.sort_by(order);
+        kids.sort_by(|a, b| order(a, b, &keys));
         // Reversed: the stack pops the first child first.
         stack.extend(kids.into_iter().rev().map(|c| (c, depth)));
     };
     push_children(&mut stack, TopicTree::ROOT, 0);
     while let Some((id, depth)) = stack.pop() {
-        let has_children = tree.node(id).children.values().any(shown);
+        let has_children = tree.node(id).child_ids().any(|c| shown(&c));
         let expanded = filter.is_some() || only.is_some() || expanded.contains(&id);
         rows.push(Row {
             id,
@@ -111,7 +107,7 @@ mod tests {
     }
 
     fn names(t: &TopicTree, rows: &[Row]) -> Vec<String> {
-        rows.iter().map(|r| t.node(r.id).name.clone()).collect()
+        rows.iter().map(|r| t.node(r.id).name.to_string()).collect()
     }
 
     #[test]

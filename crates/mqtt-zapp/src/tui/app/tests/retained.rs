@@ -129,7 +129,14 @@ fn delete_topic_asks_then_clears_retained_and_removes_subtree() {
         "selection moves to the parent"
     );
     let parent = a.tree.node(a.tree.find("a").unwrap());
-    assert_eq!(parent.children.keys().collect::<Vec<_>>(), ["x"]);
+    assert_eq!(
+        parent
+            .children
+            .iter()
+            .map(|(n, _)| &**n)
+            .collect::<Vec<_>>(),
+        ["x"]
+    );
 }
 
 #[test]

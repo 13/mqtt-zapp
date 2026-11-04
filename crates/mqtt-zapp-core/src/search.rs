@@ -172,10 +172,9 @@ pub fn filter(tree: &TopicTree, query: &str, mode: QueryMode) -> Result<Option<F
     let mut path = String::new();
     let mut stack: Vec<(NodeId, usize)> = tree
         .node(TopicTree::ROOT)
-        .children
-        .values()
+        .child_ids()
         .rev()
-        .map(|&id| (id, 0))
+        .map(|id| (id, 0))
         .collect();
     while let Some((id, parent_len)) = stack.pop() {
         if !tree.is_alive(id) {
@@ -187,7 +186,7 @@ pub fn filter(tree: &TopicTree, query: &str, mode: QueryMode) -> Result<Option<F
         }
         path.push_str(&tree.node(id).name);
         let node = tree.node(id);
-        let payload: &[u8] = node.latest.as_ref().map_or(&[], |m| &m.payload);
+        let payload: &[u8] = node.latest().map_or(&[], |m| &m.payload);
         let payload = &payload[..payload.len().min(SEARCH_PAYLOAD_MAX)];
         if compiled.matches(&path, payload) {
             matches.insert(id);
@@ -200,7 +199,7 @@ pub fn filter(tree: &TopicTree, query: &str, mode: QueryMode) -> Result<Option<F
             }
         }
         let here = path.len();
-        for &child in node.children.values().rev() {
+        for child in node.child_ids().rev() {
             stack.push((child, here));
         }
     }
@@ -216,7 +215,7 @@ pub fn filter(tree: &TopicTree, query: &str, mode: QueryMode) -> Result<Option<F
 /// Whether `compiled` matches node `id`.
 fn node_matches(tree: &TopicTree, compiled: &Query, id: NodeId) -> bool {
     let node = tree.node(id);
-    let payload: &[u8] = node.latest.as_ref().map_or(&[], |m| &m.payload);
+    let payload: &[u8] = node.latest().map_or(&[], |m| &m.payload);
     let payload = &payload[..payload.len().min(SEARCH_PAYLOAD_MAX)];
     compiled.matches(&tree.full_topic(id), payload)
 }

@@ -4,7 +4,7 @@ use crate::payload::STUB_KEEP;
 use crate::{Bytes, Message};
 use serde::Serialize;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::time::Instant;
 
 pub type NodeId = usize;
@@ -14,11 +14,12 @@ const COMPACT_SLACK: usize = 4096;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TopicNode {
-    pub name: String,
+    pub name: Box<str>,
     pub parent: Option<NodeId>,
-    pub children: BTreeMap<String, NodeId>,
-    pub latest: Option<Message>,
-    /// Newest at the back, includes `latest`.
+    /// Sorted by name (byte order); look up with `child`.
+    pub children: Vec<(Box<str>, NodeId)>,
+    /// Newest at the back; the back is the latest message (`latest`). A node
+    /// that has had a message never holds an empty history.
     pub history: VecDeque<Message>,
     /// Insertion sequence number of each `history` entry (same order).
     #[serde(skip)]
@@ -43,19 +44,14 @@ pub struct TopicNode {
     /// Taken out by `TopicTree::remove`; the slot stays so ids are stable.
     #[serde(skip)]
     removed: bool,
-    /// Precomputed natural order of `name`.
-    #[serde(skip)]
-    pub sort_key: NaturalKey,
 }
 
 impl TopicNode {
-    fn new(name: String, parent: Option<NodeId>) -> Self {
+    fn new(name: &str, parent: Option<NodeId>) -> Self {
         Self {
-            sort_key: natural_key(&name),
-            name,
+            name: name.into(),
             parent,
-            children: BTreeMap::new(),
-            latest: None,
+            children: Vec::new(),
             history: VecDeque::new(),
             history_seq: VecDeque::new(),
             parked: false,
@@ -66,6 +62,24 @@ impl TopicNode {
             last_update: None,
             removed: false,
         }
+    }
+
+    /// The most recent message, if any (the back of the history).
+    pub fn latest(&self) -> Option<&Message> {
+        self.history.back()
+    }
+
+    /// The child called `name`.
+    pub fn child(&self, name: &str) -> Option<NodeId> {
+        self.children
+            .binary_search_by(|(n, _)| (**n).cmp(name))
+            .ok()
+            .map(|i| self.children[i].1)
+    }
+
+    /// Child ids in name (byte) order.
+    pub fn child_ids(&self) -> impl DoubleEndedIterator<Item = NodeId> + '_ {
+        self.children.iter().map(|&(_, id)| id)
     }
 }
 
@@ -124,7 +138,7 @@ impl TopicTree {
     /// A message whose topic needs more levels than are left is refused.
     pub fn with_limits(history_depth: usize, max_bytes: usize, max_topics: usize) -> Self {
         Self {
-            nodes: vec![TopicNode::new(String::new(), None)],
+            nodes: vec![TopicNode::new("", None)],
             // At least 1, or the latest message would sit outside the byte cap.
             history_depth: history_depth.max(1),
             max_bytes,
@@ -226,20 +240,17 @@ impl TopicTree {
             if node.removed || node.stamp != stamp {
                 continue; // removed, or updated since
             }
-            let (Some(latest), Some(last)) = (node.latest.as_mut(), node.history.back_mut()) else {
+            let Some(last) = node.history.back_mut() else {
                 continue;
             };
-            let keep = utf8_prefix_len(&latest.payload, STUB_KEEP);
-            if keep == latest.payload.len() {
+            let keep = utf8_prefix_len(&last.payload, STUB_KEEP);
+            if keep == last.payload.len() {
                 continue;
             }
-            // Replace both copies, so the big buffer is freed.
-            let mut stub = latest.clone();
-            stub.truncated_from = stub.truncated_from.or(Some(stub.payload.len()));
-            stub.payload = Bytes::copy_from_slice(&stub.payload[..keep]);
-            self.bytes = self.bytes - last.size() + stub.size();
-            *last = stub.clone();
-            *latest = stub;
+            let before = last.size();
+            last.truncated_from = last.truncated_from.or(Some(last.payload.len()));
+            last.payload = Bytes::copy_from_slice(&last.payload[..keep]);
+            self.bytes = self.bytes - before + last.size();
             // The payload a search sees changed.
             self.touch(id);
         }
@@ -275,8 +286,8 @@ impl TopicTree {
         let mut cur = Self::ROOT;
         let mut found = 0;
         for level in topic.split('/') {
-            match self.nodes[cur].children.get(level) {
-                Some(&id) => (cur, found) = (id, found + 1),
+            match self.nodes[cur].child(level) {
+                Some(id) => (cur, found) = (id, found + 1),
                 None => break,
             }
         }
@@ -290,14 +301,17 @@ impl TopicTree {
             self.live += missing;
             for level in topic.split('/').skip(found) {
                 let id = self.nodes.len();
-                self.nodes.push(TopicNode::new(level.to_owned(), Some(cur)));
-                self.nodes[cur].children.insert(level.to_owned(), id);
+                self.nodes.push(TopicNode::new(level, Some(cur)));
+                // `level` is not among the children: it is what was missing.
+                let kids = &mut self.nodes[cur].children;
+                let at = kids.partition_point(|(n, _)| &**n < level);
+                kids.insert(at, (level.into(), id));
                 // New levels may match by path on their own.
                 self.touch(id);
                 cur = id;
             }
         }
-        let first = self.nodes[cur].latest.is_none();
+        let first = self.nodes[cur].history.is_empty();
         let now = Instant::now();
         let node = &mut self.nodes[cur];
         if msg.payload.is_empty() {
@@ -305,7 +319,6 @@ impl TopicTree {
         } else if msg.retain {
             node.retained = true;
         }
-        node.latest = Some(msg.clone());
         if std::mem::take(&mut node.parked)
             && let Some(&old) = node.history_seq.front()
         {
@@ -360,24 +373,26 @@ impl TopicTree {
         self.shape_gen += 1;
         let removed_msgs = self.nodes[id].msg_count;
         let removed_topics =
-            self.nodes[id].topic_count + u32::from(self.nodes[id].latest.is_some());
+            self.nodes[id].topic_count + u32::from(!self.nodes[id].history.is_empty());
         let mut stack = vec![id];
         while let Some(n) = stack.pop() {
             let node = &mut self.nodes[n];
-            stack.extend(std::mem::take(&mut node.children).into_values());
+            stack.extend(
+                std::mem::take(&mut node.children)
+                    .into_iter()
+                    .map(|(_, c)| c),
+            );
             self.bytes -= node.history.iter().map(Message::size).sum::<usize>();
             self.entries -= node.history.len();
             node.history.clear();
             node.history_seq.clear();
-            node.latest = None;
             node.retained = false;
             node.parked = false;
             node.msg_count = 0;
             node.topic_count = 0;
             node.removed = true;
             if n != id {
-                node.name = String::new();
-                node.sort_key = natural_key("");
+                node.name = "".into();
             }
             self.live -= 1;
             self.touch(n);
@@ -392,13 +407,14 @@ impl TopicTree {
         // Detach `id`, then prune ancestors left without content.
         let (mut child, mut up) = (id, parent);
         loop {
-            let name = self.nodes[child].name.clone();
-            self.nodes[up].children.remove(&name);
-            self.nodes[child].name = String::new();
-            self.nodes[child].sort_key = natural_key("");
+            let name = std::mem::take(&mut self.nodes[child].name);
+            let kids = &mut self.nodes[up].children;
+            if let Ok(i) = kids.binary_search_by(|(n, _)| (**n).cmp(&*name)) {
+                kids.remove(i);
+            }
             let p = &self.nodes[up];
             match p.parent {
-                Some(next) if p.latest.is_none() && p.children.is_empty() => {
+                Some(next) if p.history.is_empty() && p.children.is_empty() => {
                     self.nodes[up].removed = true;
                     self.live -= 1;
                     self.touch(up);
@@ -423,7 +439,7 @@ impl TopicTree {
         let mut parts = Vec::new();
         let mut cur = id;
         while let Some(p) = self.nodes[cur].parent {
-            parts.push(self.nodes[cur].name.as_str());
+            parts.push(&*self.nodes[cur].name);
             cur = p;
         }
         parts.reverse();
@@ -431,9 +447,9 @@ impl TopicTree {
     }
 
     pub fn find(&self, topic: &str) -> Option<NodeId> {
-        topic.split('/').try_fold(Self::ROOT, |cur, level| {
-            self.nodes[cur].children.get(level).copied()
-        })
+        topic
+            .split('/')
+            .try_fold(Self::ROOT, |cur, level| self.nodes[cur].child(level))
     }
 
     pub fn len(&self) -> usize {
@@ -445,7 +461,8 @@ impl TopicTree {
     }
 
     pub fn iter_with_message(&self) -> impl Iterator<Item = NodeId> + '_ {
-        (0..self.nodes.len()).filter(|&i| self.nodes[i].latest.is_some() && !self.nodes[i].removed)
+        (0..self.nodes.len())
+            .filter(|&i| !self.nodes[i].history.is_empty() && !self.nodes[i].removed)
     }
 }
 
@@ -669,7 +686,7 @@ mod tests {
         }));
         t.insert("a", m);
         let node = t.node(t.find("a").unwrap());
-        let latest = node.latest.as_ref().unwrap();
+        let latest = node.latest().unwrap();
         let history = node.history.back().unwrap();
         assert!(Arc::ptr_eq(
             latest.props.as_ref().unwrap(),
@@ -730,12 +747,12 @@ mod tests {
         let mut t = TopicTree::with_limits(1, 12 * 1024, usize::MAX);
         let big = "x".repeat(8 * 1024);
         let a = t.insert("a", m(&big)).unwrap();
-        assert!(t.node(a).latest.as_ref().unwrap().truncated_from.is_none());
+        assert!(t.node(a).latest().unwrap().truncated_from.is_none());
         t.take_touched();
         t.insert("b", m(&big));
         let touched = t.take_touched().unwrap();
         assert!(
-            t.node(a).latest.as_ref().unwrap().truncated_from.is_some(),
+            t.node(a).latest().unwrap().truncated_from.is_some(),
             "a was stubbed"
         );
         assert!(touched.contains(&a), "{touched:?}");
@@ -903,9 +920,9 @@ mod tests {
         t.remove(id);
         assert_eq!(t.history_bytes(), 0);
         let n = &t.nodes[id];
-        assert!(n.history.is_empty() && n.history_seq.is_empty() && n.latest.is_none());
+        assert!(n.history.is_empty() && n.history_seq.is_empty() && n.latest().is_none());
         assert!(n.children.is_empty());
-        assert_eq!(n.name.capacity(), 0);
+        assert_eq!(n.name.len(), 0);
     }
 
     #[test]
@@ -942,7 +959,7 @@ mod tests {
             assert!(t.find(&format!("t{i}")).is_some());
         }
         let n = t.node(t.find("t0").unwrap());
-        let l = n.latest.as_ref().unwrap();
+        let l = n.latest().unwrap();
         assert_eq!(l.truncated_from, Some(100 * 1024));
         assert_eq!(l.payload.len(), STUB_KEEP);
         assert_eq!(n.history.back().unwrap().payload.len(), STUB_KEEP);
@@ -956,8 +973,7 @@ mod tests {
         let big = "x".repeat(100 * 1024);
         let whole = |t: &TopicTree, n: &str| {
             t.node(t.find(n).unwrap())
-                .latest
-                .as_ref()
+                .latest()
                 .unwrap()
                 .truncated_from
                 .is_none()
@@ -985,7 +1001,7 @@ mod tests {
         let mut msg = m(&text);
         msg.sparkplug = true;
         let id = t.insert("a", msg).unwrap();
-        let l = t.node(id).latest.as_ref().unwrap();
+        let l = t.node(id).latest().unwrap();
         assert!(std::str::from_utf8(&l.payload).is_ok());
         assert_eq!(l.payload.len(), STUB_KEEP - 1);
         assert_eq!(l.truncated_from, Some(text.len()));
@@ -1075,7 +1091,7 @@ mod tests {
         let id = t.insert("big", m(&big)).unwrap();
         let n = t.node(id);
         assert_eq!(
-            n.latest.as_ref().unwrap().payload.as_ptr(),
+            n.latest().unwrap().payload.as_ptr(),
             n.history.back().unwrap().payload.as_ptr(),
             "latest and history must share one buffer"
         );
@@ -1131,7 +1147,7 @@ mod tests {
         let n = t.node(t.find("x").unwrap());
         assert_eq!(n.history.len(), 3);
         assert_eq!(&n.history.back().unwrap().payload[..], b"4");
-        assert_eq!(&n.latest.as_ref().unwrap().payload[..], b"4");
+        assert_eq!(&n.latest().unwrap().payload[..], b"4");
     }
     #[test]
     fn odd_topics_round_trip() {
@@ -1146,7 +1162,7 @@ mod tests {
     fn intermediate_node_has_no_message() {
         let mut t = TopicTree::new(1);
         t.insert("a/b", m("1"));
-        assert!(t.node(t.find("a").unwrap()).latest.is_none());
+        assert!(t.node(t.find("a").unwrap()).latest().is_none());
         assert_eq!(t.find("a/zzz"), None);
     }
     #[test]
@@ -1156,5 +1172,34 @@ mod tests {
         let a = t.insert("a", m("2")).unwrap();
         assert_eq!(t.iter_with_message().collect::<Vec<_>>(), vec![a, b]);
         assert_eq!(t.node(TopicTree::ROOT).topic_count, 2);
+    }
+
+    #[test]
+    fn bytes_per_node_under_budget() {
+        let size = std::mem::size_of::<TopicNode>();
+        assert!(size <= 160, "TopicNode is {size} bytes");
+    }
+
+    /// Resident bytes per node for 100k topics; run with
+    /// `cargo test --release -p mqtt-zapp-core perf_nodes_100k -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn perf_nodes_100k() {
+        let rss = || -> usize {
+            let s = std::fs::read_to_string("/proc/self/statm").unwrap();
+            let pages: usize = s.split_whitespace().nth(1).unwrap().parse().unwrap();
+            pages * 4096
+        };
+        let before = rss();
+        let mut t = TopicTree::new(1);
+        for i in 0..100_000 {
+            t.insert(&format!("site{}/dev{}/temp", i % 100, i / 100), m("21.5"));
+        }
+        let per = (rss() - before) / t.len();
+        eprintln!(
+            "perf_nodes_100k: {} nodes, size_of TopicNode {}, ~{per} B/node RSS",
+            t.len(),
+            std::mem::size_of::<TopicNode>()
+        );
     }
 }

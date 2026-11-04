@@ -103,7 +103,7 @@ fn shown(app: &App) -> Option<Shown<'_>> {
     let node = app.tree.node(app.selected?);
     let h = &node.history;
     if h.is_empty() {
-        let msg = node.latest.as_ref()?;
+        let msg = node.latest()?;
         return Some(Shown {
             node,
             msg,
