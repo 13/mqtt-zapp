@@ -151,6 +151,7 @@ pub(super) const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
             Action::ScrollDown,
             Action::ScrollUp,
             Action::ToggleDiff,
+            Action::ToggleWrap,
             Action::MarkDiffBase,
             Action::Chart,
             Action::ChartPin,

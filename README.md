@@ -296,6 +296,7 @@ any other key, `enter` included, cancels.
 | `'` | `starred_only` | Show only starred topics and their ancestors (again: everything) |
 | `w` | `save_payload` | Save the shown payload's raw bytes to a file in the current directory (`.json`, `.txt` or `.bin`) |
 | `W` | `save_history` | Save the selected topic's whole history, oldest first, as a `.jsonl` file in the current directory |
+| `z` | `toggle_wrap` | Wrap long payload lines at the pane edge instead of cutting them (again: cut); off while a chart is shown |
 
 </details>
 

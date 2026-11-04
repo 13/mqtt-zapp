@@ -86,6 +86,15 @@ impl Body {
             Body::Note(_) => 1,
         }
     }
+
+    /// Each line's text, as drawn (for counting wrapped rows).
+    fn texts(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        match self {
+            Body::Json(l) | Body::Plain(l) => Box::new(l.iter().cloned()),
+            Body::Diff(l) => Box::new(l.iter().map(|(_, t)| t.clone())),
+            Body::Note(n) => Box::new(std::iter::once(n.clone())),
+        }
+    }
 }
 
 /// The message to show and the one before it, if any.
@@ -255,9 +264,51 @@ fn build_body(s: &Shown, kind: PayloadKind, show_diff: bool) -> Body {
     }
 }
 
-/// Number of lines the payload area scrolls over (for clamping).
+/// Whether payload lines wrap now: `z` is on and no chart is shown (the
+/// chart addresses whole lines).
+fn wrapping(app: &App) -> bool {
+    app.wrap && app.chart.is_none()
+}
+
+/// Rows the payload area scrolls over (for clamping): body lines, or their
+/// wrapped rows at the last frame's width.
 pub fn content_len(app: &App) -> usize {
-    body(app).map_or(0, |(b, _)| b.len())
+    let Some((b, _)) = body(app) else { return 0 };
+    if !wrapping(app) {
+        return b.len();
+    }
+    let width = usize::from(app.payload_width.get()).max(1);
+    b.texts()
+        .map(|t| wrap_line(Line::raw(t), width).len())
+        .sum()
+}
+
+/// `line` cut into rows of at most `width` columns, keeping span styles. A
+/// char that does not fit starts the next row; an empty line is one row.
+fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut rows = vec![Line::default().style(line.style)];
+    let mut used = 0;
+    for span in line.spans {
+        let mut piece = String::new();
+        for c in span.content.chars() {
+            let w = c.width().unwrap_or(0);
+            if used + w > width && used > 0 {
+                let row = rows.last_mut().expect("never empty");
+                row.spans
+                    .push(Span::styled(std::mem::take(&mut piece), span.style));
+                rows.push(Line::default().style(line.style));
+                used = 0;
+            }
+            piece.push(c);
+            used += w;
+        }
+        if !piece.is_empty() {
+            let row = rows.last_mut().expect("never empty");
+            row.spans.push(Span::styled(piece, span.style));
+        }
+    }
+    rows
 }
 
 fn one_line(s: &str) -> String {
@@ -497,6 +548,7 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
     let title = match (app.show_diff, base_time) {
         (true, Some(t)) => format!("diff vs {t}"),
         (true, None) => "diff".to_owned(),
+        (false, _) if wrapping(app) => "payload · wrap".to_owned(),
         (false, _) => "payload".to_owned(),
     };
     let title = title.as_str();
@@ -537,33 +589,10 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
         },
         ..app.hit.get()
     });
-    // The stored scroll may predate a resize or a new message.
-    let max = body.len().saturating_sub(height as usize);
-    let skip = app.payload_scroll.min(max);
+    let width = usize::from(block.inner(area).width);
+    app.payload_width.set(width as u16);
+    let wrap = wrapping(app);
     let take = height as usize;
-    app.hit.set(HitAreas {
-        payload_skip: skip,
-        ..app.hit.get()
-    });
-    // The charted values' lines, highlighted.
-    let hl = app.chart_lines();
-    let mark = |i: usize, line: Line<'static>| {
-        if hl.contains(&(skip + i)) {
-            theme::select(line, false)
-        } else {
-            line
-        }
-    };
-    if body.len() > take {
-        let last = (skip + take).min(body.len());
-        block = block.title_bottom(
-            Line::styled(
-                format!(" {}-{last}/{} ", skip + 1, body.len()),
-                Style::new().fg(theme::MUTED),
-            )
-            .right_aligned(),
-        );
-    }
     // Search matches, underlined; not in the diff, whose lines are not payload.
     let filter = app
         .filter
@@ -573,32 +602,59 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
         Some(f) => mark_matches(line, &f.ranges(text)),
         None => line,
     };
-    let lines: Vec<Line> = match body {
-        Body::Json(l) => l
-            .iter()
-            .skip(skip)
-            .take(take)
-            .enumerate()
-            .map(|(i, l)| mark(i, matched(l, json_line(l))))
-            .collect(),
-        Body::Plain(l) => l
-            .iter()
-            .skip(skip)
-            .take(take)
-            .enumerate()
-            .map(|(i, l)| mark(i, matched(l, Line::raw(l.clone()))))
-            .collect(),
-        Body::Diff(l) => l
-            .iter()
-            .skip(skip)
-            .take(take)
-            .map(|(c, t)| Line::styled(t.as_str(), Style::new().fg(*c)))
-            .collect(),
-        Body::Note(n) => vec![Line::styled(
-            n.as_str(),
-            Style::new().add_modifier(Modifier::DIM),
-        )],
+    // Body line `i` as drawn, before the chart highlight.
+    let styled = |i: usize| -> Line<'static> {
+        match body {
+            Body::Json(l) => matched(&l[i], json_line(&l[i])),
+            Body::Plain(l) => matched(&l[i], Line::raw(l[i].clone())),
+            Body::Diff(l) => Line::styled(l[i].1.clone(), Style::new().fg(l[i].0)),
+            Body::Note(n) => Line::styled(n.clone(), Style::new().add_modifier(Modifier::DIM)),
+        }
     };
+    // Rows as (body line, row): one per line, or each line's wrapped rows.
+    // Unwrapped, only the visible lines are built.
+    let total = if wrap { content_len(app) } else { body.len() };
+    // The stored scroll may predate a resize or a new message.
+    let max = total.saturating_sub(take);
+    let skip = app.payload_scroll.min(max);
+    let rows: Vec<(usize, Line<'static>)> = if wrap {
+        (0..body.len())
+            .flat_map(|i| wrap_line(styled(i), width).into_iter().map(move |r| (i, r)))
+            .skip(skip)
+            .take(take)
+            .collect()
+    } else {
+        (skip..body.len().min(skip + take))
+            .map(|i| (i, styled(i)))
+            .collect()
+    };
+    app.hit.set(HitAreas {
+        payload_skip: rows.first().map_or(skip, |(i, _)| *i),
+        ..app.hit.get()
+    });
+    *app.payload_rows.borrow_mut() = rows.iter().map(|(i, _)| *i).collect();
+    if total > take {
+        let last = (skip + take).min(total);
+        block = block.title_bottom(
+            Line::styled(
+                format!(" {}-{last}/{total} ", skip + 1),
+                Style::new().fg(theme::MUTED),
+            )
+            .right_aligned(),
+        );
+    }
+    // The charted values' lines, highlighted.
+    let hl = app.chart_lines();
+    let lines: Vec<Line> = rows
+        .into_iter()
+        .map(|(i, line)| {
+            if hl.contains(&i) {
+                theme::select(line, false)
+            } else {
+                line
+            }
+        })
+        .collect();
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 

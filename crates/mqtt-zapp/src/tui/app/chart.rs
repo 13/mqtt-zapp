@@ -217,7 +217,10 @@ impl App {
             let (old, new) = (inner(hit.payload), self.charted_body());
             let note = format!("chart: {}", path.as_deref().unwrap_or("value"));
             self.chart = Some(path);
-            if old != new {
+            // Wrapped rows are not lines, and opening the chart unwraps.
+            if old != new && self.wrap {
+                self.scroll_to_chart_line(usize::from(new.height));
+            } else if old != new {
                 // The chart just opened and moved the pane: keep the clicked
                 // line under the pointer, or else in view.
                 let y = old.y + u16::try_from(line.saturating_sub(hit.payload_skip)).unwrap_or(0);

@@ -228,7 +228,11 @@ pub fn pretty_lines(kind: &PayloadKind, payload: &[u8]) -> Vec<String> {
             .split('\n')
             .map(sanitize)
             .collect(),
-        PayloadKind::Text(t) => sanitize(t).split('\n').map(str::to_owned).collect(),
+        // CRLF text: the CR would show as U+FFFD at every line end.
+        PayloadKind::Text(t) => sanitize(&t.replace("\r\n", "\n"))
+            .split('\n')
+            .map(str::to_owned)
+            .collect(),
         PayloadKind::Binary => hex_dump(payload),
     }
 }
@@ -858,5 +862,11 @@ mod tests {
         assert_eq!(preview(b"\n\n  x", 80), "x", "leading breaks dropped");
         assert_eq!(preview(b"  a  b  ", 80), "  a  b  ", "one line kept as is");
         assert!(!preview(b"x\ny", 80).contains('\u{23ce}'));
+    }
+
+    #[test]
+    fn crlf_text_has_no_replacement_chars() {
+        let p = b"a\r\nb\r\n";
+        assert_eq!(pretty_lines(&detect(p), p), ["a", "b", ""]);
     }
 }

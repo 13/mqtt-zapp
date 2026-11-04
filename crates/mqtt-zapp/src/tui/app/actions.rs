@@ -40,6 +40,16 @@ impl App {
                 self.payload_scroll = 0;
             }
             Action::MarkDiffBase => self.mark_diff_base(),
+            Action::ToggleWrap => {
+                self.wrap = !self.wrap;
+                self.payload_scroll = 0;
+                let note = match (self.wrap, self.chart.is_some()) {
+                    (true, true) => "wrap on (after the chart closes)",
+                    (true, false) => "wrap on",
+                    (false, _) => "wrap off",
+                };
+                self.set_note(Note::info(note), Instant::now());
+            }
             Action::Brokers => self.open_brokers(),
             Action::DeleteTopic => self.ask_delete_topic(),
             Action::ScrollDown => self.scroll_payload(true),

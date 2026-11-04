@@ -140,7 +140,11 @@ impl App {
             // A click on a number charts it.
             let body = inner(hit.payload);
             if body.contains(at) {
-                self.chart_click(hit.payload_skip + usize::from(at.y - body.y));
+                let row = usize::from(at.y - body.y);
+                let line = self.payload_rows.borrow().get(row).copied();
+                if let Some(line) = line {
+                    self.chart_click(line);
+                }
             }
         } else if hit.history.contains(at) {
             self.dirty = true;

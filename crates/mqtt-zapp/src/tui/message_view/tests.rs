@@ -1765,3 +1765,53 @@ fn chart_disables_body_throttle() {
     let _ = draw(&a);
     assert_eq!(a.body_cache.builds.get(), 2, "chart open: no throttle");
 }
+
+#[test]
+fn wrap_shows_the_end_of_a_long_line() {
+    let long = format!("{}END", "a".repeat(300));
+    let mut a = app_with(&[long.as_bytes()]);
+    assert!(!text(&draw(&a)).contains("END"), "cut without wrap");
+    a.wrap = true;
+    let s = text(&draw(&a));
+    assert!(s.contains("END"), "{s}");
+    assert!(s.contains("payload · wrap"), "{s}");
+}
+
+#[test]
+fn wrapped_scroll_reaches_the_last_row() {
+    // One line of 40 rows at the pane's width: more than the pane shows.
+    let long = format!("{}Z", "x".repeat(98 * 40));
+    let mut a = app_with(&[long.as_bytes()]);
+    a.wrap = true;
+    draw(&a);
+    a.focus = Focus::Payload;
+    a.handle_action(Action::Bottom);
+    assert!(text(&draw(&a)).contains('Z'));
+}
+
+#[test]
+fn click_in_wrapped_payload_charts_the_line_under_it() {
+    let p = format!("{{\"long\":\"{}\",\"n\":5}}", "w".repeat(250));
+    let mut a = app_with(&[p.as_bytes()]);
+    a.mode = Mode::Browse;
+    a.wrap = true;
+    let b = draw(&a);
+    let rows = lines(&b);
+    let y = rows.iter().position(|r| r.contains("\"n\": 5")).unwrap() as u16;
+    a.handle_mouse(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: 6,
+        row: y,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    });
+    assert_eq!(a.chart, Some(Some("n".into())));
+}
+
+#[test]
+fn crlf_text_diff_has_no_replacement_chars() {
+    let mut a = app_with(&[b"a\r\nb\r\n", b"a\r\nc\r\n"]);
+    a.show_diff = true;
+    let s = text(&draw(&a));
+    assert!(s.contains("+ c") && s.contains("- b"), "{s}");
+    assert!(!s.contains('\u{fffd}'), "{s}");
+}

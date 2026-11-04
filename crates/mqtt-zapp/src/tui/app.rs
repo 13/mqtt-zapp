@@ -384,6 +384,11 @@ pub struct App {
     pub chart_cache: super::message_view::ChartCache,
     /// Rows the payload area had in the last frame; sizes half-page scrolls.
     pub payload_height: Cell<u16>,
+    /// Columns of the payload pane's body in the last frame (for wrapping).
+    pub payload_width: Cell<u16>,
+    /// The body line each visible payload row shows, top to bottom, in the
+    /// last frame: a wrapped line takes several rows.
+    pub payload_rows: RefCell<Vec<usize>>,
     pub keymap: Keymap,
     history_depth: usize,
     max_history_bytes: usize,
@@ -422,6 +427,9 @@ pub struct App {
     /// A form closed with esc while it held a payload or properties; the
     /// next form opened on its topic starts from it.
     pub(super) publish_draft: Option<PublishForm>,
+    /// `z`: long payload lines wrap at the pane edge instead of being cut.
+    /// Per session; off while a chart is shown (it addresses whole lines).
+    pub wrap: bool,
     /// The mode the help overlay goes back to: browse or the picker.
     pub help_return: Mode,
     /// A first ctrl-c or esc that would throw work away, and when.
@@ -551,6 +559,8 @@ impl App {
             body_cache: Default::default(),
             chart_cache: Default::default(),
             payload_height: Cell::new(0),
+            payload_width: Cell::new(0),
+            payload_rows: RefCell::new(Vec::new()),
             keymap: Keymap::from_settings(&settings.keys)?,
             history_depth: settings.history_depth,
             max_history_bytes: settings.max_history_mb.saturating_mul(1024 * 1024),
@@ -593,6 +603,7 @@ impl App {
             publish_draft: None,
             armed: None,
             help_return: Mode::Browse,
+            wrap: false,
             await_reply: None,
             created: Instant::now(),
             rows_cache: RefCell::new(None),
