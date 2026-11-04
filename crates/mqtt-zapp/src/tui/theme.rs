@@ -22,6 +22,9 @@ pub const ERR: Color = Color::Red;
 pub const SEL_BG: Color = ACCENT;
 pub const SEL_FG: Color = Color::Black;
 pub const SEL_BG_INACTIVE: Color = Color::DarkGray;
+/// What yellow text (warnings, the flash, diff changes) becomes in the
+/// light theme: a dark amber that reads on white.
+pub const LIGHT_YELLOW: Color = Color::Rgb(150, 110, 0);
 
 /// A bordered pane. Focus shows without colour too: a thick border and a
 /// `●` in the title.
@@ -111,7 +114,7 @@ pub fn effective(name: ThemeName, no_color: Option<&str>) -> ThemeName {
 }
 
 /// Adapt a drawn frame to the theme. Everything is drawn for dark; light
-/// lifts the grey selection background, mono drops all colour and shows
+/// lifts the grey selection background and darkens yellow text, mono drops all colour and shows
 /// any background as reverse video so selection and badges stay visible.
 pub fn apply(buf: &mut Buffer, area: Rect, theme: ThemeName) {
     if theme == ThemeName::Dark {
@@ -121,7 +124,15 @@ pub fn apply(buf: &mut Buffer, area: Rect, theme: ThemeName) {
         for x in area.left()..area.right() {
             let cell = &mut buf[(x, y)];
             match theme {
-                ThemeName::Light if cell.bg == SEL_BG_INACTIVE => cell.bg = Color::Gray,
+                ThemeName::Light => {
+                    if cell.bg == SEL_BG_INACTIVE {
+                        cell.bg = Color::Gray;
+                    }
+                    // Yellow text vanishes on a light background.
+                    if cell.fg == Color::Yellow {
+                        cell.fg = LIGHT_YELLOW;
+                    }
+                }
                 ThemeName::Mono => {
                     if cell.bg != Color::Reset {
                         cell.modifier.insert(Modifier::REVERSED);

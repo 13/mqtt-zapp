@@ -388,3 +388,33 @@ fn star_marker_rendered() {
     assert_eq!(b[(x, y)].fg, crate::tui::theme::ACCENT);
     assert_eq!(text(&b).matches('★').count(), 1, "{}", text(&b));
 }
+
+#[test]
+fn mono_flash_is_visible() {
+    let (_, b) = themed(ThemeName::Mono);
+    let s = text(&b);
+    // `a` is selected; `b` is fresh and not selected.
+    let y = s.lines().position(|l| l.contains("b  2")).unwrap() as u16;
+    assert!(b[(3, y)].modifier.contains(Modifier::REVERSED), "{s}");
+    // The count column of the same row is not part of the flash.
+    let x = s
+        .lines()
+        .nth(y as usize)
+        .unwrap()
+        .chars()
+        .position(|c| c == '2')
+        .unwrap() as u16;
+    assert!(!b[(x, y)].modifier.contains(Modifier::REVERSED), "{s}");
+}
+
+#[test]
+fn light_theme_has_no_yellow_foreground() {
+    let mut a = app_with(&[("a", br#"{"n":1}"#), ("a", br#"{"n":2}"#)]);
+    a.handle_action(Action::Down);
+    a.show_diff = true;
+    a.dropped = 3;
+    a.theme = ThemeName::Light;
+    let b = draw(&mut a, 100, 24);
+    assert!(b.content.iter().all(|c| c.fg != Color::Yellow));
+    assert!(b.content.iter().any(|c| c.fg == Color::Rgb(150, 110, 0)));
+}

@@ -1849,3 +1849,19 @@ fn compact_header_drops_clock_before_cutting_chips() {
         );
     }
 }
+
+#[test]
+fn mono_chart_series_use_distinct_markers() {
+    let mut a = app_with(&[
+        br#"{"a":1,"b":9}"#,
+        br#"{"a":5,"b":2}"#,
+        br#"{"a":2,"b":7}"#,
+    ]);
+    a.theme = mqtt_zapp_core::config::ThemeName::Mono;
+    a.chart = Some(Some("a".into()));
+    a.chart_pinned = vec![Some("a".into())];
+    a.handle_action(Action::Chart);
+    let ls = lines(&draw(&a));
+    let boxed = |n: &str| ls.iter().skip(1).any(|l| l.contains(&format!("│{n}│")));
+    assert!(boxed("⠿ b") && boxed("• a"), "{ls:#?}");
+}

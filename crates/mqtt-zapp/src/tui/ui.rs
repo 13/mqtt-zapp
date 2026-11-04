@@ -8,6 +8,7 @@ use super::rows::Row;
 use super::theme;
 use mqtt_zapp_core::TopicTree;
 use mqtt_zapp_core::client::ConnState;
+use mqtt_zapp_core::config::ThemeName;
 use mqtt_zapp_core::payload::{preview, sanitize, says_offline};
 use mqtt_zapp_core::search::{Filter, QueryMode};
 use mqtt_zapp_core::tree::{NodeId, TopicNode};
@@ -23,8 +24,16 @@ pub const MIN_WIDTH: u16 = 40;
 pub const MIN_HEIGHT: u16 = 10;
 /// Narrower terminals show the tree above the message pane.
 const STACK_BELOW: u16 = 80;
-/// Topic names that got a message within `app::FLASH` are drawn bold yellow.
+/// Topic names that got a message within `app::FLASH` are drawn bold yellow;
+/// in mono, where names are bold anyway, in reverse video.
 pub const FLASH_MODIFIER: Modifier = Modifier::BOLD;
+
+fn flash_modifier(theme: ThemeName) -> Modifier {
+    match theme {
+        ThemeName::Mono => Modifier::REVERSED,
+        _ => FLASH_MODIFIER,
+    }
+}
 const FLASH_FG: Color = Color::Yellow;
 const PREVIEW_CHARS: usize = 60;
 /// Longest footer note; broker error text can be long.
@@ -223,7 +232,9 @@ fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
         .skip(app.tree_offset)
         .take(height)
         .map(|(i, row)| {
-            let flash = app.is_flashing(row.id, now);
+            let flash = app
+                .is_flashing(row.id, now)
+                .then(|| flash_modifier(app.theme));
             let starred = app.starred_count() > 0 && app.is_starred(&app.tree.full_topic(row.id));
             let line = Line::from(row_spans(
                 &app.tree,
@@ -293,7 +304,7 @@ fn row_spans<'a>(
     row: &Row,
     query: Option<&Filter>,
     width: usize,
-    flash: bool,
+    flash: Option<Modifier>,
     stale_before: Option<SystemTime>,
     starred: bool,
 ) -> Vec<Span<'a>> {
@@ -316,8 +327,8 @@ fn row_spans<'a>(
     if node.latest().is_some() {
         name_style = name_style.add_modifier(Modifier::BOLD);
     }
-    if flash {
-        name_style = name_style.fg(FLASH_FG).add_modifier(FLASH_MODIFIER);
+    if let Some(m) = flash {
+        name_style = name_style.fg(FLASH_FG).add_modifier(m);
     }
     if starred {
         spans.push(Span::styled("★", Style::new().fg(theme::ACCENT)));

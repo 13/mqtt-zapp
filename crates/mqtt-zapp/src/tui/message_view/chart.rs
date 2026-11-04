@@ -2,11 +2,22 @@
 
 use super::*;
 use crate::tui::app::MAX_PINNED;
+use mqtt_zapp_core::config::ThemeName;
+use ratatui::symbols::Marker;
 
 /// Line colour of each overlaid series: the current one, then each pinned
 /// one in pin order.
 pub(in crate::tui) const SERIES_COLORS: [Color; 4] =
     [theme::ACCENT, Color::Magenta, Color::Yellow, Color::Green];
+
+/// In mono, where the series colours are gone, each overlaid series draws
+/// with its own marker, and its legend name starts with that marker's glyph.
+const MONO_MARKERS: [(Marker, &str); 4] = [
+    (Marker::Braille, "⠿"),
+    (Marker::Dot, "•"),
+    (Marker::Block, "█"),
+    (Marker::HalfBlock, "▀"),
+];
 
 /// How an open chart splits the payload area: the chart on top, the
 /// payload pane below.
@@ -163,7 +174,6 @@ pub(super) fn fmt_num(x: f64) -> String {
 /// A braille line chart of the current series and any pinned ones over the
 /// topic's history (oldest left); entries without a number are skipped.
 pub(super) fn render_chart(f: &mut Frame, area: Rect, app: &App, s: &Shown, path: Option<&str>) {
-    use ratatui::symbols::Marker;
     use ratatui::widgets::{Axis, Chart, Dataset, GraphType, LegendPosition};
     let name = |p: Option<&str>| mqtt_zapp_core::payload::sanitize(p.unwrap_or("value"));
     // The current series first, then each pinned one that is not it.
@@ -238,9 +248,15 @@ pub(super) fn render_chart(f: &mut Frame, area: Rect, app: &App, s: &Shown, path
         .zip(&all)
         .enumerate()
         .map(|(i, (p, pts))| {
+            let (marker, label) = if app.theme == ThemeName::Mono {
+                let (m, glyph) = MONO_MARKERS[i % MONO_MARKERS.len()];
+                (m, format!("{glyph} {}", name(*p)))
+            } else {
+                (Marker::Braille, name(*p))
+            };
             Dataset::default()
-                .name(name(*p))
-                .marker(Marker::Braille)
+                .name(label)
+                .marker(marker)
                 .graph_type(GraphType::Line)
                 .style(Style::new().fg(SERIES_COLORS[i % SERIES_COLORS.len()]))
                 .data(pts)
