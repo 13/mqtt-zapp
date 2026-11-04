@@ -347,3 +347,25 @@ fn stale_off_by_default() {
     assert!(!s.contains(" stale"), "{s}");
     assert_eq!(dimmed_cell(&b, "j"), Some(false), "{s}");
 }
+
+#[test]
+fn offline_marker_clears_on_online() {
+    let mut a = aged_app(0);
+    for p in [&b"Offline"[..], &b"Online"[..]] {
+        a.apply_core_event(CoreEvent::Message {
+            topic: "tasmota/x/LWT".into(),
+            msg: Message {
+                payload: Bytes::copy_from_slice(p),
+                qos: 0,
+                retain: false,
+                received_at: SystemTime::now(),
+                truncated_from: None,
+                sparkplug: false,
+                wire_len: None,
+                props: None,
+            },
+        });
+        let s = text(&draw(&mut a, 80, 12));
+        assert_eq!(s.contains(" offline"), p == b"Offline", "{s}");
+    }
+}

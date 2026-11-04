@@ -435,6 +435,8 @@ pub fn preview(payload: &[u8], max_chars: usize) -> String {
 
 /// Whether a status leaf's payload says the device is offline.
 pub fn says_offline(leaf: &str, payload: &[u8]) -> bool {
+    /// Status payloads are tiny; longer ones are never examined.
+    const OFFLINE_MAX: usize = 4096;
     const STATUS: [&str; 6] = [
         "lwt",
         "online",
@@ -443,25 +445,29 @@ pub fn says_offline(leaf: &str, payload: &[u8]) -> bool {
         "connected",
         "availability",
     ];
-    let leaf = leaf.to_ascii_lowercase();
-    if leaf.is_empty() || !STATUS.contains(&leaf.as_str()) {
+    if payload.len() > OFFLINE_MAX || !STATUS.iter().any(|s| leaf.eq_ignore_ascii_case(s)) {
         return false;
     }
     let Ok(text) = std::str::from_utf8(payload) else {
         return false;
     };
-    let text = text.trim().to_ascii_lowercase();
-    match text.as_str() {
-        "offline" | "disconnected" | "dead" | "lost" => true,
-        "false" | "0" => leaf == "online" || leaf == "connected",
-        _ if text.starts_with('{') => {
-            serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|v| {
-                ["online", "connected"]
-                    .iter()
-                    .any(|k| v.get(k) == Some(&serde_json::Value::Bool(false)))
-            })
-        }
-        _ => false,
+    let text = text.trim();
+    let is = |w: &str| text.eq_ignore_ascii_case(w);
+    if ["offline", "disconnected", "dead", "lost"]
+        .iter()
+        .any(|w| is(w))
+    {
+        true
+    } else if is("false") || is("0") {
+        leaf.eq_ignore_ascii_case("online") || leaf.eq_ignore_ascii_case("connected")
+    } else if text.starts_with('{') {
+        serde_json::from_str::<serde_json::Value>(text).is_ok_and(|v| {
+            ["online", "connected"]
+                .iter()
+                .any(|k| v.get(k) == Some(&serde_json::Value::Bool(false)))
+        })
+    } else {
+        false
     }
 }
 
@@ -483,6 +489,24 @@ mod tests {
         assert!(!says_offline("state", b"{\"state\":\"OFF\"}"));
         assert!(!says_offline("online", b"true"));
         assert!(!says_offline("temperature", b"offline"));
+        assert!(!says_offline("state", b"OFF"));
+        assert!(!says_offline("state", b"0"));
+        assert!(!says_offline("status", b"0"));
+        assert!(!says_offline("connected", b"true"));
+        assert!(!says_offline("LWT", b"\xff\xfeoffline"));
+        let mut big = b"offline".to_vec();
+        big.resize(5000, b' ');
+        big.extend_from_slice(b"x");
+        assert!(!says_offline("LWT", &big));
+        let mut big = b"offline".to_vec();
+        big.resize(5000, b' ');
+        assert!(!says_offline("LWT", &big));
+    }
+
+    #[test]
+    fn says_offline_more_positives() {
+        assert!(says_offline("connected", b"0"));
+        assert!(says_offline("LWT", b"  OFFLINE\n"));
     }
 
     #[test]

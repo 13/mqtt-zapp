@@ -174,7 +174,9 @@ fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let now = Instant::now();
-    let stale_after = (app.stale_after_s > 0).then(|| Duration::from_secs(app.stale_after_s));
+    let stale_before = (app.stale_after_s > 0)
+        .then(|| SystemTime::now().checked_sub(Duration::from_secs(app.stale_after_s)))
+        .flatten();
     let width = block.inner(area).width as usize;
     let query = app.filter.as_ref();
     let lines: Vec<Line> = rows
@@ -184,7 +186,7 @@ fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
         .take(height)
         .map(|(i, row)| {
             let flash = app.is_flashing(row.id, now);
-            let line = Line::from(row_spans(&app.tree, row, query, width, flash, stale_after));
+            let line = Line::from(row_spans(&app.tree, row, query, width, flash, stale_before));
             if Some(i) == selected {
                 theme::select(line, focused)
             } else {
@@ -245,7 +247,7 @@ fn row_spans<'a>(
     query: Option<&Filter>,
     width: usize,
     flash: bool,
-    stale_after: Option<Duration>,
+    stale_before: Option<SystemTime>,
 ) -> Vec<Span<'a>> {
     let node = tree.node(row.id);
     let marker = match (row.has_children, row.expanded) {
@@ -275,13 +277,8 @@ fn row_spans<'a>(
     }
     let offline = node_offline(tree, row.id);
     let stale = !offline
-        && stale_after.is_some_and(|limit| {
-            node.latest.as_ref().is_some_and(|m| {
-                SystemTime::now()
-                    .duration_since(m.received_at)
-                    .is_ok_and(|age| age > limit)
-            })
-        });
+        && stale_before
+            .is_some_and(|before| node.latest.as_ref().is_some_and(|m| m.received_at < before));
     if offline {
         spans.push(Span::styled(" offline", Style::new().fg(theme::ERR)));
     } else if stale {
