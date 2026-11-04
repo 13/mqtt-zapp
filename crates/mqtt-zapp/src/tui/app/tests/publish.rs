@@ -583,3 +583,17 @@ fn paste_after_walking_sent_payloads_drops_the_position() {
         "no longer a sent payload"
     );
 }
+
+#[test]
+fn editor_text_with_control_chars_says_they_were_replaced() {
+    let mut a = browse(&["t"]);
+    a.handle_action(Action::Publish);
+    a.set_publish_payload("a\x1b[1mb\r\nc");
+    assert_eq!(payload_of(&a), "a\u{fffd}[1mb\nc");
+    assert_eq!(note_text(&a), "control characters replaced with \u{fffd}");
+    // Line endings alone are not worth a note.
+    let mut b = browse(&["t"]);
+    b.handle_action(Action::Publish);
+    b.set_publish_payload("a\r\nb\rc");
+    assert_eq!(note_text(&b), "");
+}

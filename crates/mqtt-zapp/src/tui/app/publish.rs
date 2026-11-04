@@ -109,6 +109,17 @@ impl App {
         if let Some(form) = self.publish.as_mut() {
             form.set_payload(text);
             self.dirty = true;
+            // `set_payload` turns them into U+FFFD; say so, as the text
+            // that gets sent is no longer what the editor wrote.
+            let unsafe_char = text
+                .chars()
+                .any(|c| c != '\r' && mqtt_zapp_core::payload::is_unsafe_char(c));
+            if unsafe_char {
+                self.set_note(
+                    Note::info("control characters replaced with \u{fffd}"),
+                    Instant::now(),
+                );
+            }
         }
     }
 
