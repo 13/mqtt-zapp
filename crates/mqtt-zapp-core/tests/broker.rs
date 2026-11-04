@@ -830,8 +830,11 @@ async fn close_waits_for_disconnect() {
         clean_disconnect(&log),
         "no clean disconnect in broker log:\n{log}"
     );
+    // Only our client: the start helper's port probes log
+    // "Client <unknown> closed its connection" on mosquitto 2.0.
     assert!(
-        !log.contains("closed its connection"),
+        !log.lines()
+            .any(|l| l.contains("zapp-close-test") && l.contains("closed its connection")),
         "broker saw a dropped connection:\n{log}"
     );
 }
