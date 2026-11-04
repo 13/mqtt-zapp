@@ -8,3 +8,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # tui-textarea 0.7 (the latest) is built on ratatui 0.29 and
+      # crossterm 0.28; newer minors do not compile until it moves.
+      - dependency-name: ratatui
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: crossterm
+        update-types: ["version-update:semver-minor"]

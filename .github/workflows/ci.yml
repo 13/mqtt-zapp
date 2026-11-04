@@ -36,6 +36,9 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config mosquitto
+      # Ubuntu 26's AppArmor profile confines mosquitto to /etc/mosquitto;
+      # the test brokers read their config and certs from a temp dir.
+      - run: if [ -e /etc/apparmor.d/mosquitto ]; then sudo apparmor_parser -R /etc/apparmor.d/mosquitto; fi
       - run: cargo test --locked --workspace
       - name: Search speed at spec scale (release build)
         run: cargo test --locked --release -p mqtt-zapp-core --lib fast_enough_at_spec_scale
@@ -52,6 +55,9 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # No libdbus-1-dev here: this job proves the build needs no dbus (keyring feature off).
       - run: sudo apt-get update && sudo apt-get install -y mosquitto
+      # Ubuntu 26's AppArmor profile confines mosquitto to /etc/mosquitto;
+      # the test brokers read their config and certs from a temp dir.
+      - run: if [ -e /etc/apparmor.d/mosquitto ]; then sudo apparmor_parser -R /etc/apparmor.d/mosquitto; fi
       - run: cargo clippy --locked --no-default-features --all-targets -- -D warnings
       - run: cargo test --locked --workspace --no-default-features
   deny:

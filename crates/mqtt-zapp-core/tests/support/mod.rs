@@ -117,7 +117,10 @@ fn start_with(
             std::thread::sleep(Duration::from_millis(20));
         }
         if Instant::now() > deadline {
-            panic!("mosquitto could not bind its ports within 5s\n{}", said(dir.path()));
+            panic!(
+                "mosquitto could not bind its ports within 5s\n{}",
+                said(dir.path())
+            );
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -126,11 +129,14 @@ fn start_with(
 /// What the broker wrote (its stderr and log file), for a failed start.
 fn said(dir: &Path) -> String {
     let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap_or_default();
-    format!(
-        "stderr:\n{}\nlog:\n{}",
-        read("stderr.log"),
-        read("mosquitto.log")
-    )
+    let stderr = read("stderr.log");
+    let hint = if stderr.contains("Unable to open config file") {
+        "hint: an AppArmor profile may confine mosquitto to /etc/mosquitto \
+         (Ubuntu 26); unload it: sudo apparmor_parser -R /etc/apparmor.d/mosquitto\n"
+    } else {
+        ""
+    };
+    format!("{hint}stderr:\n{stderr}\nlog:\n{}", read("mosquitto.log"))
 }
 
 /// Three ports that were free a moment ago (nothing listens on them yet).
