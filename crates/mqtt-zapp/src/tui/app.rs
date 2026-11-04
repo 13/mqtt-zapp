@@ -258,6 +258,13 @@ const STORE_BROKEN: &str = "profiles.toml has errors – fix it by hand first";
 /// Minimum gap between tick-driven live-filter rebuilds.
 const FILTER_REBUILD_EVERY: Duration = Duration::from_millis(500);
 
+/// A keystroke in the search bar rebuilds the filter this long after the last
+/// key, on trees of at least `DEBOUNCE_MIN_NODES`.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
+
+/// Below this many nodes a filter pass is cheap enough to run per keystroke.
+const DEBOUNCE_MIN_NODES: usize = 20_000;
+
 pub struct App {
     pub tree: TopicTree,
     pub expanded: Expanded,
@@ -269,8 +276,17 @@ pub struct App {
     /// When the filter was last rebuilt; `on_tick` rebuilds at most every
     /// `FILTER_REBUILD_EVERY`.
     last_filter_rebuild: Instant,
+    /// A keystroke's filter rebuild waits here until this instant (`on_tick`).
+    filter_due: Option<Instant>,
+    /// Test counters: every filter update, then by kind.
     #[cfg(test)]
     filter_builds: Cell<u32>,
+    #[cfg(test)]
+    filter_full: Cell<u32>,
+    #[cfg(test)]
+    filter_narrow: Cell<u32>,
+    #[cfg(test)]
+    filter_incr: Cell<u32>,
     pub search: String,
     /// `ctrl-r` in the search input: the query is a regex.
     pub search_regex: bool,
@@ -437,8 +453,15 @@ impl App {
             filter: None,
             filter_gen: 0,
             last_filter_rebuild: Instant::now(),
+            filter_due: None,
             #[cfg(test)]
             filter_builds: Cell::new(0),
+            #[cfg(test)]
+            filter_full: Cell::new(0),
+            #[cfg(test)]
+            filter_narrow: Cell::new(0),
+            #[cfg(test)]
+            filter_incr: Cell::new(0),
             search: String::new(),
             search_regex: false,
             search_error: None,
@@ -606,14 +629,22 @@ impl App {
     /// show up in it, and keep redrawing while something is flashing. While
     /// frozen nothing here asks for a redraw; input and resizes still do.
     pub fn on_tick(&mut self) {
+        self.on_tick_at(Instant::now());
+    }
+
+    /// `on_tick` with the clock passed in.
+    fn on_tick_at(&mut self, now: Instant) {
         let dirty = self.dirty;
-        self.tick();
+        self.tick(now);
         if self.frozen {
             self.dirty = dirty;
         }
     }
 
-    fn tick(&mut self) {
+    fn tick(&mut self, now: Instant) {
+        if self.filter_due.is_some_and(|due| now >= due) {
+            self.rebuild_filter();
+        }
         // Throttled: a busy broker changes the tree every tick, and a rebuild
         // scans every node. A skipped change stays pending in `tree_changed`.
         // Frozen: a rebuild could move the selection off the shown topic,
@@ -621,14 +652,13 @@ impl App {
         if self.tree_changed
             && !self.frozen
             && (self.search.is_empty()
-                || self.last_filter_rebuild.elapsed() >= FILTER_REBUILD_EVERY)
+                || now.saturating_duration_since(self.last_filter_rebuild) >= FILTER_REBUILD_EVERY)
         {
             self.tree_changed = false;
             if !self.search.is_empty() {
-                self.rebuild_filter();
+                self.refresh_filter();
             }
         }
-        let now = Instant::now();
         if self.status_note.is_some() {
             // Redraw to show the note, and once more to drop it.
             self.dirty = true;

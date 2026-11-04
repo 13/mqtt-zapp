@@ -243,3 +243,147 @@ fn f_types_in_search_input_while_frozen() {
     assert_eq!(a.search, "f");
     assert!(a.frozen, "f in the search input is text, not the toggle");
 }
+
+/// A tree past `DEBOUNCE_MIN_NODES`.
+fn big_app() -> App {
+    let mut a = browse(&["muh/wzr/LWT", "other/thing"]);
+    for i in 0..DEBOUNCE_MIN_NODES {
+        a.apply_core_event(plain(&format!("dev_{i}"), "v"));
+    }
+    a.mode = Mode::SearchInput;
+    a
+}
+
+fn builds(a: &App) -> (u32, u32, u32) {
+    (
+        a.filter_full.get(),
+        a.filter_narrow.get(),
+        a.filter_incr.get(),
+    )
+}
+
+#[test]
+fn search_debounces_on_big_trees() {
+    let mut a = big_app();
+    type_str(&mut a, "wzr");
+    assert_eq!(a.filter_builds.get(), 0, "no filter call per keystroke");
+    assert!(a.filter.is_none());
+    let t0 = Instant::now();
+    a.on_tick_at(t0 + Duration::from_millis(50));
+    assert_eq!(a.filter_builds.get(), 0, "still inside the debounce");
+    a.on_tick_at(t0 + SEARCH_DEBOUNCE + Duration::from_millis(50));
+    assert_eq!(a.filter_builds.get(), 1, "one call for the whole burst");
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 2);
+    a.on_tick_at(t0 + Duration::from_secs(5));
+    assert_eq!(a.filter_builds.get(), 1, "nothing pending any more");
+}
+
+#[test]
+fn enter_and_esc_apply_the_pending_search_at_once() {
+    let mut a = big_app();
+    type_str(&mut a, "wzr");
+    a.handle_key(key(KeyCode::Enter));
+    assert_eq!(a.filter_builds.get(), 1);
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 2);
+    let mut a = big_app();
+    type_str(&mut a, "wzr");
+    a.handle_key(key(KeyCode::Esc));
+    assert!(a.filter.is_none() && a.search.is_empty());
+    a.on_tick_at(Instant::now() + Duration::from_secs(5));
+    assert_eq!(a.filter_builds.get(), 0, "esc cancels the pending rebuild");
+    assert!(a.filter.is_none());
+}
+
+#[test]
+fn narrowing_reuses_previous_matches() {
+    let mut a = search_app();
+    a.handle_key(key(KeyCode::Char('/')));
+    type_str(&mut a, "w");
+    assert_eq!(builds(&a), (1, 0, 0), "the first key has nothing to reuse");
+    type_str(&mut a, "zr");
+    assert_eq!(builds(&a), (1, 2, 0), "extending the query narrows");
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 2);
+    a.handle_key(key(KeyCode::Backspace));
+    assert_eq!(builds(&a), (2, 2, 0), "shortening needs a full scan");
+    a.handle_key(key(KeyCode::Char('r')));
+    a.handle_key(key(KeyCode::Char('r')));
+    a.handle_key(ctrl_key('r'));
+    let full = a.filter_full.get();
+    type_str(&mut a, "1");
+    assert_eq!(a.filter_full.get(), full + 1, "regex never narrows");
+}
+
+#[test]
+fn incremental_filter_adds_new_match() {
+    let mut a = search_app();
+    a.handle_key(key(KeyCode::Char('/')));
+    type_str(&mut a, "wzr");
+    a.handle_key(key(KeyCode::Enter));
+    let before = builds(&a);
+    a.apply_core_event(msg("new/deep/wzr2", "v"));
+    a.apply_core_event(msg("new/other", "v"));
+    a.on_tick_at(Instant::now() + Duration::from_secs(1));
+    assert_eq!(builds(&a), (before.0, before.1, before.2 + 1));
+    let f = a.filter.as_ref().unwrap();
+    assert_eq!(f.matches.len(), 3, "WZR1, its LWT child, wzr2");
+    let deep = a.tree.find("new/deep").unwrap();
+    assert!(f.visible.contains(&deep) && f.visible.contains(&a.tree.find("new").unwrap()));
+    assert!(row_names(&a).contains(&"new/deep/wzr2".to_string()));
+    assert!(!row_names(&a).contains(&"new/other".to_string()));
+}
+
+#[test]
+fn incremental_filter_drops_unmatched() {
+    let mut a = browse(&[]);
+    a.apply_core_event(msg("a/x", "wzr"));
+    a.apply_core_event(msg("b/wzr", "v"));
+    a.handle_key(key(KeyCode::Char('/')));
+    type_str(&mut a, "wzr");
+    a.handle_key(key(KeyCode::Enter));
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 2);
+    let before = builds(&a);
+    a.apply_core_event(msg("a/x", "changed"));
+    a.on_tick_at(Instant::now() + Duration::from_secs(1));
+    assert_eq!(
+        builds(&a),
+        (before.0 + 1, before.1, before.2),
+        "full rebuild"
+    );
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 1);
+    assert!(!row_names(&a).contains(&"a/x".to_string()));
+}
+
+#[test]
+fn touched_overflow_forces_full_rebuild() {
+    let mut a = search_app();
+    a.handle_key(key(KeyCode::Char('/')));
+    type_str(&mut a, "wzr");
+    a.handle_key(key(KeyCode::Enter));
+    let before = builds(&a);
+    for _ in 0..=mqtt_zapp_core::tree::TOUCHED_MAX {
+        a.apply_core_event(msg("other/thing", "v"));
+    }
+    a.apply_core_event(msg("n/wzr9", "v"));
+    a.on_tick_at(Instant::now() + Duration::from_secs(1));
+    assert_eq!(builds(&a), (before.0 + 1, before.1, before.2));
+    assert_eq!(a.filter.as_ref().unwrap().matches.len(), 3);
+}
+
+/// CI does not run this; see `rows_fast_at_50k`.
+#[test]
+#[ignore = "timing: run with --release -- --ignored"]
+fn perf_search_200k() {
+    let mut a = browse(&[]);
+    for i in 0..200_000 {
+        a.apply_core_event(plain(&format!("dev_{}/s{}/x", i / 10, i % 10), "v"));
+    }
+    a.mode = Mode::SearchInput;
+    let mut worst = Duration::ZERO;
+    for c in "dev_12".chars() {
+        let s = Instant::now();
+        a.on_search_key(key(KeyCode::Char(c)));
+        worst = worst.max(s.elapsed());
+    }
+    eprintln!("perf_search_200k: worst on_search_key {worst:?}");
+    assert!(worst < Duration::from_millis(2), "worst {worst:?}");
+}

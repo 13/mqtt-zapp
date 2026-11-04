@@ -97,7 +97,16 @@ pub struct TopicTree {
     /// Bumped whenever a node is created or removed; see `shape_gen`.
     #[serde(skip)]
     shape_gen: u64,
+    /// Ids inserted into or removed since `take_touched`; see `TOUCHED_MAX`.
+    #[serde(skip)]
+    touched: Vec<NodeId>,
+    #[serde(skip)]
+    touched_overflow: bool,
 }
+
+/// Most ids `TopicTree` remembers between `take_touched` calls; past it the
+/// list is dropped and the caller must assume everything changed.
+pub const TOUCHED_MAX: usize = 50_000;
 
 impl TopicTree {
     pub const ROOT: NodeId = 0;
@@ -128,7 +137,34 @@ impl TopicTree {
             live: 0,
             dropped_topics: 0,
             shape_gen: 0,
+            touched: Vec::new(),
+            touched_overflow: false,
         }
+    }
+
+    fn touch(&mut self, id: NodeId) {
+        if self.touched_overflow {
+            return;
+        }
+        if self.touched.len() >= TOUCHED_MAX {
+            self.touched_overflow = true;
+            self.touched = Vec::new();
+        } else {
+            self.touched.push(id);
+        }
+    }
+
+    /// The nodes that got a message, or were removed, since the last call
+    /// (sorted, no repeats); `None` when too many changed to track, which
+    /// means "assume everything did".
+    pub fn take_touched(&mut self) -> Option<Vec<NodeId>> {
+        let mut t = std::mem::take(&mut self.touched);
+        if std::mem::take(&mut self.touched_overflow) {
+            return None;
+        }
+        t.sort_unstable();
+        t.dedup();
+        Some(t)
     }
 
     /// Changes whenever a node is created or `remove` runs, so a view of the
@@ -297,6 +333,7 @@ impl TopicTree {
             n.last_update = Some(now);
             id = n.parent;
         }
+        self.touch(cur);
         self.enforce_cap();
         self.compact_order();
         self.compact_recent();
@@ -339,6 +376,7 @@ impl TopicTree {
                 node.sort_key = natural_key("");
             }
             self.live -= 1;
+            self.touch(n);
         }
         let mut cur = Some(parent);
         while let Some(a) = cur {
@@ -359,6 +397,7 @@ impl TopicTree {
                 Some(next) if p.latest.is_none() && p.children.is_empty() => {
                     self.nodes[up].removed = true;
                     self.live -= 1;
+                    self.touch(up);
                     (child, up) = (up, next);
                 }
                 _ => break,
@@ -659,6 +698,29 @@ mod tests {
         assert!(t.node(TopicTree::ROOT).children.is_empty());
         assert_eq!(t.history_bytes(), 0);
         assert_eq!(t.remove(TopicTree::ROOT), 0, "the root stays");
+    }
+
+    #[test]
+    fn touched_lists_inserted_and_removed_nodes_once() {
+        let mut t = TopicTree::new(1);
+        let a = t.insert("a/b", m("1")).unwrap();
+        t.insert("a/b", m("2"));
+        let c = t.insert("c", m("1")).unwrap();
+        assert_eq!(t.take_touched(), Some(vec![a, c]));
+        assert_eq!(t.take_touched(), Some(vec![]), "drained");
+        t.remove(c);
+        assert_eq!(t.take_touched(), Some(vec![c]), "removals are listed too");
+    }
+
+    #[test]
+    fn touched_overflows_past_the_cap_then_recovers() {
+        let mut t = TopicTree::new(1);
+        for _ in 0..=TOUCHED_MAX {
+            t.insert("a", m("x"));
+        }
+        assert_eq!(t.take_touched(), None);
+        t.insert("a", m("x"));
+        assert_eq!(t.take_touched().map(|v| v.len()), Some(1));
     }
 
     #[test]

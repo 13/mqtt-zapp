@@ -213,6 +213,90 @@ pub fn filter(tree: &TopicTree, query: &str, mode: QueryMode) -> Result<Option<F
     }))
 }
 
+/// Whether `compiled` matches node `id`.
+fn node_matches(tree: &TopicTree, compiled: &Query, id: NodeId) -> bool {
+    let node = tree.node(id);
+    let payload: &[u8] = node.latest.as_ref().map_or(&[], |m| &m.payload);
+    let payload = &payload[..payload.len().min(SEARCH_PAYLOAD_MAX)];
+    compiled.matches(&tree.full_topic(id), payload)
+}
+
+/// Add `id` and its ancestors to `visible`.
+fn show(tree: &TopicTree, visible: &mut HashSet<NodeId>, id: NodeId) {
+    let mut cur = Some(id);
+    while let Some(i) = cur {
+        if !visible.insert(i) {
+            break;
+        }
+        cur = tree.node(i).parent;
+    }
+}
+
+/// Like `filter`, but re-tests only the matches of `prev`. `None` when that
+/// is not sound: both queries must be plain, and every old term must sit
+/// inside some new term (a match for the new term is then a match for the
+/// old one), so the new matches are a subset of the old.
+pub fn narrow(
+    tree: &TopicTree,
+    prev: &Filter,
+    query: &str,
+    mode: QueryMode,
+) -> Option<Result<Option<Filter>, String>> {
+    if mode != QueryMode::Plain || prev.mode != QueryMode::Plain {
+        return None;
+    }
+    let compiled = match Query::parse(query, mode) {
+        Ok(Some(q)) => q,
+        _ => return None,
+    };
+    let (Query::Terms { terms: new, .. }, Query::Terms { terms: old, .. }) =
+        (&compiled, &prev.compiled)
+    else {
+        return None;
+    };
+    if !old
+        .iter()
+        .all(|o| new.iter().any(|n| n.contains(o.as_str())))
+    {
+        return None;
+    }
+    let mut matches = HashSet::new();
+    let mut visible = HashSet::from([TopicTree::ROOT]);
+    for &id in &prev.matches {
+        if tree.is_alive(id) && node_matches(tree, &compiled, id) {
+            matches.insert(id);
+            show(tree, &mut visible, id);
+        }
+    }
+    Some(Ok(Some(Filter {
+        query: query.trim().to_owned(),
+        mode,
+        compiled,
+        matches,
+        visible,
+    })))
+}
+
+/// Bring `f` up to date after the `touched` nodes changed, re-testing only
+/// those. `false` when a shown node stopped matching or was removed: `f` is
+/// then unreliable and the caller must rebuild with `filter`.
+pub fn update(tree: &TopicTree, f: &mut Filter, touched: &[NodeId]) -> bool {
+    for &id in touched {
+        if !tree.is_alive(id) {
+            if f.visible.contains(&id) {
+                return false;
+            }
+        } else if node_matches(tree, &f.compiled, id) {
+            if f.matches.insert(id) {
+                show(tree, &mut f.visible, id);
+            }
+        } else if f.matches.contains(&id) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Highlight ranges of `query` in `haystack`; nothing for an empty or
 /// invalid query.
 pub fn match_ranges(haystack: &str, query: &str, mode: QueryMode) -> Vec<Range<usize>> {
