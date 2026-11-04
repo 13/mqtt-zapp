@@ -634,3 +634,55 @@ fn env_and_command_sources_load_off_thread_and_report_errors() {
         assert_eq!(note_text(&a), "password env var PW not set");
     }
 }
+
+fn startup_app(pw: PasswordSource) -> (App, u64) {
+    let mut a = App::new(
+        Launch::Connect(profile("adhoc", pw)),
+        ProfileStore::default(),
+        Settings::default(),
+    )
+    .unwrap();
+    let e = a.startup_effect();
+    let Effect::LoadPassword { generation, .. } = e else {
+        panic!("expected LoadPassword, got {e:?}");
+    };
+    (a, generation)
+}
+
+#[test]
+fn startup_connect_with_loaded_password_connects() {
+    for src in [
+        PasswordSource::Keyring,
+        PasswordSource::Env("PW".into()),
+        PasswordSource::Command("echo pw".into()),
+    ] {
+        let (mut a, g) = startup_app(src);
+        let e = a.password_loaded(g, Ok(Some("pw".into())));
+        assert!(
+            matches!(e, Effect::Connect(_, Some(ref pw)) if pw == "pw"),
+            "{e:?}"
+        );
+        assert_eq!(a.mode, Mode::Browse);
+    }
+}
+
+#[test]
+fn startup_connect_failed_lookup_is_visible() {
+    let (mut a, g) = startup_app(PasswordSource::Env("PW".into()));
+    let e = a.password_loaded(g, Err("PW is not set".into()));
+    assert!(matches!(e, Effect::None), "{e:?}");
+    assert!(
+        matches!(&a.conn_state, ConnState::Failed { reason } if reason.contains("PW is not set")),
+        "{:?}",
+        a.conn_state
+    );
+    assert!(a.status_note.is_some());
+}
+
+#[test]
+fn startup_lookup_dropped_after_mode_change() {
+    let (mut a, g) = startup_app(PasswordSource::Keyring);
+    a.mode = Mode::Picker;
+    let e = a.password_loaded(g, Ok(Some("pw".into())));
+    assert!(matches!(e, Effect::None), "{e:?}");
+}

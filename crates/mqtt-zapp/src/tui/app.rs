@@ -297,8 +297,10 @@ pub struct App {
     /// Bumped by every connect attempt; a password lookup for an older one
     /// is stale.
     connect_gen: u64,
-    /// The profile whose keyring lookup is in flight, with its generation.
-    pending_password: Option<(u64, Profile)>,
+    /// The profile whose password lookup is in flight, with its generation
+    /// and the mode it started in (the picker, or browse at startup). A
+    /// result is only taken in that same mode.
+    pending_password: Option<(u64, Profile, Mode)>,
     password_loader: PasswordLoader,
     pub tree: TopicTree,
     pub expanded: Expanded,

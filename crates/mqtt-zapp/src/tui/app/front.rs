@@ -16,8 +16,11 @@ impl App {
             // can run for seconds: off-thread.
             PasswordSource::Keyring | PasswordSource::Env(_) | PasswordSource::Command(_) => {
                 let generation = self.connect_gen;
-                self.pending_password = Some((generation, p.clone()));
+                self.pending_password = Some((generation, p.clone(), self.mode));
                 self.picker.waiting_keyring = true;
+                if self.mode == Mode::Browse {
+                    self.set_note(Note::info("waiting for password…"), Instant::now());
+                }
                 self.dirty = true;
                 return Effect::LoadPassword {
                     profile: p,
@@ -46,19 +49,19 @@ impl App {
         generation: u64,
         result: std::result::Result<Option<String>, String>,
     ) -> Effect {
-        // Only still on the picker, on the same attempt: anything else
-        // means the user moved on.
-        let current = self.mode == Mode::Picker
-            && self
-                .pending_password
-                .as_ref()
-                .is_some_and(|(g, _)| *g == generation);
+        // Still in the mode the lookup started in (the picker, or browse at
+        // startup), on the same attempt: anything else means the user
+        // moved on.
+        let current = self
+            .pending_password
+            .as_ref()
+            .is_some_and(|(g, _, m)| *g == generation && *m == self.mode);
         if !current {
             return Effect::None;
         }
         self.picker.waiting_keyring = false;
         match self.pending_password.take() {
-            Some((_, p)) => match result {
+            Some((_, p, started_in)) => match result {
                 Ok(Some(pw)) => self.connect_effect(p, Some(pw)),
                 // A broken env or command source is a configuration error:
                 // say so rather than asking for a password nobody expects.
@@ -69,6 +72,12 @@ impl App {
                     ) =>
                 {
                     let text = mqtt_zapp_core::payload::sanitize(&e).replace('\n', " ");
+                    if started_in == Mode::Browse {
+                        // Startup has no picker to fall back to: show it.
+                        self.conn_state = ConnState::Failed {
+                            reason: text.clone(),
+                        };
+                    }
                     self.set_note(Note::error(text), Instant::now());
                     Effect::None
                 }
@@ -144,7 +153,7 @@ impl App {
         // action means the user moved on, so the late answer is dropped.
         let same = action == Action::Select
             && matches!((&self.pending_password, self.picker.selected()),
-                (Some((_, p)), Some(s)) if p.name == s.name);
+                (Some((_, p, _)), Some(s)) if p.name == s.name);
         if same {
             return Effect::None;
         }
