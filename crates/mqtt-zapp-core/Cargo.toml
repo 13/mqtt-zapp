@@ -11,7 +11,7 @@ serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 similar = "2"
 toml = "0.8"
 directories = "5"
-rand = "0.9"
+rand = "0.10"
 anyhow = "1"
 keyring = { version = "3", optional = true, features = ["sync-secret-service", "crypto-rust"] }
 # `use-rustls-no-provider`: rumqttc's `use-rustls` would turn on tokio-rustls'
