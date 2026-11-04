@@ -145,3 +145,13 @@ fn esc_with_chart_cycled_off_clears_search_not_pins() {
     assert!(a.filter.is_none(), "esc goes to the search");
     assert_eq!(a.chart_pinned, vec![Some("a".to_owned())]);
 }
+
+#[test]
+fn esc_note_says_pins_cleared() {
+    let mut a = chart_app(&fifty_fields(), 2);
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::ChartPin);
+    a.handle_action(Action::Cancel);
+    assert_eq!(note_text(&a), "chart off, pins cleared");
+}

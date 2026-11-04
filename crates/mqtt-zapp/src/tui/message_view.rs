@@ -483,7 +483,7 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
     let mut block = theme::pane(title, app.focus == Focus::Payload);
     let height = block.inner(area).height;
     app.payload_height.set(height);
-    let Some((body, _)) = body(app) else {
+    let Some((body, kind)) = body(app) else {
         app.hit.set(HitAreas {
             payload_copy: Rect::default(),
             payload_title: Rect::default(),
@@ -541,7 +541,10 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
         );
     }
     // Search matches, underlined; not in the diff, whose lines are not payload.
-    let filter = app.filter.as_ref().filter(|_| !app.show_diff);
+    let filter = app
+        .filter
+        .as_ref()
+        .filter(|_| !app.show_diff && kind != "BINARY");
     let matched = |text: &str, line: Line<'static>| match filter {
         Some(f) => mark_matches(line, &f.ranges(text)),
         None => line,

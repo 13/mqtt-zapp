@@ -194,7 +194,21 @@ pub(super) fn render_chart(f: &mut Frame, area: Rect, app: &App, s: &Shown, path
     // the left title is drawn last and would overwrite part of it.
     let fits =
         theme::pane_title_width(&title, false) + 1 + close.width() + 2 <= usize::from(area.width);
-    let mut block = theme::pane(&title, false);
+    let mut block = if paths.len() > 1 {
+        let mut parts = vec![Span::raw("chart · ")];
+        for (i, p) in paths.iter().enumerate() {
+            if i > 0 {
+                parts.push(Span::styled(" + ", Style::new().fg(theme::MUTED)));
+            }
+            parts.push(Span::styled(
+                name(*p),
+                Style::new().fg(SERIES_COLORS[i % SERIES_COLORS.len()]),
+            ));
+        }
+        theme::pane_styled(parts)
+    } else {
+        theme::pane(&title, false)
+    };
     if fits {
         block = block.title(Line::styled(close, Style::new().fg(theme::MUTED)).right_aligned());
     }

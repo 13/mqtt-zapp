@@ -1656,3 +1656,38 @@ fn oversized_first_chip_is_cut() {
     assert!(row.contains('…'), "{row:?}");
     assert!(row.width() <= 60, "{row:?}");
 }
+
+#[test]
+fn hex_dump_not_underlined() {
+    let mut a = app_with(&[&[0xff, 0x00, 0xfe, 0x01]]);
+    set_query(&mut a, "ff", false);
+    let b = draw(&a);
+    assert!(text(&b).contains(" BINARY "));
+    assert!(
+        !b.content
+            .iter()
+            .any(|c| c.modifier.contains(super::super::ui::MATCH_MODIFIER)),
+        "hex dump underlined"
+    );
+}
+
+#[test]
+fn overlay_title_names_coloured() {
+    let mut a = app_with(&[
+        br#"{"a":1,"b":9}"#,
+        br#"{"a":5,"b":2}"#,
+        br#"{"a":2,"b":7}"#,
+    ]);
+    a.chart = Some(Some("a".into()));
+    a.chart_pinned = vec![Some("a".into())];
+    a.handle_action(Action::Chart);
+    let b = draw(&a);
+    let y = row_of(&b, "chart · b + a");
+    assert_eq!(cell_at(&b, y, "b + a").fg, SERIES_COLORS[0]);
+    let x = (0..b.area.width)
+        .find(|&x| b[(x, y)].symbol() == "b" && b[(x + 2, y)].symbol() == "+")
+        .unwrap();
+    assert_eq!(b[(x, y)].fg, SERIES_COLORS[0]);
+    assert_eq!(b[(x + 2, y)].fg, theme::MUTED);
+    assert_eq!(b[(x + 4, y)].fg, SERIES_COLORS[1]);
+}

@@ -46,9 +46,23 @@ impl App {
         match key.code {
             KeyCode::Enter => self.mode = Mode::Browse,
             KeyCode::Esc if self.help_query.is_empty() => self.mode = Mode::Browse,
-            KeyCode::Esc => self.help_query.clear(),
+            KeyCode::Esc => {
+                self.help_query.clear();
+                self.help_scroll = 0;
+            }
             KeyCode::Backspace => {
                 self.help_query.pop();
+                self.help_scroll = 0;
+            }
+            KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
+                let (max, page) = self.help_view.get();
+                let at = self.help_scroll.min(max);
+                self.help_scroll = match key.code {
+                    KeyCode::Up => at.saturating_sub(1),
+                    KeyCode::Down => (at + 1).min(max),
+                    KeyCode::PageUp => at.saturating_sub(page),
+                    _ => (at + page).min(max),
+                };
             }
             KeyCode::Char('?') if self.help_query.is_empty() => self.mode = Mode::Browse,
             KeyCode::Char(c)
@@ -57,6 +71,7 @@ impl App {
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 self.help_query.push(c);
+                self.help_scroll = 0;
             }
             _ => {}
         }

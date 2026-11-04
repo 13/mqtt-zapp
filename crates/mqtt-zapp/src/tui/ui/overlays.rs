@@ -256,16 +256,7 @@ pub(super) fn render_help(f: &mut Frame, area: Rect, app: &App) {
             single_line(query)
         )
     };
-    let block = theme::pane(&title, true).title_bottom(
-        Line::styled(
-            " f freezes · shift-drag selects text · remap in settings.toml [keys] ",
-            Style::new().fg(theme::MUTED),
-        )
-        .right_aligned(),
-    );
-    let inner = block.inner(area);
-    f.render_widget(Clear, area);
-    f.render_widget(block, area);
+    let inner = theme::pane(&title, true).inner(area);
     let cols: [Rect; 3] = Layout::horizontal([
         Constraint::Ratio(1, 3),
         Constraint::Ratio(1, 3),
@@ -325,8 +316,32 @@ pub(super) fn render_help(f: &mut Frame, area: Rect, app: &App) {
             lines.push(row(k, (*what).into(), 9));
         }
     }
+    let total = columns.iter().map(Vec::len).max().unwrap_or(0);
+    let page = usize::from(inner.height);
+    let max = total.saturating_sub(page);
+    let skip = app.help_scroll.min(max);
+    app.help_view.set((max, page.max(1)));
+    let mut block = theme::pane(&title, true).title_bottom(
+        Line::styled(
+            " f freezes · shift-drag selects · remap in settings.toml ",
+            Style::new().fg(theme::MUTED),
+        )
+        .right_aligned(),
+    );
+    if max > 0 {
+        let last = (skip + page).min(total);
+        block = block.title_bottom(
+            Line::styled(
+                format!(" {}-{last}/{total} ", skip + 1),
+                Style::new().fg(theme::MUTED),
+            )
+            .left_aligned(),
+        );
+    }
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
     for (lines, col) in columns.into_iter().zip(cols) {
-        f.render_widget(Paragraph::new(lines), col);
+        f.render_widget(Paragraph::new(lines).scroll((skip as u16, 0)), col);
     }
 }
 

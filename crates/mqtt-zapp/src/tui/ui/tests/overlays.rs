@@ -1,4 +1,5 @@
 use super::*;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[test]
 fn help_search_highlights_matching_row() {
@@ -55,10 +56,14 @@ fn help_search_no_match_does_not_panic_at_40x10() {
 }
 
 #[test]
-fn help_shows_every_action_at_80x24() {
+fn help_reaches_every_action_at_80x24() {
     let mut a = app_with(&[("a", b"1")]);
     a.handle_action(Action::Help);
-    let s = text(&draw(&mut a, 80, 24));
+    let mut seen = String::new();
+    for _ in 0..40 {
+        seen += &text(&draw(&mut a, 80, 24));
+        a.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+    }
     for want in [
         "quit",
         "cancel",
@@ -67,14 +72,52 @@ fn help_shows_every_action_at_80x24() {
         "ctrl-s",
         "keep filter",
     ] {
-        assert!(s.contains(want), "{want}: {s}");
+        assert!(seen.contains(want), "{want}: {seen}");
     }
-    // Every grouped action fits, none is cut off at the bottom border.
     for (_, _, group) in HELP_GROUPS {
         for action in *group {
-            assert!(s.contains(action.name()), "{}: {s}", action.name());
+            assert!(seen.contains(action.name()), "{}", action.name());
         }
     }
+}
+
+#[test]
+fn help_scrolls_with_arrows() {
+    let mut a = app_with(&[("a", b"1")]);
+    a.handle_action(Action::Help);
+    let s = text(&draw(&mut a, 80, 14));
+    assert!(s.contains("1-"), "{s}");
+    assert_eq!(a.help_scroll, 0);
+    a.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(a.help_scroll, 1);
+    let s = text(&draw(&mut a, 80, 14));
+    assert!(s.contains(" 2-"), "{s}");
+    a.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    a.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(a.help_scroll, 0);
+    a.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+    assert!(a.help_scroll > 1);
+    // j types into the filter instead of scrolling.
+    a.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert_eq!(a.help_query, "j");
+}
+
+#[test]
+fn help_filter_resets_scroll() {
+    let mut a = app_with(&[("a", b"1")]);
+    a.handle_action(Action::Help);
+    let _ = draw(&mut a, 80, 14);
+    a.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+    assert!(a.help_scroll > 0);
+    a.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    assert_eq!(a.help_scroll, 0);
+    let _ = draw(&mut a, 80, 14);
+    a.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+    a.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    assert_eq!(a.help_scroll, 0);
+    a.handle_action(Action::Cancel);
+    a.handle_action(Action::Help);
+    assert_eq!(a.help_scroll, 0);
 }
 
 #[test]

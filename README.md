@@ -156,7 +156,7 @@ search it; matching rows are highlighted (`esc` clears the search). The publish
 form and the search input take typed text and do not use the keymap; the help
 lists their keys too.
 
-`c` cycles the chart through the numeric fields; `esc` closes it at any point.
+`c` cycles the chart through the numeric fields; `esc` closes it (in the search input, `esc` clears the search first).
 
 Destructive actions (`x`, `X`, `delete`, `D`) ask first: only `y` confirms, and
 any other key, `enter` included, cancels.

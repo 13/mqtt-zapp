@@ -58,6 +58,19 @@ pub fn pane(title: &str, focused: bool) -> Block<'static> {
     }
 }
 
+/// An unfocused pane whose title is the concatenation of `parts`, each part
+/// keeping its own style over `TITLE` (measure the same text with
+/// `pane_title_width`).
+pub fn pane_styled(parts: Vec<Span<'static>>) -> Block<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(parts);
+    spans.push(Span::raw(" "));
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(MUTED))
+        .title(Line::from(spans).style(TITLE))
+}
+
 /// `key label` for the footer: the key in the accent colour, the label muted.
 pub fn key_hint(key: &str, label: &str) -> [Span<'static>; 2] {
     [

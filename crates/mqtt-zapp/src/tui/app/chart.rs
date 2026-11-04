@@ -42,8 +42,14 @@ impl App {
             return false;
         }
         self.chart = None;
+        let pinned = !self.chart_pinned.is_empty();
         self.chart_pinned.clear();
-        self.set_note(Note::info("chart off"), Instant::now());
+        let note = if pinned {
+            "chart off, pins cleared"
+        } else {
+            "chart off"
+        };
+        self.set_note(Note::info(note), Instant::now());
         true
     }
 

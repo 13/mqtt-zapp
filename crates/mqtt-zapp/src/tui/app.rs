@@ -275,6 +275,10 @@ pub struct App {
     freeze_pin: Option<(std::time::SystemTime, usize)>,
     /// What the help overlay is searching for; empty when none.
     pub help_query: String,
+    /// First visible help row; the renderer clamps it, `help_view` tells keys how far.
+    pub help_scroll: usize,
+    /// (furthest scroll, page height) from the last help draw.
+    pub help_view: Cell<(usize, usize)>,
     /// Set when messages arrived since the last tick; gates the filter rebuild.
     tree_changed: bool,
     pub msg_rate: MsgRate,
@@ -412,6 +416,8 @@ impl App {
             frozen: false,
             freeze_pin: None,
             help_query: String::new(),
+            help_scroll: 0,
+            help_view: Cell::new((0, 1)),
             tree_changed: false,
             msg_rate: MsgRate::default(),
             dropped: 0,
