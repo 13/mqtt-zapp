@@ -2,7 +2,8 @@
 
 use crate::payload::{self, Message, PayloadKind};
 use chrono::{DateTime, Local, SecondsFormat};
-use serde_json::{Value, json};
+use serde_json::json;
+use serde_json::value::RawValue;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -72,30 +73,73 @@ pub fn extension(payload: &[u8]) -> &'static str {
     }
 }
 
-/// One JSON object per line, in the order given.
+/// `text` without the whitespace between tokens (strings and every token's
+/// text are kept as they are), so a pretty-printed payload fits on one line.
+fn compact_json(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let (mut in_str, mut esc) = (false, false);
+    for c in text.chars() {
+        if in_str {
+            out.push(c);
+            match (esc, c) {
+                (true, _) => esc = false,
+                (false, '\\') => esc = true,
+                (false, '"') => in_str = false,
+                _ => {}
+            }
+        } else if c == '"' {
+            in_str = true;
+            out.push(c);
+        } else if !c.is_ascii_whitespace() {
+            out.push(c);
+        }
+    }
+    out
+}
+
+#[derive(serde::Serialize)]
+struct Line {
+    time: String,
+    qos: u8,
+    retain: bool,
+    payload: Box<RawValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    truncated_from: Option<usize>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    sparkplug: bool,
+}
+
+/// One JSON object per line, in the order given. A JSON payload is embedded
+/// as it arrived (big numbers and digits intact), minus insignificant
+/// whitespace.
 pub fn history_jsonl(msgs: &[&Message]) -> Vec<u8> {
     let mut out = Vec::new();
     for m in msgs {
         let time =
             DateTime::<Local>::from(m.received_at).to_rfc3339_opts(SecondsFormat::Millis, false);
-        let value = match payload::detect(&m.payload) {
-            PayloadKind::Json(v) => v,
-            PayloadKind::Text(t) => Value::String(t),
-            PayloadKind::Binary => json!({ "base64": payload::base64(&m.payload) }),
+        let raw = match payload::detect(&m.payload) {
+            PayloadKind::Json(v) => {
+                // `detect` parsed this trimmed UTF-8 text, so it is valid.
+                let text = std::str::from_utf8(&m.payload).unwrap_or_default();
+                RawValue::from_string(compact_json(text.trim()))
+                    .or_else(|_| serde_json::value::to_raw_value(&v))
+            }
+            PayloadKind::Text(t) => serde_json::value::to_raw_value(&t),
+            PayloadKind::Binary => {
+                serde_json::value::to_raw_value(&json!({ "base64": payload::base64(&m.payload) }))
+            }
         };
-        let mut o = serde_json::Map::new();
-        o.insert("time".into(), json!(time));
-        o.insert("qos".into(), json!(m.qos));
-        o.insert("retain".into(), json!(m.retain));
-        o.insert("payload".into(), value);
-        if let Some(n) = m.truncated_from {
-            o.insert("truncated_from".into(), json!(n));
+        let line = Line {
+            time,
+            qos: m.qos,
+            retain: m.retain,
+            payload: raw.expect("a JSON value serializes"),
+            truncated_from: m.truncated_from,
+            sparkplug: m.sparkplug,
+        };
+        if serde_json::to_writer(&mut out, &line).is_ok() {
+            out.push(b'\n');
         }
-        if m.sparkplug {
-            o.insert("sparkplug".into(), json!(true));
-        }
-        out.extend_from_slice(Value::Object(o).to_string().as_bytes());
-        out.push(b'\n');
     }
     out
 }
@@ -105,6 +149,7 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use chrono::TimeZone;
+    use serde_json::Value;
     use std::time::SystemTime;
 
     fn msg(p: &[u8]) -> Message {
@@ -195,5 +240,25 @@ mod tests {
         assert_eq!(extension(b"{}"), "json");
         assert_eq!(extension(b"hi"), "txt");
         assert_eq!(extension(&[0, 1]), "bin");
+    }
+
+    #[test]
+    fn history_jsonl_keeps_json_text_exact() {
+        let body = r#"{"n":12345678901234567890123,"f":0.10000000000000000555}"#;
+        let pretty = "{\n  \"n\": 12345678901234567890123,\n  \"s\": \"a b\\n\"\n}";
+        let (a, b) = (msg(body.as_bytes()), msg(pretty.as_bytes()));
+        let out = String::from_utf8(history_jsonl(&[&a, &b])).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2, "one line per message: {out}");
+        assert!(lines[0].contains(body), "{}", lines[0]);
+        let v: Value = serde_json::from_str(lines[0]).unwrap();
+        assert!(v["payload"].is_object());
+        assert!(
+            lines[1].contains(r#""n":12345678901234567890123"#),
+            "{}",
+            lines[1]
+        );
+        assert!(lines[1].contains(r#""s":"a b\n""#), "{}", lines[1]);
+        serde_json::from_str::<Value>(lines[1]).unwrap();
     }
 }
