@@ -369,6 +369,42 @@ fn touched_overflow_forces_full_rebuild() {
     assert_eq!(a.filter.as_ref().unwrap().matches.len(), 3);
 }
 
+#[test]
+fn tick_respects_pending_debounce() {
+    let mut a = big_app();
+    type_str(&mut a, "wz");
+    let t0 = Instant::now();
+    a.on_tick_at(t0 + SEARCH_DEBOUNCE + Duration::from_millis(50));
+    let n = a.filter_builds.get();
+    a.apply_core_event(msg("new/wzr9", "v"));
+    type_str(&mut a, "r");
+    // Throttle has long elapsed, but the new key's debounce has not.
+    a.last_filter_rebuild -= Duration::from_secs(5);
+    a.on_tick_at(Instant::now() + Duration::from_millis(10));
+    assert_eq!(a.filter_builds.get(), n, "tick must not rebuild mid-typing");
+    assert!(a.filter_due.is_some());
+    a.on_tick_at(Instant::now() + SEARCH_DEBOUNCE + Duration::from_millis(50));
+    assert!(a.filter_builds.get() > n);
+}
+
+#[test]
+fn debounce_starts_exactly_at_min_nodes() {
+    let mut a = browse(&[]);
+    while a.tree.len() < DEBOUNCE_MIN_NODES - 1 {
+        let i = a.tree.len();
+        a.apply_core_event(plain(&format!("dev_{i}"), "v"));
+    }
+    a.mode = Mode::SearchInput;
+    assert_eq!(a.tree.len(), DEBOUNCE_MIN_NODES - 1);
+    a.on_search_key(key(KeyCode::Char('d')));
+    assert_eq!(a.filter_builds.get(), 1, "below the limit: immediate");
+    a.apply_core_event(plain("one_more", "v"));
+    assert_eq!(a.tree.len(), DEBOUNCE_MIN_NODES);
+    a.on_search_key(key(KeyCode::Char('e')));
+    assert_eq!(a.filter_builds.get(), 1, "at the limit: debounced");
+    assert!(a.filter_due.is_some());
+}
+
 /// CI does not run this; see `rows_fast_at_50k`.
 #[test]
 #[ignore = "timing: run with --release -- --ignored"]

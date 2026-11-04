@@ -651,6 +651,8 @@ impl App {
         // so the change waits for the thaw.
         if self.tree_changed
             && !self.frozen
+            // A pending keystroke rebuild owns the filter until it runs.
+            && self.filter_due.is_none()
             && (self.search.is_empty()
                 || now.saturating_duration_since(self.last_filter_rebuild) >= FILTER_REBUILD_EVERY)
         {

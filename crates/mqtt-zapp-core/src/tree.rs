@@ -240,6 +240,8 @@ impl TopicTree {
             self.bytes = self.bytes - last.size() + stub.size();
             *last = stub.clone();
             *latest = stub;
+            // The payload a search sees changed.
+            self.touch(id);
         }
     }
 
@@ -290,6 +292,8 @@ impl TopicTree {
                 let id = self.nodes.len();
                 self.nodes.push(TopicNode::new(level.to_owned(), Some(cur)));
                 self.nodes[cur].children.insert(level.to_owned(), id);
+                // New levels may match by path on their own.
+                self.touch(id);
                 cur = id;
             }
         }
@@ -703,13 +707,38 @@ mod tests {
     #[test]
     fn touched_lists_inserted_and_removed_nodes_once() {
         let mut t = TopicTree::new(1);
-        let a = t.insert("a/b", m("1")).unwrap();
+        let ab = t.insert("a/b", m("1")).unwrap();
         t.insert("a/b", m("2"));
         let c = t.insert("c", m("1")).unwrap();
-        assert_eq!(t.take_touched(), Some(vec![a, c]));
+        assert_eq!(t.take_touched(), Some(vec![t.find("a").unwrap(), ab, c]));
         assert_eq!(t.take_touched(), Some(vec![]), "drained");
         t.remove(c);
         assert_eq!(t.take_touched(), Some(vec![c]), "removals are listed too");
+    }
+
+    #[test]
+    fn touched_lists_new_intermediate_levels() {
+        let mut t = TopicTree::new(1);
+        let leaf = t.insert("new/a/b", m("1")).unwrap();
+        let mut want = vec![t.find("new").unwrap(), t.find("new/a").unwrap(), leaf];
+        want.sort_unstable();
+        assert_eq!(t.take_touched(), Some(want));
+    }
+
+    #[test]
+    fn stubbing_touches_the_stubbed_node() {
+        let mut t = TopicTree::with_limits(1, 12 * 1024, usize::MAX);
+        let big = "x".repeat(8 * 1024);
+        let a = t.insert("a", m(&big)).unwrap();
+        assert!(t.node(a).latest.as_ref().unwrap().truncated_from.is_none());
+        t.take_touched();
+        t.insert("b", m(&big));
+        let touched = t.take_touched().unwrap();
+        assert!(
+            t.node(a).latest.as_ref().unwrap().truncated_from.is_some(),
+            "a was stubbed"
+        );
+        assert!(touched.contains(&a), "{touched:?}");
     }
 
     #[test]

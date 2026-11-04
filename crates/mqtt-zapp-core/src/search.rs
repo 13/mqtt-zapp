@@ -594,4 +594,80 @@ mod tests {
             s.elapsed()
         );
     }
+
+    #[test]
+    fn narrow_multi_term_requires_all_old_terms() {
+        let mut t = TopicTree::new(1);
+        t.insert("a/foo/bar", m("x"));
+        t.insert("a/foo", m("x"));
+        let prev = filter(&t, "foo bar").unwrap();
+        assert!(narrow(&t, &prev, "foo", QueryMode::Plain).is_none());
+        assert!(narrow(&t, &prev, "bar", QueryMode::Plain).is_none());
+        assert!(narrow(&t, &prev, "foox barx", QueryMode::Plain).is_some());
+        assert!(narrow(&t, &prev, "foo bar baz", QueryMode::Plain).is_some());
+    }
+
+    #[test]
+    fn update_skips_removed_nodes() {
+        let mut t = TopicTree::new(1);
+        t.insert("keep/wzr", m("x"));
+        let gone = t.insert("tmp/y", m("x")).unwrap();
+        t.take_touched();
+        let mut f = filter(&t, "wzr").unwrap();
+        t.remove(gone);
+        let touched = t.take_touched().unwrap();
+        assert!(update(&t, &mut f, &touched));
+        assert_eq!(f.matches.len(), 1);
+        assert!(!f.matches.contains(&gone) && !f.visible.contains(&gone));
+    }
+
+    #[test]
+    fn update_keeps_match_on_payload_change() {
+        let mut t = TopicTree::new(1);
+        let id = t.insert("a", m("wzr one")).unwrap();
+        t.take_touched();
+        let mut f = filter(&t, "wzr").unwrap();
+        t.insert("a", m("wzr two"));
+        let touched = t.take_touched().unwrap();
+        assert!(update(&t, &mut f, &touched));
+        assert!(f.matches.contains(&id));
+    }
+
+    #[test]
+    fn incremental_matches_equal_full_filter() {
+        let mut seed = 12345u64;
+        let mut rnd = |n: u64| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) % n
+        };
+        let names = ["new", "a", "b", "wzr", "x1", "tele"];
+        let payloads = ["v", "wzr", "new", "hello wzr", ""];
+        for query in ["new", "wzr", "new wzr", "tele x1", "hello"] {
+            let mut t = TopicTree::new(1);
+            t.insert("seed/new/a", m("v"));
+            t.take_touched();
+            let mut f = filter(&t, query).unwrap();
+            for _ in 0..30 {
+                for _ in 0..1 + rnd(5) {
+                    let depth = 1 + rnd(4);
+                    let topic: Vec<&str> = (0..depth)
+                        .map(|_| names[rnd(names.len() as u64) as usize])
+                        .collect();
+                    t.insert(
+                        &topic.join("/"),
+                        m(payloads[rnd(payloads.len() as u64) as usize]),
+                    );
+                }
+                let touched = t.take_touched().unwrap();
+                if !update(&t, &mut f, &touched) {
+                    f = filter(&t, query).unwrap();
+                }
+                let full = filter(&t, query).unwrap();
+                assert_eq!(f.matches, full.matches, "matches for {query:?}");
+                assert_eq!(f.visible, full.visible, "visible for {query:?}");
+            }
+        }
+    }
 }
