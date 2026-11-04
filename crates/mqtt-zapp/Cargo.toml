@@ -21,6 +21,10 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 tui-textarea = "0.7"
 serde_json = { version = "1", features = ["preserve_order"] }
 
+[dev-dependencies]
+rcgen = "0.14"
+tempfile = "3"
+
 [features]
 default = ["keyring"]
 keyring = ["mqtt-zapp-core/keyring"]

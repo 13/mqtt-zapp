@@ -419,6 +419,9 @@ fn edit_text(initial: &str, cmd: &str) -> Result<String> {
     Ok(text)
 }
 
+#[cfg(test)]
+mod e2e_tests;
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::edit_text;
