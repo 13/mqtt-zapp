@@ -49,13 +49,18 @@ impl App {
         generation: u64,
         result: std::result::Result<Option<String>, String>,
     ) -> Effect {
-        // Still in the mode the lookup started in (the picker, or browse at
-        // startup), on the same attempt: anything else means the user
-        // moved on.
-        let current = self
-            .pending_password
-            .as_ref()
-            .is_some_and(|(g, _, m)| *g == generation && *m == self.mode);
+        // On the same attempt, and the user has not moved on: a picker
+        // lookup needs the picker still open; a startup lookup (browse)
+        // survives overlays like search or help, and is only dropped by
+        // going back to the front screens.
+        let front = matches!(self.mode, Mode::Picker | Mode::Password | Mode::ProfileForm);
+        let current = self.pending_password.as_ref().is_some_and(|(g, _, m)| {
+            *g == generation
+                && match m {
+                    Mode::Browse => !front,
+                    m => *m == self.mode,
+                }
+        });
         if !current {
             return Effect::None;
         }

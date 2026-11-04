@@ -695,3 +695,15 @@ fn app_state_keeps_unknown_keys() {
     a.set_app_state(st);
     assert!(a.app_state().extra.contains_key("future_key"));
 }
+
+#[test]
+fn startup_lookup_survives_an_overlay() {
+    // A slow keyring while the user opens search or help at startup: there
+    // is nothing else to connect to, so the answer still connects.
+    for mode in [Mode::SearchInput, Mode::Help, Mode::Stats] {
+        let (mut a, g) = startup_app(PasswordSource::Keyring);
+        a.mode = mode;
+        let e = a.password_loaded(g, Ok(Some("pw".into())));
+        assert!(matches!(e, Effect::Connect { .. }), "{mode:?}: {e:?}");
+    }
+}
