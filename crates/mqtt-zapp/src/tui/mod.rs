@@ -130,8 +130,9 @@ impl Session {
                 // Defence in depth: producers already cap at COPY_MAX.
                 if text.len() > app::COPY_MAX {
                     let note = format!(
-                        "too large to copy ({} KiB), use w to save",
-                        text.len().div_ceil(1024)
+                        "too large to copy ({} KiB), use {} to save",
+                        text.len().div_ceil(1024),
+                        ui::key_for(app, keymap::Action::SavePayload)
                     );
                     app.set_note(Note::error(note), Instant::now());
                     return false;

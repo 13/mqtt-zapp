@@ -14,7 +14,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 use unicode_width::UnicodeWidthStr;
 
-pub const EMPTY_HINT: &str = "no profiles – press a to add one";
+/// The empty picker's hint, naming the add-profile key.
+pub fn empty_hint(add_key: &str) -> String {
+    format!("no profiles – press {add_key} to add one")
+}
 
 #[derive(Debug, Default)]
 pub struct PickerState {
@@ -27,6 +30,8 @@ pub struct PickerState {
     pub last_used: BTreeMap<String, i64>,
     /// A password lookup (keyring, env or command) is in flight; drawn as a line under the list.
     pub waiting_keyring: bool,
+    /// The add-profile key, for the empty hint (the keymap may remap it).
+    pub add_key: String,
 }
 
 impl PickerState {
@@ -37,6 +42,7 @@ impl PickerState {
             sort: state.picker_sort,
             last_used: state.last_used.clone(),
             waiting_keyring: false,
+            add_key: "a".into(),
         }
     }
 
@@ -191,7 +197,7 @@ pub fn render_picker(
                 Style::new().fg(theme::ERR),
             ));
         }
-        v.push(Line::styled(format!(" {EMPTY_HINT}"), muted));
+        v.push(Line::styled(format!(" {}", empty_hint(&st.add_key)), muted));
         v
     } else {
         let names: Vec<String> = st

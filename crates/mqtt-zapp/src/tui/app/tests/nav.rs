@@ -601,3 +601,26 @@ fn tree_keys_do_nothing_in_history() {
         assert_eq!(a.expanded.as_set(), &expanded, "{x:?}");
     }
 }
+
+#[test]
+fn freeze_note_uses_the_remapped_key() {
+    let mut s = Settings::default();
+    s.keys.insert("freeze".into(), "F".into());
+    let mut a = App::new(Launch::Picker, ProfileStore::default(), s).unwrap();
+    a.mode = Mode::Browse;
+    a.handle_key(key(KeyCode::Char('F')));
+    let note = &a.status_note.as_ref().unwrap().0.text;
+    assert!(note.contains("F to resume"), "{note}");
+}
+
+#[test]
+fn remapped_help_key_closes_help() {
+    let mut s = Settings::default();
+    s.keys.insert("help".into(), "!".into());
+    let mut a = App::new(Launch::Picker, ProfileStore::default(), s).unwrap();
+    a.mode = Mode::Browse;
+    a.handle_key(key(KeyCode::Char('!')));
+    assert_eq!(a.mode, Mode::Help);
+    a.handle_key(key(KeyCode::Char('!')));
+    assert_eq!(a.mode, Mode::Browse);
+}

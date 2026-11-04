@@ -330,7 +330,10 @@ pub(super) fn render_help(f: &mut Frame, area: Rect, app: &App) {
     app.help_view.set((max, page.max(1)));
     let mut block = theme::pane(&title, true).title_bottom(
         Line::styled(
-            " f freezes · shift-drag selects · remap in settings.toml ",
+            format!(
+                " {} freezes · shift-drag selects · remap in settings.toml ",
+                key_for(app, Action::Freeze)
+            ),
             Style::new().fg(theme::MUTED),
         )
         .right_aligned(),

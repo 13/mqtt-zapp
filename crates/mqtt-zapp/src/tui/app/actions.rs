@@ -82,9 +82,10 @@ impl App {
             Action::Freeze => {
                 self.toggle_freeze();
                 let note = if self.frozen {
-                    "display frozen – f to resume"
+                    let f = crate::tui::ui::key_for(self, Action::Freeze);
+                    format!("display frozen – {f} to resume")
                 } else {
-                    "display live"
+                    "display live".into()
                 };
                 self.set_note(Note::info(note), Instant::now());
             }

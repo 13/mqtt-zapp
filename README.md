@@ -390,7 +390,7 @@ theme = "dark"           # dark, light or mono; NO_COLOR forces mono
 timestamp_format = "%H:%M:%S%.3f"   # strftime for the message time
 
 [keys]                   # action name = key; replaces that action's defaults
-toggle_diff = "D"
+toggle_diff = "o"
 quit = "ctrl-q"
 ```
 

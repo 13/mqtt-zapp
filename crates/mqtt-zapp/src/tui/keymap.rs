@@ -1,5 +1,5 @@
 //! Remappable key bindings: vim-style defaults, overridden per action from the
-//! `[keys]` table in `settings.toml` (e.g. `toggle_diff = "D"`).
+//! `[keys]` table in `settings.toml` (e.g. `toggle_diff = "o"`).
 
 use anyhow::{Result, anyhow, bail};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -219,6 +219,8 @@ impl Keymap {
             }
         }
         let mut taken = HashMap::new();
+        // Default owners an override took a key from, and that key.
+        let mut took_from: Vec<(Action, &str)> = Vec::new();
         for (name, key) in overrides {
             let action = Action::from_name(name)
                 .ok_or_else(|| anyhow!("unknown action '{name}' in [keys]"))?;
@@ -227,7 +229,23 @@ impl Keymap {
                 bail!("[keys] '{key}' is bound to both '{other}' and '{name}'");
             }
             bindings.retain(|_, a| *a != action);
-            bindings.insert(spec, action);
+            if let Some(owner) = bindings.insert(spec, action)
+                && owner != action
+            {
+                took_from.push((owner, key));
+            }
+        }
+        // Taking one of several keys is fine; taking an action's only key
+        // (unless it is remapped too) would leave it with none.
+        for (owner, key) in took_from {
+            let remapped = overrides.contains_key(owner.name());
+            if !remapped && !bindings.values().any(|a| *a == owner) {
+                bail!(
+                    "[keys] '{key}' is the only key of '{}'; bind '{}' to another key too",
+                    owner.name(),
+                    owner.name()
+                );
+            }
         }
         Ok(Keymap { bindings })
     }
@@ -296,9 +314,22 @@ mod tests {
 
     #[test]
     fn override_rebinds() {
-        let k = Keymap::from_settings(&[("toggle_diff".into(), "D".into())].into()).unwrap();
-        assert_eq!(k.lookup(key('D')), Some(Action::ToggleDiff));
+        let k = Keymap::from_settings(&[("toggle_diff".into(), "o".into())].into()).unwrap();
+        assert_eq!(k.lookup(key('o')), Some(Action::ToggleDiff));
         assert_eq!(k.lookup(key('d')), None);
+    }
+
+    #[test]
+    fn override_clashing_with_a_default_is_reported() {
+        // `D` is delete_profile's only key: taking it would leave it unbound.
+        let e = Keymap::from_settings(&[("toggle_diff".into(), "D".into())].into())
+            .err()
+            .expect("clash reported")
+            .to_string();
+        assert!(e.contains("'D'") && e.contains("delete_profile"), "{e}");
+        // Taking one of several keys is fine: `up` keeps its arrow key.
+        let k = Keymap::from_settings(&[("top".into(), "k".into())].into()).unwrap();
+        assert_eq!(k.lookup(key('k')), Some(Action::Top));
     }
 
     #[test]
@@ -356,11 +387,11 @@ mod tests {
     #[test]
     fn override_steals_key_from_default_owner() {
         let k = Keymap::from_settings(
-            &[("quit".into(), "x".into()), ("top".into(), "q".into())].into(),
+            &[("quit".into(), "Q".into()), ("top".into(), "q".into())].into(),
         )
         .unwrap();
         assert_eq!(k.lookup(key('q')), Some(Action::Top));
-        assert_eq!(k.lookup(key('x')), Some(Action::Quit));
+        assert_eq!(k.lookup(key('Q')), Some(Action::Quit));
         assert_eq!(k.lookup(key('g')), None);
     }
 
@@ -402,9 +433,9 @@ mod tests {
 
     #[test]
     fn bindings_reflect_overrides() {
-        let k = Keymap::from_settings(&[("quit".into(), "x".into())].into()).unwrap();
+        let k = Keymap::from_settings(&[("quit".into(), "Q".into())].into()).unwrap();
         let quit = k.bindings().into_iter().find(|(a, _)| *a == Action::Quit);
-        assert_eq!(quit.unwrap().1, vec![KeySpec::parse("x").unwrap()]);
+        assert_eq!(quit.unwrap().1, vec![KeySpec::parse("Q").unwrap()]);
     }
 
     /// The README key table is generated from the defaults; keep it in sync.

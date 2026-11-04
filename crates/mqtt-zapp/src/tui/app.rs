@@ -507,7 +507,7 @@ impl App {
             ),
             Launch::Connect(p) => (Mode::Browse, Some(p), ConnState::Connecting),
         };
-        Ok(App {
+        let mut app = App {
             tree: TopicTree::with_limits(
                 settings.history_depth,
                 settings.max_history_mb.saturating_mul(1024 * 1024),
@@ -600,7 +600,9 @@ impl App {
             starred_only: false,
             star_gen: 0,
             save_dir: PathBuf::from("."),
-        })
+        };
+        app.picker.add_key = super::ui::key_for(&app, Action::AddProfile);
+        Ok(app)
     }
 
     /// The effect to run once at startup: connect when launched with a profile.
@@ -977,8 +979,9 @@ impl App {
             Some(text) if text.len() > COPY_MAX => {
                 self.set_note(
                     Note::error(format!(
-                        "too large to copy ({} KiB), use w to save",
-                        text.len().div_ceil(1024)
+                        "too large to copy ({} KiB), use {} to save",
+                        text.len().div_ceil(1024),
+                        super::ui::key_for(self, Action::SavePayload)
                     )),
                     Instant::now(),
                 );

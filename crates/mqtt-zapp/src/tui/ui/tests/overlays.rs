@@ -199,7 +199,7 @@ fn overlay_fits_tiny_terminal() {
 fn empty_picker_hint() {
     let mut a = picker_app(vec![]);
     let s = text(&draw(&mut a, 90, 24));
-    assert!(s.contains("no profiles – press a to add one"), "{s}");
+    assert!(s.contains(&crate::tui::picker::empty_hint("a")), "{s}");
     assert!(!s.contains("load error"));
     a.store_error = Some("load error: bad toml".into());
     let s = text(&draw(&mut a, 90, 24));
@@ -297,7 +297,7 @@ fn publish_overlay_renders_fields_and_error_title() {
 #[test]
 fn help_overlay_lists_effective_keymap() {
     let mut st = Settings::default();
-    st.keys.insert("quit".into(), "x".into());
+    st.keys.insert("quit".into(), "Q".into());
     let mut a = App::new(Launch::Picker, ProfileStore::default(), st).unwrap();
     a.mode = Mode::Browse;
     a.handle_action(Action::Help);
@@ -306,7 +306,7 @@ fn help_overlay_lists_effective_keymap() {
     let line = s.lines().find(|l| l.contains("quit")).expect("quit row");
     let words: Vec<&str> = line.split_whitespace().collect();
     let at = words.iter().position(|w| w.contains("quit")).unwrap();
-    assert_eq!(words[at + 1], "x", "{line}");
+    assert_eq!(words[at + 1], "Q", "{line}");
     assert!(!words.contains(&"q"), "{line}");
     for want in [
         "toggle_diff",
@@ -563,4 +563,18 @@ fn help_draws_over_the_picker() {
         !s.contains("waiting for messages"),
         "not the browse screen: {s}"
     );
+}
+
+#[test]
+fn help_footer_and_empty_picker_use_remapped_keys() {
+    let mut s = mqtt_zapp_core::config::Settings::default();
+    s.keys.insert("freeze".into(), "F".into());
+    s.keys.insert("add_profile".into(), "+".into());
+    let mut a = App::new(crate::cli::Launch::Picker, ProfileStore::default(), s).unwrap();
+    let picker = text(&draw(&mut a, 80, 24));
+    assert!(picker.contains("press + to add one"), "{picker}");
+    a.mode = Mode::Browse;
+    a.handle_action(Action::Help);
+    let help = text(&draw(&mut a, 120, 40));
+    assert!(help.contains("F freezes"), "{help}");
 }

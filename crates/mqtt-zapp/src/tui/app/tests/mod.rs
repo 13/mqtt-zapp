@@ -117,10 +117,10 @@ fn quit_and_ctrl_c() {
 #[test]
 fn keymap_comes_from_settings() {
     let mut s = Settings::default();
-    s.keys.insert("quit".into(), "x".into());
+    s.keys.insert("quit".into(), "Q".into());
     let mut a = App::new(Launch::Picker, ProfileStore::default(), s).unwrap();
     a.mode = Mode::Browse;
-    let x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+    let x = KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::NONE);
     assert!(matches!(a.handle_key(x), Effect::Quit));
     s = Settings::default();
     s.keys.insert("nope".into(), "x".into());

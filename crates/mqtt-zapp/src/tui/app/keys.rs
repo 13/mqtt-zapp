@@ -149,7 +149,10 @@ impl App {
                     _ => (at + page).min(max),
                 };
             }
-            KeyCode::Char('?') if self.help_query.is_empty() => self.mode = self.help_return,
+            // The help key closes it too, as it was typed to open it.
+            _ if self.help_query.is_empty() && self.keymap.lookup(key) == Some(Action::Help) => {
+                self.mode = self.help_return
+            }
             KeyCode::Char(c)
                 if !key
                     .modifiers
