@@ -53,7 +53,17 @@ pub struct AppState {
     /// up: `save` then does nothing, so the file is not overwritten.
     #[serde(skip)]
     pub read_only: bool,
+    /// Top-level keys this version does not know (a newer one wrote them):
+    /// kept from `load` and written back by `save`, so a downgrade does not
+    /// lose them.
+    #[serde(skip)]
+    pub extra: Extra,
 }
+
+/// Unknown top-level `state.toml` keys.
+pub type Extra = toml::Table;
+
+const KNOWN_KEYS: [&str; 3] = ["picker_sort", "last_used", "favorites"];
 
 /// `MQTT_ZAPP_STATE_DIR`, else `MQTT_ZAPP_CONFIG_DIR` (keeps a relocated
 /// config self-contained), else the XDG state dir, else the config dir.
@@ -120,6 +130,10 @@ impl AppState {
                 key(&table, "picker_sort", &mut state.picker_sort, &mut errors);
                 key(&table, "last_used", &mut state.last_used, &mut errors);
                 key(&table, "favorites", &mut state.favorites, &mut errors);
+                state.extra = table
+                    .into_iter()
+                    .filter(|(k, _)| !KNOWN_KEYS.contains(&k.as_str()))
+                    .collect();
             }
         }
         if errors.is_empty() {
@@ -152,7 +166,12 @@ impl AppState {
         }
         let dir = state_dir();
         create_private_dir(&dir)?;
-        write_private(&dir.join("state.toml"), &toml::to_string_pretty(self)?)
+        // The known keys win over a stray same-named extra.
+        let mut table = toml::Table::try_from(self)?;
+        for (k, v) in &self.extra {
+            table.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        write_private(&dir.join("state.toml"), &toml::to_string_pretty(&table)?)
     }
 
     pub fn touch(&mut self, name: &str, now: i64) {
@@ -183,6 +202,29 @@ mod tests {
         // SAFETY: env mutation is serialized by LOCK; only these tests touch it.
         unsafe { std::env::set_var("MQTT_ZAPP_STATE_DIR", d.path().join("nested")) };
         (g, d)
+    }
+
+    #[test]
+    fn unknown_state_keys_survive_save() {
+        let (_g, _d) = in_temp_dir();
+        let dir = state_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("state.toml"),
+            "future_key = 1\npicker_sort = \"name\"\n\n[future_table]\na = \"b\"\n",
+        )
+        .unwrap();
+        let (mut s, err) = AppState::load();
+        assert_eq!(err, None);
+        s.touch("p", 5);
+        s.save().unwrap();
+        let text = std::fs::read_to_string(dir.join("state.toml")).unwrap();
+        let t: toml::Table = text.parse().unwrap();
+        assert_eq!(t["future_key"], toml::Value::Integer(1));
+        assert_eq!(t["future_table"]["a"].as_str(), Some("b"));
+        assert_eq!(t["picker_sort"].as_str(), Some("name"));
+        assert_eq!(t["last_used"]["p"].as_integer(), Some(5));
+        assert_eq!(AppState::load().0, s);
     }
 
     #[test]

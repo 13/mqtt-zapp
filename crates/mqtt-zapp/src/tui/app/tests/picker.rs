@@ -686,3 +686,12 @@ fn startup_lookup_dropped_after_mode_change() {
     let e = a.password_loaded(g, Ok(Some("pw".into())));
     assert!(matches!(e, Effect::None), "{e:?}");
 }
+
+#[test]
+fn app_state_keeps_unknown_keys() {
+    let mut a = picker_app(vec![profile("a", PasswordSource::None)]);
+    let mut st = AppState::default();
+    st.extra.insert("future_key".into(), 1.into());
+    a.set_app_state(st);
+    assert!(a.app_state().extra.contains_key("future_key"));
+}

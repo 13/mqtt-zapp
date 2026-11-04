@@ -398,6 +398,8 @@ pub struct App {
     pub store_error: Option<String>,
     /// `state.toml` could not be read or backed up: never save it.
     state_read_only: bool,
+    /// Unknown `state.toml` keys, written back unchanged by every save.
+    state_extra: mqtt_zapp_core::state::Extra,
     /// Open while in `Mode::Publish`.
     pub publish: Option<PublishForm>,
     /// A transient footer message (publish result) and when it was set.
@@ -544,6 +546,7 @@ impl App {
             cleared_echo: HashSet::new(),
             store_error: None,
             state_read_only: false,
+            state_extra: Default::default(),
             publish: None,
             status_note: None,
             hit: Cell::new(HitAreas::default()),
