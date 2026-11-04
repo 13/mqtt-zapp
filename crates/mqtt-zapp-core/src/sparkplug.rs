@@ -3,6 +3,8 @@
 //! A hand-written wire decoder for the few fields the viewer needs; every
 //! read is bounds-checked, so no input can panic it.
 
+use std::collections::HashMap;
+
 use serde_json::{Map, Number, Value, json};
 
 /// `spBv1.0/<group>/<type>/...` with a message type that carries a payload.
@@ -103,14 +105,99 @@ fn float32(f: f32) -> Value {
     float(f.to_string().parse().unwrap_or(f64::from(f)))
 }
 
+/// Most alias -> name entries kept across all nodes and devices.
+const MAX_ALIASES: usize = 100_000;
+
+/// `(group, edge node, device)`.
+type NodeKey = (String, String, Option<String>);
+
+/// Metric names learned from BIRTH messages, so a later DATA or CMD metric
+/// that only carries an alias is shown under its name.
+#[derive(Default)]
+pub struct Aliases {
+    maps: HashMap<NodeKey, HashMap<u64, String>>,
+    total: usize,
+}
+
+impl Aliases {
+    /// Entries held across all nodes and devices.
+    pub fn len(&self) -> usize {
+        self.total
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+
+    /// Decode `payload` received on `topic`. A BIRTH records its
+    /// alias -> name pairs (NBIRTH replaces the node's map and its devices'
+    /// maps, DBIRTH the device's); any other type resolves alias-only
+    /// metrics from what was recorded.
+    pub fn decode(&mut self, topic: &str, payload: &[u8]) -> Option<Value> {
+        let mut it = topic.split('/');
+        let (Some("spBv1.0"), Some(group), Some(kind), Some(edge)) =
+            (it.next(), it.next(), it.next(), it.next())
+        else {
+            return decode_inner(payload, None).map(|d| d.0);
+        };
+        let device = it.next();
+        let key: NodeKey = (group.into(), edge.into(), device.map(Into::into));
+        if matches!(kind, "NBIRTH" | "DBIRTH") {
+            let (value, pairs) = decode_inner(payload, None)?;
+            self.learn(kind == "NBIRTH", key, pairs);
+            Some(value)
+        } else {
+            decode_inner(payload, self.maps.get(&key)).map(|d| d.0)
+        }
+    }
+
+    fn learn(&mut self, node: bool, key: NodeKey, pairs: Vec<(String, u64)>) {
+        if node {
+            let (g, e) = (key.0.clone(), key.1.clone());
+            let mut freed = 0;
+            self.maps.retain(|k, m| {
+                let hit = k.0 == g && k.1 == e;
+                if hit {
+                    freed += m.len();
+                }
+                !hit
+            });
+            self.total -= freed;
+        } else if let Some(old) = self.maps.remove(&key) {
+            self.total -= old.len();
+        }
+        let map: HashMap<u64, String> = pairs.into_iter().map(|(n, a)| (a, n)).collect();
+        if map.is_empty() {
+            return;
+        }
+        if self.total + map.len() > MAX_ALIASES {
+            // Over the cap: record nothing new (the decode itself is fine).
+            return;
+        }
+        self.total += map.len();
+        self.maps.insert(key, map);
+    }
+}
+
 /// Decode a Sparkplug B payload; `None` when it is not a well-formed one.
+#[cfg(test)]
 pub fn decode(payload: &[u8]) -> Option<Value> {
+    decode_inner(payload, None).map(|d| d.0)
+}
+
+/// The decoded payload and the `(name, alias)` pairs its metrics carried.
+/// Alias-only metrics are named from `names` when it knows them.
+fn decode_inner(
+    payload: &[u8],
+    names: Option<&HashMap<u64, String>>,
+) -> Option<(Value, Vec<(String, u64)>)> {
     if payload.is_empty() {
         return None;
     }
     let mut out = Map::new();
     let mut metrics = Map::new();
     let mut known = false;
+    let mut pairs = Vec::new();
     let mut r = Reader::new(payload);
     while !r.done() {
         match r.field()? {
@@ -120,8 +207,9 @@ pub fn decode(payload: &[u8]) -> Option<Value> {
             }
             (2, Wire::Len(b)) => {
                 known = true;
-                if let Some((k, v)) = metric(b)? {
+                if let Some((k, v, pair)) = metric(b, names)? {
                     metrics.insert(k, v);
+                    pairs.extend(pair);
                 }
             }
             (3, Wire::Varint(v)) => {
@@ -152,12 +240,14 @@ pub fn decode(payload: &[u8]) -> Option<Value> {
             ordered.insert(k.into(), v);
         }
     }
-    Some(Value::Object(ordered))
+    Some((Value::Object(ordered), pairs))
 }
 
-/// One `Metric` as `(key, value)`; the outer `None` is malformed, the inner
-/// one a metric with neither name nor alias (skipped).
-fn metric(b: &[u8]) -> Option<Option<(String, Value)>> {
+/// One `Metric` as `(key, value, name/alias pair)`; the outer `None` is
+/// malformed, the inner one a metric with neither name nor alias (skipped).
+type Metric = (String, Value, Option<(String, u64)>);
+
+fn metric(b: &[u8], names: Option<&HashMap<u64, String>>) -> Option<Option<Metric>> {
     let (mut name, mut alias, mut datatype) = (None, None, 0u64);
     let (mut null, mut raw) = (false, None);
     let mut r = Reader::new(b);
@@ -172,7 +262,14 @@ fn metric(b: &[u8]) -> Option<Option<(String, Value)>> {
             _ => {}
         }
     }
-    let Some(key) = name.or_else(|| alias.map(|a| format!("alias:{a}"))) else {
+    let pair = name.clone().zip(alias);
+    let Some(key) = name.or_else(|| {
+        alias.map(|a| {
+            names
+                .and_then(|m| m.get(&a).cloned())
+                .unwrap_or_else(|| format!("alias:{a}"))
+        })
+    }) else {
         return Some(None);
     };
     let value = if null {
@@ -206,7 +303,7 @@ fn metric(b: &[u8]) -> Option<Option<(String, Value)>> {
             Some(_) => return None,
         }
     };
-    Some(Some((key, value)))
+    Some(Some((key, value, pair)))
 }
 
 #[cfg(test)]
@@ -388,6 +485,125 @@ mod tests {
         .concat();
         assert!(decode(&p).is_some());
         assert_eq!(decode(&p[..p.len() - 3]), None);
+    }
+
+    fn named(name: &[u8], alias: u64) -> Vec<u8> {
+        metric(&[
+            lf(1, name),
+            vf(2, alias),
+            vf(4, 9),
+            field(12, 5, &1.0f32.to_le_bytes()),
+        ])
+    }
+
+    fn by_alias(alias: u64, v: f32) -> Vec<u8> {
+        metric(&[vf(2, alias), vf(4, 9), field(12, 5, &v.to_le_bytes())])
+    }
+
+    fn data(m: Vec<u8>) -> Vec<u8> {
+        [vf(1, 1), m].concat()
+    }
+
+    #[test]
+    fn data_uses_birth_names() {
+        let mut a = Aliases::default();
+        a.decode("spBv1.0/g/NBIRTH/n", &data(named(b"Temperature", 7)))
+            .unwrap();
+        let v = a
+            .decode("spBv1.0/g/NDATA/n", &data(by_alias(7, 21.5)))
+            .unwrap();
+        assert_eq!(v["metrics"]["Temperature"], json!(21.5));
+        assert_eq!(a.len(), 1);
+    }
+
+    #[test]
+    fn device_aliases_are_separate() {
+        let mut a = Aliases::default();
+        a.decode("spBv1.0/g/DBIRTH/n/d1", &data(named(b"A", 1)))
+            .unwrap();
+        a.decode("spBv1.0/g/DBIRTH/n/d2", &data(named(b"B", 1)))
+            .unwrap();
+        let v = a
+            .decode("spBv1.0/g/DDATA/n/d2", &data(by_alias(1, 2.0)))
+            .unwrap();
+        assert_eq!(v["metrics"]["B"], json!(2.0));
+        let v = a
+            .decode("spBv1.0/g/DDATA/n/d1", &data(by_alias(1, 2.0)))
+            .unwrap();
+        assert_eq!(v["metrics"]["A"], json!(2.0));
+    }
+
+    #[test]
+    fn data_before_birth_keeps_alias_keys() {
+        let mut a = Aliases::default();
+        let v = a
+            .decode("spBv1.0/g/NDATA/n", &data(by_alias(7, 1.5)))
+            .unwrap();
+        assert_eq!(v["metrics"]["alias:7"], json!(1.5));
+        assert!(a.is_empty());
+    }
+
+    #[test]
+    fn rebirth_replaces_names() {
+        let mut a = Aliases::default();
+        a.decode("spBv1.0/g/NBIRTH/n", &data(named(b"Temp1", 7)))
+            .unwrap();
+        a.decode("spBv1.0/g/NBIRTH/n", &data(named(b"Temp2", 7)))
+            .unwrap();
+        let v = a
+            .decode("spBv1.0/g/NDATA/n", &data(by_alias(7, 3.0)))
+            .unwrap();
+        assert_eq!(v["metrics"]["Temp2"], json!(3.0));
+        assert_eq!(a.len(), 1);
+    }
+
+    #[test]
+    fn nbirth_clears_device_maps() {
+        let mut a = Aliases::default();
+        a.decode("spBv1.0/g/DBIRTH/n/d1", &data(named(b"A", 1)))
+            .unwrap();
+        a.decode("spBv1.0/g/NBIRTH/n", &data(named(b"N", 2)))
+            .unwrap();
+        assert_eq!(a.len(), 1);
+        let v = a
+            .decode("spBv1.0/g/DDATA/n/d1", &data(by_alias(1, 2.0)))
+            .unwrap();
+        assert_eq!(v["metrics"]["alias:1"], json!(2.0));
+    }
+
+    #[test]
+    fn name_already_in_message_is_overwritten() {
+        let mut a = Aliases::default();
+        a.decode("spBv1.0/g/NBIRTH/n", &data(named(b"T", 7)))
+            .unwrap();
+        let p = data(
+            [
+                metric(&[lf(1, b"T"), vf(4, 9), field(12, 5, &1.0f32.to_le_bytes())]),
+                by_alias(7, 5.0),
+            ]
+            .concat(),
+        );
+        let v = a.decode("spBv1.0/g/NDATA/n", &p).unwrap();
+        assert_eq!(v["metrics"]["T"], json!(5.0));
+        assert_eq!(v["metrics"].as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn aliases_are_capped() {
+        let mut a = Aliases::default();
+        let batch = 40_000u64;
+        for d in 0..4 {
+            let p = data(
+                (0..batch)
+                    .map(|i| named(format!("m{i}").as_bytes(), i))
+                    .collect::<Vec<_>>()
+                    .concat(),
+            );
+            let v = a.decode(&format!("spBv1.0/g/DBIRTH/n/d{d}"), &p);
+            assert!(v.is_some());
+            assert!(a.len() <= MAX_ALIASES);
+        }
+        assert_eq!(a.len(), 80_000);
     }
 
     #[test]

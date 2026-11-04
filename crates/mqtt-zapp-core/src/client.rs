@@ -168,9 +168,10 @@ fn incoming(
     qos: u8,
     retain: bool,
     props: Option<Arc<Props>>,
+    aliases: &mut sparkplug::Aliases,
 ) -> Message {
     let decoded = (sparkplug::is_sparkplug_topic(topic) && payload.len() <= SPARKPLUG_MAX)
-        .then(|| sparkplug::decode(payload))
+        .then(|| aliases.decode(topic, payload))
         .flatten()
         .and_then(|v| serde_json::to_vec(&v).ok());
     let decoded_len = decoded.is_some().then_some(payload.len());
@@ -214,12 +215,12 @@ impl Loop {
         }
     }
 
-    async fn poll(&mut self) -> Polled {
+    async fn poll(&mut self, aliases: &mut sparkplug::Aliases) -> Polled {
         match self {
             Loop::V4(l) => match l.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => Polled::ConnAck,
                 Ok(Event::Incoming(Packet::Publish(p))) => Polled::Publish {
-                    msg: incoming(&p.topic, &p.payload, p.qos as u8, p.retain, None),
+                    msg: incoming(&p.topic, &p.payload, p.qos as u8, p.retain, None, aliases),
                     topic: p.topic,
                 },
                 Ok(Event::Outgoing(Outgoing::Disconnect)) => Polled::OutgoingDisconnect,
@@ -240,6 +241,7 @@ impl Loop {
                                 .map(props_from_v5)
                                 .filter(|p| !p.is_empty())
                                 .map(Arc::new),
+                            aliases,
                         ),
                         topic,
                     }
@@ -374,13 +376,15 @@ async fn run(
     let mut backoff = BACKOFF_START_MS;
     let mut connected = false;
     let mut dropped: u64 = 0;
+    // Kept across reconnects; the broker's retained BIRTHs come again anyway.
+    let mut aliases = sparkplug::Aliases::default();
     emit!(CoreEvent::State(ConnState::Connecting));
     loop {
         let polled = tokio::select! {
             biased;
             _ = cancel.cancelled() => break,
             _ = tx.closed() => return,
-            r = eventloop.poll() => r,
+            r = eventloop.poll(&mut aliases) => r,
         };
         match polled {
             Polled::ConnAck => {
@@ -429,7 +433,7 @@ async fn run(
     if connected {
         let _ = tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                match eventloop.poll().await {
+                match eventloop.poll(&mut aliases).await {
                     Polled::OutgoingDisconnect | Polled::Err(_) => break,
                     _ => {}
                 }
@@ -685,7 +689,7 @@ mod tests {
         // rumqttc hands out the payload as a slice of its shared read chunk.
         let chunk = bytes::Bytes::from(vec![7u8; 64 * 1024]);
         let p = chunk.slice(100..104);
-        let m = incoming("t", &p, 1, true, None);
+        let m = incoming("t", &p, 1, true, None, &mut Default::default());
         assert_eq!(&m.payload[..], &[7u8; 4][..]);
         assert_eq!((m.qos, m.retain, m.truncated_from), (1, true, None));
         let range = chunk.as_ptr_range();
@@ -698,10 +702,24 @@ mod tests {
     #[test]
     fn sparkplug_payload_is_stored_as_json() {
         let p = [0x08, 0xe8, 0x07, 0x18, 0x03]; // timestamp 1000, seq 3
-        let m = incoming("spBv1.0/g/NDATA/n", &p, 0, false, None);
+        let m = incoming(
+            "spBv1.0/g/NDATA/n",
+            &p,
+            0,
+            false,
+            None,
+            &mut Default::default(),
+        );
         assert!(m.sparkplug);
         assert_eq!(&m.payload[..], br#"{"timestamp":1000,"seq":3}"#);
-        let m = incoming("spBv1.0/g/NDATA/n", b"not protobuf {", 0, false, None);
+        let m = incoming(
+            "spBv1.0/g/NDATA/n",
+            b"not protobuf {",
+            0,
+            false,
+            None,
+            &mut Default::default(),
+        );
         assert!(!m.sparkplug);
         assert_eq!(&m.payload[..], b"not protobuf {");
     }
@@ -709,9 +727,16 @@ mod tests {
     #[test]
     fn incoming_records_wire_len() {
         let p = [0x08, 0xe8, 0x07, 0x18, 0x03];
-        let m = incoming("spBv1.0/g/NDATA/n", &p, 0, false, None);
+        let m = incoming(
+            "spBv1.0/g/NDATA/n",
+            &p,
+            0,
+            false,
+            None,
+            &mut Default::default(),
+        );
         assert_eq!(m.wire_len, Some(p.len()));
-        let m = incoming("t", b"raw", 0, false, None);
+        let m = incoming("t", b"raw", 0, false, None, &mut Default::default());
         assert_eq!(m.wire_len, None);
     }
 
@@ -720,14 +745,28 @@ mod tests {
         // A valid payload: field 5 (body) of 1 MiB + 1 bytes after a timestamp.
         let mut p = vec![0x08, 0x01, 0x2a, 0xfb, 0xff, 0x3f];
         p.resize((1 << 20) + 1, 0);
-        let m = incoming("spBv1.0/g/NDATA/n", &p, 0, false, None);
+        let m = incoming(
+            "spBv1.0/g/NDATA/n",
+            &p,
+            0,
+            false,
+            None,
+            &mut Default::default(),
+        );
         assert!(!m.sparkplug);
         assert_eq!(m.payload.len(), (1 << 20) + 1);
     }
 
     #[test]
     fn state_topic_is_not_decoded() {
-        let m = incoming("spBv1.0/STATE/h", b"{\"online\":true}", 0, true, None);
+        let m = incoming(
+            "spBv1.0/STATE/h",
+            b"{\"online\":true}",
+            0,
+            true,
+            None,
+            &mut Default::default(),
+        );
         assert!(!m.sparkplug);
         assert_eq!(&m.payload[..], b"{\"online\":true}");
     }
