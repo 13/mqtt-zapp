@@ -460,6 +460,8 @@ pub struct App {
     ack_unsent: VecDeque<String>,
     /// Packet id → topic of publishes written out and waiting for the ack.
     ack_inflight: HashMap<u16, String>,
+    /// Filters the broker refused this session, for the empty tree.
+    pub refused: Vec<String>,
     /// Order of sibling topics; `s` cycles it.
     pub sort: SortOrder,
     /// Set while in `Mode::Confirm`.
@@ -612,6 +614,7 @@ impl App {
             await_reply: None,
             ack_unsent: VecDeque::new(),
             ack_inflight: HashMap::new(),
+            refused: Vec::new(),
             created: Instant::now(),
             rows_cache: RefCell::new(None),
             favorites: BTreeMap::new(),
@@ -643,6 +646,7 @@ impl App {
         self.await_reply = None;
         self.ack_unsent.clear();
         self.ack_inflight.clear();
+        self.refused.clear();
         self.diff_base = None;
         self.payload_scroll = 0;
         self.set_filter(None);
@@ -708,6 +712,9 @@ impl App {
                 }
             }
             CoreEvent::SubRefused { filter, reason } => {
+                if !self.refused.contains(&filter) {
+                    self.refused.push(filter.clone());
+                }
                 let now = Instant::now();
                 let line = format!("{} ({})", clip_text(&filter), clip_text(&reason));
                 // Refusals from one SUBACK arrive back to back: list them all.

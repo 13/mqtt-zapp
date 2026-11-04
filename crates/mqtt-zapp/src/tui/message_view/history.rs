@@ -45,7 +45,7 @@ pub(super) fn render_history(f: &mut Frame, area: Rect, app: &App, s: &Shown) {
         .take(height)
         .map(|(row, m)| {
             let marked = s.base == Some(h.len() - 1 - row);
-            let time = clock(m.received_at, "%H:%M:%S");
+            let time = clock(m.received_at, &app.timestamp_format);
             let marker = if marked { " ◆ " } else { "   " };
             // The preview gets whatever the row has left.
             let room = usize::from(inner.width).saturating_sub(time.width() + marker.width());

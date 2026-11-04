@@ -941,7 +941,8 @@ fn history_row(b: &Buffer, needle: &str) -> String {
 #[test]
 fn history_preview_uses_the_whole_row() {
     let long = "a".repeat(200);
-    let a = app_with(&[long.as_bytes(), long.as_bytes()]);
+    let mut a = app_with(&[long.as_bytes(), long.as_bytes()]);
+    a.timestamp_format = "%H:%M:%S".into();
     // 100 columns: 98 inside, `HH:MM:SS` + 3 (the mark's column) leaves 87.
     let row = history_row(&draw(&a), "aaa");
     assert_eq!(row.chars().count(), 98, "{row:?}");
@@ -1864,4 +1865,16 @@ fn mono_chart_series_use_distinct_markers() {
     let ls = lines(&draw(&a));
     let boxed = |n: &str| ls.iter().skip(1).any(|l| l.contains(&format!("│{n}│")));
     assert!(boxed("⠿ b") && boxed("• a"), "{ls:#?}");
+}
+
+#[test]
+fn history_uses_timestamp_format() {
+    let mut a = app_with(&[b"one", b"two"]);
+    a.timestamp_format = "%H:%M".into();
+    let l = lines(&draw(&a));
+    let row = l.iter().find(|r| r.contains("one")).unwrap();
+    let t = row
+        .trim_start_matches(|c: char| !c.is_ascii_digit())
+        .as_bytes();
+    assert!(t[2] == b':' && t[5] != b':', "{row}");
 }

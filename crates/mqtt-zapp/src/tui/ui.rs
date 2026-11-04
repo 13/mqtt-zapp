@@ -259,20 +259,32 @@ fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
 /// that matches nothing.
 fn render_tree_empty(f: &mut Frame, app: &App, area: Rect) {
     let muted = Style::new().fg(theme::MUTED);
-    let mut lines = match &app.filter {
-        Some(flt) => vec![Line::styled(
-            format!("no topics match \"{}\"", single_line(&flt.query)),
-            muted,
-        )],
-        None => vec![Line::styled("waiting for messages…", muted)],
+    let key = |a| bars::key_for(app, a);
+    let first = match (&app.filter, &app.conn_state) {
+        (Some(flt), _) => format!("no topics match \"{}\"", single_line(&flt.query)),
+        (None, _) if app.starred_only => format!(
+            "no starred topics yet · {} shows all",
+            key(Action::StarredOnly)
+        ),
+        (None, ConnState::Connected) => "waiting for messages…".to_owned(),
+        (None, ConnState::Connecting) => "connecting…".to_owned(),
+        (None, _) => format!("not connected · {} picks a broker", key(Action::Brokers)),
     };
-    if let (None, Some(server)) = (&app.filter, &app.server) {
+    let mut lines = vec![Line::styled(first, muted)];
+    let waiting = app.filter.is_none() && !app.starred_only && app.conn_state.is_connected();
+    if let (true, Some(server)) = (waiting, &app.server) {
         lines.push(Line::styled(
             format!(
                 "subscribed to {}",
                 single_line(&server.subscriptions.join(", "))
             ),
             muted,
+        ));
+    }
+    if waiting && !app.refused.is_empty() {
+        lines.push(Line::styled(
+            format!("refused: {}", single_line(&app.refused.join(", "))),
+            Style::new().fg(theme::ERR),
         ));
     }
     let top = area.height.saturating_sub(lines.len() as u16) / 2;

@@ -171,6 +171,7 @@ fn search_highlights_matches_and_shows_status() {
 #[test]
 fn tree_empty_state_lists_subscriptions() {
     let mut a = app_with(&[]);
+    a.conn_state = mqtt_zapp_core::client::ConnState::Connected;
     a.server = Some(home());
     let s = text(&draw(&mut a, 100, 24));
     assert!(s.contains("waiting for messages…"), "{s}");
@@ -417,4 +418,40 @@ fn light_theme_has_no_yellow_foreground() {
     let b = draw(&mut a, 100, 24);
     assert!(b.content.iter().all(|c| c.fg != Color::Yellow));
     assert!(b.content.iter().any(|c| c.fg == Color::Rgb(150, 110, 0)));
+}
+
+#[test]
+fn empty_tree_explains_disconnect() {
+    let mut a = app_with(&[]);
+    a.server = Some(home());
+    a.apply_core_event(CoreEvent::State(
+        mqtt_zapp_core::client::ConnState::Failed { reason: "x".into() },
+    ));
+    let s = text(&draw(&mut a, 100, 24));
+    assert!(s.contains("not connected · b picks a broker"), "{s}");
+    assert!(!s.contains("waiting for messages"), "{s}");
+}
+
+#[test]
+fn empty_starred_view_says_so() {
+    let mut a = app_with(&[]);
+    a.conn_state = mqtt_zapp_core::client::ConnState::Connected;
+    a.starred_only = true;
+    let s = text(&draw(&mut a, 100, 24));
+    assert!(s.contains("no starred topics yet · ' shows all"), "{s}");
+}
+
+#[test]
+fn empty_tree_lists_refused_filters() {
+    let mut a = app_with(&[]);
+    a.conn_state = mqtt_zapp_core::client::ConnState::Connected;
+    a.server = Some(home());
+    a.apply_core_event(CoreEvent::SubRefused {
+        filter: "#".into(),
+        reason: "not authorized".into(),
+    });
+    let s = text(&draw(&mut a, 100, 24));
+    // In the tree pane, not only in the footer's note.
+    let body: Vec<&str> = s.lines().take(23).collect();
+    assert!(body.iter().any(|l| l.contains("refused: #")), "{s}");
 }
