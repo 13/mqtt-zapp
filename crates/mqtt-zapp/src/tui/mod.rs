@@ -28,7 +28,7 @@ use futures::StreamExt;
 use mqtt_zapp_core::client::{ConnState, Connection, CoreEvent};
 use mqtt_zapp_core::config::{ProfileStore, Settings};
 use mqtt_zapp_core::payload::base64;
-use mqtt_zapp_core::state::AppState;
+use mqtt_zapp_core::state::{AppState, backup_path};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io::{Stdout, Write, stdout};
@@ -42,9 +42,13 @@ const TICK: Duration = Duration::from_millis(100);
 const MAX_DRAIN: usize = 2000;
 
 pub async fn run(launch: Launch, store: ProfileStore, store_error: Option<String>) -> Result<()> {
-    let mut app = App::new(launch, store, Settings::load()?)?;
+    let (settings, settings_err) = Settings::load_or_default();
+    let mut app = App::new(launch, store, settings)?;
     app.store_error = store_error;
-    app.set_app_state(AppState::load());
+    let (state, state_err) = AppState::load();
+    app.set_app_state(state);
+    let backup = state_err.map(|_| backup_path());
+    app.set_startup_errors(backup.as_deref(), settings_err, Instant::now());
     app.theme = theme::effective(app.theme, std::env::var("NO_COLOR").ok().as_deref());
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;

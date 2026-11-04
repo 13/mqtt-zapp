@@ -64,13 +64,49 @@ pub fn state_dir() -> PathBuf {
         .unwrap_or_else(config_dir)
 }
 
+/// Where `load` copies a state file it could not fully parse.
+pub fn backup_path() -> PathBuf {
+    state_dir().join("state.toml.bak")
+}
+
 impl AppState {
-    /// Never fails: a missing or unreadable file gives the defaults.
-    pub fn load() -> AppState {
-        std::fs::read_to_string(state_dir().join("state.toml"))
-            .ok()
-            .and_then(|t| toml::from_str(&t).ok())
-            .unwrap_or_default()
+    /// Never fails. A missing file gives the defaults. A file that does not
+    /// parse is copied to `state.toml.bak` (replacing an older backup) and
+    /// the returned text says why. Each top-level key is parsed on its own,
+    /// so one bad key keeps the others.
+    pub fn load() -> (AppState, Option<String>) {
+        let path = state_dir().join("state.toml");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return (AppState::default(), None);
+        };
+        let mut state = AppState::default();
+        let mut errors = Vec::new();
+        match text.parse::<toml::Table>() {
+            Err(e) => errors.push(e.to_string()),
+            Ok(table) => {
+                fn key<T: serde::de::DeserializeOwned>(
+                    table: &toml::Table,
+                    name: &str,
+                    slot: &mut T,
+                    errors: &mut Vec<String>,
+                ) {
+                    if let Some(v) = table.get(name) {
+                        match v.clone().try_into() {
+                            Ok(x) => *slot = x,
+                            Err(e) => errors.push(format!("{name}: {e}")),
+                        }
+                    }
+                }
+                key(&table, "picker_sort", &mut state.picker_sort, &mut errors);
+                key(&table, "last_used", &mut state.last_used, &mut errors);
+                key(&table, "favorites", &mut state.favorites, &mut errors);
+            }
+        }
+        if errors.is_empty() {
+            return (state, None);
+        }
+        let _ = std::fs::copy(&path, backup_path());
+        (state, Some(errors.join("; ")))
     }
 
     /// Write atomically (temp file + rename), creating the directory.
@@ -117,13 +153,13 @@ mod tests {
         s.touch("a", 10);
         s.picker_sort = PickerSort::Name;
         s.save().unwrap();
-        assert_eq!(AppState::load(), s);
+        assert_eq!(AppState::load(), (s, None));
     }
 
     #[test]
     fn state_missing_file_defaults() {
         let (_g, _d) = in_temp_dir();
-        assert_eq!(AppState::load(), AppState::default());
+        assert_eq!(AppState::load(), (AppState::default(), None));
     }
 
     #[test]
@@ -131,7 +167,9 @@ mod tests {
         let (_g, _d) = in_temp_dir();
         std::fs::create_dir_all(state_dir()).unwrap();
         std::fs::write(state_dir().join("state.toml"), "not = [toml").unwrap();
-        assert_eq!(AppState::load(), AppState::default());
+        let (s, err) = AppState::load();
+        assert_eq!(s, AppState::default());
+        assert!(err.is_some());
     }
 
     #[test]
@@ -162,9 +200,46 @@ mod tests {
             "picker_sort = \"name\"\n\n[last_used]\na = 5\n",
         )
         .unwrap();
-        let s = AppState::load();
+        let (s, err) = AppState::load();
+        assert!(err.is_none());
         assert_eq!(s.picker_sort, PickerSort::Name);
         assert_eq!(s.last_used["a"], 5);
         assert!(s.favorites.is_empty());
+    }
+
+    #[test]
+    fn corrupt_state_is_backed_up_not_wiped() {
+        let (_g, _d) = in_temp_dir();
+        std::fs::create_dir_all(state_dir()).unwrap();
+        let original = "picker_sort = \"sideways\"\n\n[favorites]\nlocal = [\"a/b\"]\n\n[last_used]\nlocal = 7\n";
+        std::fs::write(state_dir().join("state.toml"), original).unwrap();
+        let (s, err) = AppState::load();
+        assert!(err.is_some());
+        assert_eq!(s.picker_sort, PickerSort::Custom);
+        assert_eq!(s.last_used["local"], 7);
+        assert!(s.favorites["local"].contains("a/b"));
+        s.save().unwrap();
+        let (again, err) = AppState::load();
+        assert!(err.is_none());
+        assert_eq!(again.favorites, s.favorites);
+        assert_eq!(
+            std::fs::read_to_string(state_dir().join("state.toml.bak")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn unreadable_state_is_backed_up() {
+        let (_g, _d) = in_temp_dir();
+        std::fs::create_dir_all(state_dir()).unwrap();
+        std::fs::write(state_dir().join("state.toml.bak"), "old backup").unwrap();
+        std::fs::write(state_dir().join("state.toml"), "not = [toml").unwrap();
+        let (s, err) = AppState::load();
+        assert_eq!(s, AppState::default());
+        assert!(err.is_some());
+        assert_eq!(
+            std::fs::read_to_string(state_dir().join("state.toml.bak")).unwrap(),
+            "not = [toml"
+        );
     }
 }

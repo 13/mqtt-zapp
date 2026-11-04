@@ -384,6 +384,15 @@ impl Settings {
     pub fn load() -> Result<Self> {
         read_or_default("settings.toml")
     }
+
+    /// Never fails: a file that cannot be read or parsed gives the defaults
+    /// and the error text.
+    pub fn load_or_default() -> (Self, Option<String>) {
+        match Self::load() {
+            Ok(s) => (s, None),
+            Err(e) => (Self::default(), Some(format!("{e:#}"))),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -509,6 +518,21 @@ mod tests {
         let s = Settings::load().unwrap();
         assert_eq!(s.history_depth, 100);
         assert!(s.keys.is_empty());
+    }
+
+    #[test]
+    fn bad_settings_fall_back_to_defaults() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tempfile::tempdir().unwrap();
+        // SAFETY: env mutation is serialized by LOCK.
+        unsafe { std::env::set_var("MQTT_ZAPP_CONFIG_DIR", d.path()) };
+        std::fs::write(d.path().join("settings.toml"), "theme = \"pink\"").unwrap();
+        let (s, err) = Settings::load_or_default();
+        assert_eq!(s.theme, ThemeName::Dark);
+        assert!(err.is_some());
+        assert!(Settings::load().is_err());
+        std::fs::remove_file(d.path().join("settings.toml")).unwrap();
+        assert!(Settings::load_or_default().1.is_none());
     }
 
     #[test]

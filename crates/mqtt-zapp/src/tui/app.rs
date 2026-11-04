@@ -666,6 +666,33 @@ impl App {
         }
     }
 
+    /// Show what went wrong loading the state file (`backup`: where it was
+    /// copied to) and `settings.toml` (`settings_err`) as one error note.
+    pub fn set_startup_errors(
+        &mut self,
+        backup: Option<&std::path::Path>,
+        settings_err: Option<String>,
+        now: Instant,
+    ) {
+        let mut parts = Vec::new();
+        if let Some(p) = backup {
+            parts.push(format!(
+                "state file unreadable, backed up to {}",
+                mqtt_zapp_core::payload::sanitize(&p.display().to_string())
+            ));
+        }
+        if let Some(e) = settings_err {
+            let e = e.split_whitespace().collect::<Vec<_>>().join(" ");
+            parts.push(format!(
+                "settings.toml: {} (using defaults)",
+                mqtt_zapp_core::payload::sanitize(&e)
+            ));
+        }
+        if !parts.is_empty() {
+            self.set_note(Note::error(parts.join("; ")), now);
+        }
+    }
+
     pub fn set_note(&mut self, note: Note, now: Instant) {
         self.status_note = Some((note, now));
         self.dirty = true;

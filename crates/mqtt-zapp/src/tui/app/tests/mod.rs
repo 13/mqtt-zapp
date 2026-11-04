@@ -389,3 +389,30 @@ fn filter_on(a: &mut App, q: &str) {
         .unwrap();
     a.set_filter(f);
 }
+
+#[test]
+fn startup_notes_bad_settings() {
+    let mut a = app();
+    a.set_startup_errors(
+        Some(std::path::Path::new("/s/state.toml.bak")),
+        Some("expected a string\nline 2".into()),
+        Instant::now(),
+    );
+    let n = a.note_at(Instant::now()).unwrap();
+    assert!(n.error);
+    assert!(
+        n.text
+            .contains("state file unreadable, backed up to /s/state.toml.bak"),
+        "{}",
+        n.text
+    );
+    assert!(
+        n.text
+            .contains("settings.toml: expected a string line 2 (using defaults)"),
+        "{}",
+        n.text
+    );
+    let mut b = app();
+    b.set_startup_errors(None, None, Instant::now());
+    assert!(b.note_at(Instant::now()).is_none());
+}
