@@ -255,10 +255,10 @@ pub enum ConfirmAction {
 
 const STORE_BROKEN: &str = "profiles.toml has errors – fix it by hand first";
 
-/// Minimum gap between tick-driven live-filter rebuilds.
 /// Event-loop tick while something animates, and while nothing does.
 pub const FAST_TICK: Duration = Duration::from_millis(100);
 pub const IDLE_TICK: Duration = Duration::from_secs(1);
+/// Minimum gap between tick-driven live-filter rebuilds.
 const FILTER_REBUILD_EVERY: Duration = Duration::from_millis(500);
 
 /// A keystroke in the search bar rebuilds the filter this long after the last

@@ -1752,3 +1752,15 @@ fn history_change_rebuilds_body_at_once() {
     let _ = draw(&a);
     assert_eq!(a.body_cache.builds.get(), n + 3);
 }
+
+#[test]
+fn chart_disables_body_throttle() {
+    let big = json_of(100_000);
+    let mut a = app_with(&[&big]);
+    a.chart = Some(None);
+    let _ = draw(&a);
+    assert_eq!(a.body_cache.builds.get(), 1);
+    send(&mut a, T, &json_of(300_000), false);
+    let _ = draw(&a);
+    assert_eq!(a.body_cache.builds.get(), 2, "chart open: no throttle");
+}

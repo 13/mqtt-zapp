@@ -252,15 +252,16 @@ async fn event_loop(
     let mut sigterm = signal(SignalKind::terminate()).context("installing SIGTERM handler")?;
     let mut sighup = signal(SignalKind::hangup()).context("installing SIGHUP handler")?;
     loop {
-        let mut next_tick = last_tick + app.tick_interval(Instant::now());
-        if let Some(b) = boost {
-            next_tick = next_tick.min(b);
-        }
-        let wake = tokio::time::Instant::from_std(next_tick);
+        let wake = tokio::time::Instant::from_std(next_deadline(
+            last_tick,
+            app.tick_interval(Instant::now()),
+            boost,
+        ));
         tokio::select! {
             _ = sigterm.recv() => return Ok(()),
             _ = sighup.recv() => return Ok(()),
-            ev = input.next() => match boosted(&mut boost, ev) {
+            ev = input.next() => {
+                match ev {
                 Some(Ok(Event::Key(key))) => {
                     let effect = app.handle_key(key);
                     if let Effect::EditPayload(text) = effect {
@@ -284,10 +285,14 @@ async fn event_loop(
                 Some(Ok(_)) => {}
                 Some(Err(e)) => return Err(e).context("reading terminal input"),
                 None => return Ok(()),
-            },
+                }
+                // Input is drawn at once; only MQTT and notes coalesce.
+                draw_if_dirty(terminal, app)?;
+            }
             // Skipped while there is no connection, so an empty slot never blocks.
-            ev = recv(&mut session.rx), if session.rx.is_some() => match boosted(&mut boost, ev) {
+            ev = recv(&mut session.rx), if session.rx.is_some() => match ev {
                 Some(ev) => {
+                    boost = coalesce(boost, Instant::now());
                     app.apply_core_event(ev);
                     if let Some(rx) = session.rx.as_mut() {
                         for _ in 0..MAX_DRAIN {
@@ -300,27 +305,42 @@ async fn event_loop(
                 None => session.rx = None,
             },
             Some(note) = notes.recv() => {
-                boost = Some(Instant::now() + app::FAST_TICK);
+                boost = coalesce(boost, Instant::now());
                 app.set_background_note(note, Instant::now());
             }
             _ = tokio::time::sleep_until(wake) => {
                 last_tick = Instant::now();
                 boost = None;
                 app.on_tick();
-                if app.dirty {
-                    terminal.draw(|f| ui::render(f, app))?;
-                    app.dirty = false;
-                }
+                draw_if_dirty(terminal, app)?;
             }
         }
     }
 }
 
-/// Note that an event arrived: a redraw it asks for is due within one fast
-/// tick. Returns the event untouched.
-fn boosted<T>(boost: &mut Option<Instant>, ev: T) -> T {
-    *boost = Some(Instant::now() + app::FAST_TICK);
-    ev
+/// Note that a coalesced (MQTT or note) event arrived: its redraw is due
+/// within one fast tick. An earlier pending deadline is kept, so a steady
+/// stream of events never pushes the redraw later.
+fn coalesce(boost: Option<Instant>, now: Instant) -> Option<Instant> {
+    boost.or(Some(now + app::FAST_TICK))
+}
+
+/// When the loop must wake for the next tick.
+fn next_deadline(last_tick: Instant, interval: Duration, boost: Option<Instant>) -> Instant {
+    let due = last_tick + interval;
+    boost.map_or(due, |b| due.min(b))
+}
+
+/// Draw now if something asked for a redraw.
+fn draw_if_dirty<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+) -> Result<()> {
+    if app.dirty {
+        terminal.draw(|f| ui::render(f, app))?;
+        app.dirty = false;
+    }
+    Ok(())
 }
 
 async fn recv(rx: &mut Option<Receiver<CoreEvent>>) -> Option<CoreEvent> {
@@ -472,5 +492,63 @@ mod tests {
         assert_eq!(edit_text("x", "printf 'a\\nb\\n' >").unwrap(), "a\nb");
         // The initial text reaches the editor.
         assert_eq!(edit_text("keep", "true").unwrap(), "keep");
+    }
+}
+
+#[cfg(test)]
+mod loop_tests {
+    use super::*;
+    use crate::cli::Launch;
+    use mqtt_zapp_core::config::{ProfileStore, Settings};
+    use ratatui::backend::{Backend, TestBackend};
+
+    #[test]
+    fn boost_never_moves_later() {
+        let t0 = Instant::now();
+        let first = coalesce(None, t0);
+        assert_eq!(first, Some(t0 + app::FAST_TICK));
+        // A later event inside the window keeps the earlier deadline.
+        let t1 = t0 + Duration::from_millis(60);
+        assert_eq!(coalesce(first, t1), first);
+        // The wake is the earlier of the tick and the boost.
+        assert_eq!(
+            next_deadline(t0, app::IDLE_TICK, first),
+            t0 + app::FAST_TICK
+        );
+        assert_eq!(next_deadline(t0, app::IDLE_TICK, None), t0 + app::IDLE_TICK);
+        assert_eq!(
+            next_deadline(t0, app::FAST_TICK, Some(t0 + app::IDLE_TICK)),
+            t0 + app::FAST_TICK
+        );
+    }
+
+    #[test]
+    fn input_redraws_immediately() {
+        let mut app =
+            App::new(Launch::Picker, ProfileStore::default(), Settings::default()).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        app.dirty = true;
+        draw_if_dirty(&mut terminal, &mut app).unwrap();
+        assert!(!app.dirty, "drawn and cleared");
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .any(|c| c.symbol() != " "),
+            "something was drawn"
+        );
+        // Not dirty: no draw (the buffer is untouched).
+        terminal.backend_mut().clear().unwrap();
+        draw_if_dirty(&mut terminal, &mut app).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .all(|c| c.symbol() == " ")
+        );
     }
 }

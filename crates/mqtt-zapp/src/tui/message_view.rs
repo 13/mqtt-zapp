@@ -146,6 +146,8 @@ fn body(app: &App) -> Option<Built> {
             // of an earlier one for a moment. Same shape, so same topic.
             || (k.0 == shape
                 && shape.2.is_none()
+                // The chart and its clicks read the newest message.
+                && app.chart.is_none()
                 && s.msg.payload.len() > BODY_THROTTLE_BYTES
                 && built.elapsed() < BODY_MIN_INTERVAL))
     {
