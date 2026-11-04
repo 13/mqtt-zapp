@@ -551,3 +551,22 @@ fn background_note_does_not_redraw_while_frozen() {
     a.set_background_note(Note::info("cleared 3 retained"), now);
     assert!(a.dirty);
 }
+
+#[test]
+fn copy_refuses_huge_text() {
+    let mut a = browse(&[]);
+    a.apply_core_event(msg("x/y", &"a".repeat(COPY_MAX + 1)));
+    a.selected = a.tree.find("x/y");
+    assert!(matches!(a.handle_action(Action::CopyPayload), Effect::None));
+    assert_eq!(
+        a.note_at(Instant::now()),
+        Some(&Note::error("too large to copy (101 KiB), use w to save"))
+    );
+    // Exactly at the cap still copies.
+    a.apply_core_event(msg("x/z", &"a".repeat(COPY_MAX)));
+    a.selected = a.tree.find("x/z");
+    assert!(matches!(
+        a.handle_action(Action::CopyPayload),
+        Effect::Copy { .. }
+    ));
+}

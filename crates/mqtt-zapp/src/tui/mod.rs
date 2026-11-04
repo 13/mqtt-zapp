@@ -52,10 +52,17 @@ pub async fn run(launch: Launch, store: ProfileStore, store_error: Option<String
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
-    let (mut session, mut notes) = Session::new();
+    let (mut session, mut notes, mut passwords) = Session::new();
     let first = app.startup_effect();
     session.apply(first, &mut app);
-    let result = event_loop(&mut terminal, &mut app, &mut session, &mut notes).await;
+    let result = event_loop(
+        &mut terminal,
+        &mut app,
+        &mut session,
+        &mut notes,
+        &mut passwords,
+    )
+    .await;
     session.close().await;
     result
 }
@@ -66,17 +73,28 @@ struct Session {
     rx: Option<Receiver<CoreEvent>>,
     /// Publish outcomes, sent by the spawned publish tasks.
     notes_tx: UnboundedSender<Note>,
+    /// Keyring lookup results `(generation, result)` from blocking tasks.
+    password_tx: UnboundedSender<PasswordLoaded>,
 }
 
+/// `App::password_loaded`'s arguments, sent back by the lookup task.
+type PasswordLoaded = (u64, Result<Option<String>, String>);
+
 impl Session {
-    fn new() -> (Session, UnboundedReceiver<Note>) {
+    fn new() -> (
+        Session,
+        UnboundedReceiver<Note>,
+        UnboundedReceiver<PasswordLoaded>,
+    ) {
         let (notes_tx, notes_rx) = unbounded_channel();
+        let (password_tx, password_rx) = unbounded_channel();
         let session = Session {
             conn: None,
             rx: None,
             notes_tx,
+            password_tx,
         };
-        (session, notes_rx)
+        (session, notes_rx, password_rx)
     }
 }
 
@@ -106,6 +124,15 @@ impl Session {
                 None => app.set_note(Note::error("clear failed: not connected"), Instant::now()),
             },
             Effect::Copy { what, text } => {
+                // Defence in depth: producers already cap at COPY_MAX.
+                if text.len() > app::COPY_MAX {
+                    let note = format!(
+                        "too large to copy ({} KiB), use w to save",
+                        text.len().div_ceil(1024)
+                    );
+                    app.set_note(Note::error(note), Instant::now());
+                    return false;
+                }
                 // OSC 52: the terminal (or tmux/ssh in between) sets the clipboard.
                 let mut out = stdout();
                 let ok = write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()))
@@ -117,6 +144,20 @@ impl Session {
                     },
                     Instant::now(),
                 );
+            }
+            Effect::LoadPassword {
+                profile,
+                generation,
+                load,
+            } => {
+                // Secret Service can wait on an unlock prompt: never on the
+                // UI thread. The result re-enters through `password_loaded`.
+                let tx = self.password_tx.clone();
+                let name = profile.name;
+                tokio::task::spawn_blocking(move || {
+                    let r = load(&name).map_err(|e| format!("{e:#}"));
+                    let _ = tx.send((generation, r));
+                });
             }
             Effect::SaveProfile(edit) => {
                 let name = edit.profile.name.clone();
@@ -240,6 +281,7 @@ async fn event_loop(
     app: &mut App,
     session: &mut Session,
     notes: &mut UnboundedReceiver<Note>,
+    passwords: &mut UnboundedReceiver<PasswordLoaded>,
 ) -> Result<()> {
     let mut input = EventStream::new();
     // The next tick is due `tick_interval` after the last one; recomputed
@@ -248,7 +290,11 @@ async fn event_loop(
     // Set by every non-tick event: a redraw it asks for is due within one
     // fast tick, even when the idle tick is much slower.
     let mut boost: Option<Instant> = None;
-    // SIGTERM/SIGHUP end the loop normally, so the terminal guard restores it.
+    // These end the loop normally, so the terminal guard restores it. Raw
+    // mode normally turns ^C/^\ into keys, but a `kill -INT` or a signal
+    // from another process still arrives as a signal.
+    let mut sigint = signal(SignalKind::interrupt()).context("installing SIGINT handler")?;
+    let mut sigquit = signal(SignalKind::quit()).context("installing SIGQUIT handler")?;
     let mut sigterm = signal(SignalKind::terminate()).context("installing SIGTERM handler")?;
     let mut sighup = signal(SignalKind::hangup()).context("installing SIGHUP handler")?;
     loop {
@@ -258,6 +304,8 @@ async fn event_loop(
             boost,
         ));
         tokio::select! {
+            _ = sigint.recv() => return Ok(()),
+            _ = sigquit.recv() => return Ok(()),
             _ = sigterm.recv() => return Ok(()),
             _ = sighup.recv() => return Ok(()),
             ev = input.next() => {
@@ -307,6 +355,13 @@ async fn event_loop(
                     app.on_connection_ended();
                 }
             },
+            Some((generation, result)) = passwords.recv() => {
+                let effect = app.password_loaded(generation, result);
+                if session.apply(effect, app) {
+                    return Ok(());
+                }
+                draw_if_dirty(terminal, app)?;
+            }
             Some(note) = notes.recv() => {
                 boost = coalesce(boost, Instant::now());
                 app.set_background_note(note, Instant::now());

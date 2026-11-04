@@ -7,6 +7,7 @@ use mqtt_zapp_core::config::{
 };
 use mqtt_zapp_core::state::{AppState, PickerSort};
 use mqtt_zapp_core::{Bytes, Message};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 mod chart;

@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod actions;
@@ -71,6 +72,15 @@ pub enum Focus {
     History,
 }
 
+/// Largest text `Effect::Copy` will put on the clipboard (OSC 52 is one
+/// terminal write; terminals and multiplexers choke on big ones).
+pub const COPY_MAX: usize = 100 * 1024;
+
+/// Looks a password up by profile name. It may block (Secret Service), so
+/// it only ever runs on a blocking thread; injected so tests never touch
+/// the real keyring.
+pub type PasswordLoader = Arc<dyn Fn(&str) -> Result<Option<String>> + Send + Sync>;
+
 #[allow(clippy::large_enum_variant)] // short-lived, consumed right away
 pub enum Effect {
     None,
@@ -84,6 +94,13 @@ pub enum Effect {
         props: Option<Props>,
     },
     Connect(Profile, Option<String>),
+    /// Look the profile's password up on a blocking thread with `load`, then
+    /// report through `App::password_loaded` with the same `generation`.
+    LoadPassword {
+        profile: Profile,
+        generation: u64,
+        load: PasswordLoader,
+    },
     /// Open the publish payload in `$EDITOR`; the result comes back through
     /// `App::set_publish_payload`.
     EditPayload(String),
@@ -138,6 +155,11 @@ impl fmt::Debug for Effect {
                 };
                 write!(f, "Connect({}, {pw})", profile.name)
             }
+            Effect::LoadPassword {
+                profile,
+                generation,
+                ..
+            } => write!(f, "LoadPassword({}, gen {generation})", profile.name),
             Effect::SaveProfile(edit) => write!(f, "SaveProfile({edit:?})"),
             Effect::DeleteProfile(name) => write!(f, "DeleteProfile({name})"),
             Effect::SaveOrder(names) => write!(f, "SaveOrder({names:?})"),
@@ -269,6 +291,12 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
 const DEBOUNCE_MIN_NODES: usize = 20_000;
 
 pub struct App {
+    /// Bumped by every connect attempt; a password lookup for an older one
+    /// is stale.
+    connect_gen: u64,
+    /// The profile whose keyring lookup is in flight, with its generation.
+    pending_password: Option<(u64, Profile)>,
+    password_loader: PasswordLoader,
     pub tree: TopicTree,
     pub expanded: Expanded,
     pub selected: Option<NodeId>,
@@ -502,6 +530,9 @@ impl App {
             pending_connect,
             picker: PickerState::new(store.profiles, &Default::default()),
             password: None,
+            connect_gen: 0,
+            pending_password: None,
+            password_loader: Arc::new(load_password),
             server: None,
             connected: None,
             session_profile: None,
@@ -857,6 +888,16 @@ impl App {
                 .map(|m| String::from_utf8_lossy(&m.payload).into_owned())
         };
         match text {
+            Some(text) if text.len() > COPY_MAX => {
+                self.set_note(
+                    Note::error(format!(
+                        "too large to copy ({} KiB), use w to save",
+                        text.len().div_ceil(1024)
+                    )),
+                    Instant::now(),
+                );
+                Effect::None
+            }
             Some(text) => Effect::Copy {
                 what: if topic { "topic" } else { "payload" },
                 text: mqtt_zapp_core::payload::clipboard_safe(

@@ -9,26 +9,45 @@ impl App {
     /// or switch to `Mode::Password` (returning `Effect::None`) when the user
     /// has to type it.
     pub fn begin_connect(&mut self, p: Profile) -> Effect {
-        self.begin_connect_with(p, load_password)
-    }
-
-    /// `begin_connect` with the keyring lookup injected, so tests never
-    /// touch the real keyring.
-    pub(super) fn begin_connect_with(
-        &mut self,
-        p: Profile,
-        keyring: impl FnOnce(&str) -> Result<Option<String>>,
-    ) -> Effect {
+        self.connect_gen += 1;
+        self.pending_password = None;
         let password = match p.password {
             PasswordSource::None => None,
-            // A failed or empty lookup falls back to asking.
-            PasswordSource::Keyring => match keyring(&p.name) {
-                Ok(Some(pw)) => Some(pw),
-                Ok(None) | Err(_) => return self.ask_password(p),
-            },
+            // The lookup can block behind an unlock prompt: off-thread.
+            PasswordSource::Keyring => {
+                let generation = self.connect_gen;
+                self.pending_password = Some((generation, p.clone()));
+                self.set_note(Note::info("connecting…"), Instant::now());
+                self.dirty = true;
+                return Effect::LoadPassword {
+                    profile: p,
+                    generation,
+                    load: self.password_loader.clone(),
+                };
+            }
             PasswordSource::Prompt => return self.ask_password(p),
         };
         self.connect_effect(p, password)
+    }
+
+    /// The off-thread lookup for `generation` finished. A stale result
+    /// (another profile was picked meanwhile) is dropped; a failed or empty
+    /// lookup falls back to asking.
+    pub fn password_loaded(
+        &mut self,
+        generation: u64,
+        result: std::result::Result<Option<String>, String>,
+    ) -> Effect {
+        match self.pending_password.take() {
+            Some((g, p)) if g == generation => match result {
+                Ok(Some(pw)) => self.connect_effect(p, Some(pw)),
+                Ok(None) | Err(_) => self.ask_password(p),
+            },
+            other => {
+                self.pending_password = other;
+                Effect::None
+            }
+        }
     }
 
     fn ask_password(&mut self, profile: Profile) -> Effect {

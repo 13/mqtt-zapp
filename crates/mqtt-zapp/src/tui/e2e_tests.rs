@@ -110,7 +110,7 @@ async fn tui_against_mosquitto() {
         Settings::default(),
     )
     .unwrap();
-    let (mut session, mut notes) = Session::new();
+    let (mut session, mut notes, _passwords) = Session::new();
     let first = app.startup_effect();
     session.apply(first, &mut app);
 

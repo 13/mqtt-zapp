@@ -284,14 +284,24 @@ fn password_esc_returns_to_picker() {
     assert!(matches!(a.handle_key(key(KeyCode::Esc)), Effect::Quit));
 }
 
+fn keyring_app(loader: PasswordLoader) -> (App, u64) {
+    let mut a = picker_app(vec![profile("k", PasswordSource::Keyring)]);
+    a.password_loader = loader;
+    let e = a.begin_connect(profile("k", PasswordSource::Keyring));
+    let Effect::LoadPassword { generation, .. } = e else {
+        panic!("expected LoadPassword, got {e:?}");
+    };
+    (a, generation)
+}
+
 #[test]
 fn keyring_failure_falls_back_to_password_prompt() {
-    let lookup = |r: Result<Option<String>>| {
-        let mut a = picker_app(vec![]);
-        let e = a.begin_connect_with(profile("k", PasswordSource::Keyring), |_| r);
+    let lookup = |r: std::result::Result<Option<String>, String>| {
+        let (mut a, g) = keyring_app(Arc::new(|_| Ok(None)));
+        let e = a.password_loaded(g, r);
         (a.mode, e)
     };
-    let (mode, e) = lookup(Err(anyhow::anyhow!("no secret service")));
+    let (mode, e) = lookup(Err("no secret service".into()));
     assert_eq!(mode, Mode::Password);
     assert!(matches!(e, Effect::None));
     let (mode, e) = lookup(Ok(None));
@@ -300,6 +310,39 @@ fn keyring_failure_falls_back_to_password_prompt() {
     let (mode, e) = lookup(Ok(Some("pw".into())));
     assert_ne!(mode, Mode::Password);
     assert!(matches!(e, Effect::Connect(_, Some(pw)) if pw == "pw"));
+}
+
+#[test]
+fn keyring_lookup_does_not_block() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let called = Arc::new(AtomicBool::new(false));
+    let c = called.clone();
+    let slow: PasswordLoader = Arc::new(move |_| {
+        c.store(true, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_secs(5));
+        Ok(Some("pw".into()))
+    });
+    let mut a = picker_app(vec![profile("k", PasswordSource::Keyring)]);
+    a.password_loader = slow;
+    let start = Instant::now();
+    let e = a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!(!called.load(Ordering::SeqCst), "lookup ran inline");
+    assert!(matches!(e, Effect::LoadPassword { .. }), "got {e:?}");
+    assert_eq!(a.note_at(Instant::now()), Some(&Note::info("connecting…")));
+}
+
+#[test]
+fn stale_password_result_is_ignored() {
+    let (mut a, g1) = keyring_app(Arc::new(|_| Ok(None)));
+    // The user picks another profile before the lookup returns.
+    let e = a.begin_connect(profile("p", PasswordSource::Prompt));
+    assert!(matches!(e, Effect::None));
+    assert_eq!(a.mode, Mode::Password);
+    let e = a.password_loaded(g1, Ok(Some("late".into())));
+    assert!(matches!(e, Effect::None));
+    assert_eq!(a.mode, Mode::Password);
+    assert_eq!(a.password.as_ref().unwrap().profile.name, "p");
 }
 
 #[test]
