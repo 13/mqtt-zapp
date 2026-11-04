@@ -90,6 +90,8 @@ pub struct TopicTree {
     entries: usize,
     /// Cap on topic levels, see `with_limits`.
     max_topics: usize,
+    /// Topic levels in the tree now (nodes below the root, not removed).
+    live: usize,
     /// Messages refused because their topic would exceed `max_topics`.
     dropped_topics: u64,
     /// Bumped whenever a node is created or removed; see `shape_gen`.
@@ -108,13 +110,14 @@ impl TopicTree {
     /// payload across all histories (each topic always keeps its latest).
     ///
     /// `max_topics` caps the nodes below the root: every topic level counts
-    /// (`a/b` is two), whether or not it holds a message, and so does a
-    /// removed one, whose slot stays allocated (ids are never reused).
+    /// (`a/b` is two), whether or not it holds a message. A removed one
+    /// frees its slot for the cap (ids are never reused, the tombstone stays).
     /// A message whose topic needs more levels than are left is refused.
     pub fn with_limits(history_depth: usize, max_bytes: usize, max_topics: usize) -> Self {
         Self {
             nodes: vec![TopicNode::new(String::new(), None)],
-            history_depth,
+            // At least 1, or the latest message would sit outside the byte cap.
+            history_depth: history_depth.max(1),
             max_bytes,
             bytes: 0,
             order: VecDeque::new(),
@@ -122,6 +125,7 @@ impl TopicTree {
             next_seq: 0,
             entries: 0,
             max_topics,
+            live: 0,
             dropped_topics: 0,
             shape_gen: 0,
         }
@@ -240,11 +244,12 @@ impl TopicTree {
         }
         let missing = topic.split('/').count() - found;
         if missing > 0 {
-            if (self.nodes.len() - 1).saturating_add(missing) > self.max_topics {
+            if self.live.saturating_add(missing) > self.max_topics {
                 self.dropped_topics += 1;
                 return None;
             }
             self.shape_gen += 1;
+            self.live += missing;
             for level in topic.split('/').skip(found) {
                 let id = self.nodes.len();
                 self.nodes.push(TopicNode::new(level.to_owned(), Some(cur)));
@@ -329,6 +334,11 @@ impl TopicTree {
             node.msg_count = 0;
             node.topic_count = 0;
             node.removed = true;
+            if n != id {
+                node.name = String::new();
+                node.sort_key = natural_key("");
+            }
+            self.live -= 1;
         }
         let mut cur = Some(parent);
         while let Some(a) = cur {
@@ -342,10 +352,13 @@ impl TopicTree {
         loop {
             let name = self.nodes[child].name.clone();
             self.nodes[up].children.remove(&name);
+            self.nodes[child].name = String::new();
+            self.nodes[child].sort_key = natural_key("");
             let p = &self.nodes[up];
             match p.parent {
                 Some(next) if p.latest.is_none() && p.children.is_empty() => {
                     self.nodes[up].removed = true;
+                    self.live -= 1;
                     (child, up) = (up, next);
                 }
                 _ => break,
@@ -778,6 +791,47 @@ mod tests {
             t.insert("x", m("a"));
         }
         assert!(t.history_bytes() >= 10_000 * 160, "{}", t.history_bytes());
+    }
+
+    #[test]
+    fn churn_does_not_exhaust_max_topics() {
+        let mut t = TopicTree::with_limits(10, usize::MAX, 50);
+        for i in 0..200 {
+            let id = t.insert(&format!("churn{i}"), m("x"));
+            assert!(id.is_some(), "cycle {i} refused");
+            t.remove(id.unwrap());
+        }
+        assert_eq!(t.dropped_topics(), 0);
+    }
+
+    #[test]
+    fn removed_node_frees_history() {
+        let mut t = TopicTree::new(10);
+        let id = t.insert("a/b", m("payload")).unwrap();
+        t.insert("a/b", m("again"));
+        t.remove(id);
+        assert_eq!(t.history_bytes(), 0);
+        let n = &t.nodes[id];
+        assert!(n.history.is_empty() && n.history_seq.is_empty() && n.latest.is_none());
+        assert!(n.children.is_empty());
+        assert_eq!(n.name.capacity(), 0);
+    }
+
+    #[test]
+    fn history_depth_zero_still_bounded() {
+        let cap = 1 << 20;
+        let mut t = TopicTree::with_limits(0, cap, usize::MAX);
+        let big = "x".repeat(100 * 1024);
+        for i in 0..100 {
+            t.insert(&format!("t{i}"), m(&big));
+        }
+        assert!(
+            t.history_bytes() <= cap + 100 * (STUB_KEEP + ENTRY_OVERHEAD),
+            "{}",
+            t.history_bytes()
+        );
+        // The latest messages are accounted, not hidden by the empty history.
+        assert!(t.history_bytes() > 0);
     }
 
     #[test]

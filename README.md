@@ -274,7 +274,7 @@ to place it separately.
 <summary><b>settings.toml</b></summary>
 
 ```toml
-history_depth = 200      # messages kept per topic (default 100)
+history_depth = 200      # messages kept per topic (default 100; minimum 1, 0 acts as 1)
 max_history_mb = 256     # memory for all stored messages (payload, properties and
                          # ~160 B bookkeeping each); past it the oldest topics
                          # keep only a 256-byte stub of their latest (default 256)
