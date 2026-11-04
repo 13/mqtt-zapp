@@ -36,7 +36,6 @@ use std::time::{Duration, Instant};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-const TICK: Duration = Duration::from_millis(100);
 /// Most core events applied per loop iteration, so input stays responsive
 /// during a retained-message burst.
 const MAX_DRAIN: usize = 2000;
@@ -243,16 +242,25 @@ async fn event_loop(
     notes: &mut UnboundedReceiver<Note>,
 ) -> Result<()> {
     let mut input = EventStream::new();
-    let mut tick = tokio::time::interval(TICK);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The next tick is due `tick_interval` after the last one; recomputed
+    // every iteration, so an event that starts an animation shortens the wait.
+    let mut last_tick = Instant::now();
+    // Set by every non-tick event: a redraw it asks for is due within one
+    // fast tick, even when the idle tick is much slower.
+    let mut boost: Option<Instant> = None;
     // SIGTERM/SIGHUP end the loop normally, so the terminal guard restores it.
     let mut sigterm = signal(SignalKind::terminate()).context("installing SIGTERM handler")?;
     let mut sighup = signal(SignalKind::hangup()).context("installing SIGHUP handler")?;
     loop {
+        let mut next_tick = last_tick + app.tick_interval(Instant::now());
+        if let Some(b) = boost {
+            next_tick = next_tick.min(b);
+        }
+        let wake = tokio::time::Instant::from_std(next_tick);
         tokio::select! {
             _ = sigterm.recv() => return Ok(()),
             _ = sighup.recv() => return Ok(()),
-            ev = input.next() => match ev {
+            ev = input.next() => match boosted(&mut boost, ev) {
                 Some(Ok(Event::Key(key))) => {
                     let effect = app.handle_key(key);
                     if let Effect::EditPayload(text) = effect {
@@ -278,7 +286,7 @@ async fn event_loop(
                 None => return Ok(()),
             },
             // Skipped while there is no connection, so an empty slot never blocks.
-            ev = recv(&mut session.rx), if session.rx.is_some() => match ev {
+            ev = recv(&mut session.rx), if session.rx.is_some() => match boosted(&mut boost, ev) {
                 Some(ev) => {
                     app.apply_core_event(ev);
                     if let Some(rx) = session.rx.as_mut() {
@@ -291,8 +299,13 @@ async fn event_loop(
                 // The connection task ended.
                 None => session.rx = None,
             },
-            Some(note) = notes.recv() => app.set_background_note(note, Instant::now()),
-            _ = tick.tick() => {
+            Some(note) = notes.recv() => {
+                boost = Some(Instant::now() + app::FAST_TICK);
+                app.set_background_note(note, Instant::now());
+            }
+            _ = tokio::time::sleep_until(wake) => {
+                last_tick = Instant::now();
+                boost = None;
                 app.on_tick();
                 if app.dirty {
                     terminal.draw(|f| ui::render(f, app))?;
@@ -301,6 +314,13 @@ async fn event_loop(
             }
         }
     }
+}
+
+/// Note that an event arrived: a redraw it asks for is due within one fast
+/// tick. Returns the event untouched.
+fn boosted<T>(boost: &mut Option<Instant>, ev: T) -> T {
+    *boost = Some(Instant::now() + app::FAST_TICK);
+    ev
 }
 
 async fn recv(rx: &mut Option<Receiver<CoreEvent>>) -> Option<CoreEvent> {

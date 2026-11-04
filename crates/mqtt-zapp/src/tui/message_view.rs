@@ -17,19 +17,29 @@ use ratatui::widgets::{Block, BorderType, Paragraph};
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Payloads above this are not diffed (the diff is quadratic-ish in lines).
 const MAX_DIFF_BYTES: usize = 256 * 1024;
 
+/// A payload above this size is rebuilt at most this often while its topic
+/// keeps receiving messages (the header still shows the newest one).
+pub const BODY_MIN_INTERVAL: Duration = Duration::from_millis(250);
+/// Payloads above this are subject to `BODY_MIN_INTERVAL`.
+const BODY_THROTTLE_BYTES: usize = 64 * 1024;
 const HINT: &str = "select a topic with a message";
 const HISTORY_ROWS: usize = 6;
 /// Payloads above this are shown as plain text, never parsed as JSON.
 const PRETTY_MAX: usize = 1 << 20;
 
 type Stamp = (SystemTime, usize);
-type CacheKey = (usize, Stamp, Option<Stamp>, bool);
+/// What a body is built from: the shown messages, and the `Shape` of the view.
+type CacheKey = (Shape, Stamp, Option<Stamp>);
+/// Everything in the key except the messages: the topic, the diff toggle, the
+/// history selection and the marked diff base. A change of any of these
+/// rebuilds at once; only a new message on an unchanged shape may be throttled.
+type Shape = (usize, bool, Option<usize>, Option<Stamp>);
 /// The built payload area plus the shown message's kind label (`JSON`, ...).
 type Built = (Rc<Body>, &'static str);
 
@@ -37,12 +47,19 @@ type Built = (Rc<Body>, &'static str);
 /// toggle change, so a frame costs nothing for big payloads.
 #[derive(Default)]
 pub struct BodyCache {
-    slot: RefCell<Option<(CacheKey, Built)>>,
+    slot: RefCell<Option<(CacheKey, Built, Instant)>>,
     #[cfg(test)]
     builds: std::cell::Cell<u32>,
 }
 
 impl BodyCache {
+    #[cfg(test)]
+    pub fn age(&self, by: Duration) {
+        if let Some((_, _, at)) = self.slot.borrow_mut().as_mut() {
+            *at = at.checked_sub(by).unwrap();
+        }
+    }
+
     pub fn clear(&self) {
         *self.slot.borrow_mut() = None;
     }
@@ -121,14 +138,16 @@ pub fn shown_message(app: &App) -> Option<&Message> {
 fn body(app: &App) -> Option<Built> {
     let s = shown(app)?;
     let stamp = |m: &Message| (m.received_at, m.payload.len());
-    let key = (
-        app.selected?,
-        stamp(s.msg),
-        s.prev.map(stamp),
-        app.show_diff,
-    );
-    if let Some((k, (b, kind))) = &*app.body_cache.slot.borrow()
-        && *k == key
+    let shape: Shape = (app.selected?, app.show_diff, app.history_sel, app.diff_base);
+    let key = (shape, stamp(s.msg), s.prev.map(stamp));
+    if let Some((k, (b, kind), built)) = &*app.body_cache.slot.borrow()
+        && (*k == key
+            // Following the newest message of a busy topic: keep the body
+            // of an earlier one for a moment. Same shape, so same topic.
+            || (k.0 == shape
+                && shape.2.is_none()
+                && s.msg.payload.len() > BODY_THROTTLE_BYTES
+                && built.elapsed() < BODY_MIN_INTERVAL))
     {
         return Some((Rc::clone(b), kind));
     }
@@ -148,7 +167,7 @@ fn body(app: &App) -> Option<Built> {
         PayloadKind::Binary => "BINARY",
     };
     let b = Rc::new(build_body(&s, kind, app.show_diff));
-    *app.body_cache.slot.borrow_mut() = Some((key, (Rc::clone(&b), label)));
+    *app.body_cache.slot.borrow_mut() = Some((key, (Rc::clone(&b), label), Instant::now()));
     Some((b, label))
 }
 

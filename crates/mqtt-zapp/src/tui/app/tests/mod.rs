@@ -416,3 +416,39 @@ fn startup_notes_bad_settings() {
     b.set_startup_errors(None, None, Instant::now());
     assert!(b.note_at(Instant::now()).is_none());
 }
+
+#[test]
+fn idle_tick_is_slow() {
+    let mut a = app();
+    let now = Instant::now();
+    assert_eq!(a.tick_interval(now), Duration::from_secs(1));
+    // Each animating state asks for the fast tick.
+    a.set_note(Note::info("hi"), now);
+    assert_eq!(a.tick_interval(now), Duration::from_millis(100));
+    // An expired note no longer animates.
+    assert_eq!(
+        a.tick_interval(now + NOTE_TTL + Duration::from_secs(1)),
+        Duration::from_secs(1)
+    );
+    a.status_note = None;
+    a.filter_due = Some(now);
+    assert_eq!(a.tick_interval(now), Duration::from_millis(100));
+    a.filter_due = None;
+    a.await_reply = Some(("r".into(), now));
+    assert_eq!(a.tick_interval(now), Duration::from_millis(100));
+    a.await_reply = None;
+    a.conn_state = ConnState::Connecting;
+    assert_eq!(a.tick_interval(now), Duration::from_millis(100));
+    a.conn_state = ConnState::Disconnected {
+        reason: "x".into(),
+        retry_in_ms: 2000,
+    };
+    assert_eq!(a.tick_interval(now), Duration::from_millis(100));
+    a.conn_state = ConnState::Connected;
+    assert_eq!(a.tick_interval(now), Duration::from_secs(1));
+    // A flash and a live message rate.
+    a.apply_core_event(msg("a/b", "1"));
+    assert_eq!(a.tick_interval(Instant::now()), Duration::from_millis(100));
+    let later = Instant::now() + Duration::from_secs(60);
+    assert_eq!(a.tick_interval(later), Duration::from_secs(1));
+}

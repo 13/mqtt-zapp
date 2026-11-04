@@ -38,7 +38,7 @@ async fn pump_until(
     secs: u64,
 ) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
-    let mut tick = tokio::time::interval(TICK);
+    let mut tick = tokio::time::interval(app::FAST_TICK);
     while !pred(app) {
         assert!(
             tokio::time::Instant::now() < deadline,

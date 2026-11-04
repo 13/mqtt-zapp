@@ -1691,3 +1691,64 @@ fn overlay_title_names_coloured() {
     assert_eq!(b[(x + 2, y)].fg, theme::MUTED);
     assert_eq!(b[(x + 4, y)].fg, SERIES_COLORS[1]);
 }
+
+fn json_of(n: usize) -> Vec<u8> {
+    let mut p = b"[".to_vec();
+    p.extend(b"1,".repeat(n / 2));
+    p.extend_from_slice(b"1]");
+    p
+}
+
+#[test]
+fn hot_big_topic_body_rebuild_is_throttled() {
+    let big = json_of(100_000);
+    let mut a = app_with(&[&big]);
+    let first = draw(&a);
+    assert_eq!(a.body_cache.builds.get(), 1);
+    // Newer messages within BODY_MIN_INTERVAL keep the cached body ...
+    send(&mut a, T, &json_of(300_000), false);
+    let b = draw(&a);
+    assert_eq!(a.body_cache.builds.get(), 1, "throttled");
+    // ... but the header follows the newest message.
+    assert_ne!(lines(&b)[..3], lines(&first)[..3], "header is current");
+    // After the interval it rebuilds.
+    a.body_cache
+        .age(BODY_MIN_INTERVAL + std::time::Duration::from_millis(1));
+    let _ = draw(&a);
+    assert_eq!(a.body_cache.builds.get(), 2);
+    // Small payloads are never throttled.
+    send(&mut a, T, b"small", false);
+    let _ = draw(&a);
+    assert_eq!(a.body_cache.builds.get(), 3);
+}
+
+#[test]
+fn throttled_body_never_belongs_to_another_topic() {
+    let big = json_of(100_000);
+    let mut a = app_with(&[&big]);
+    let _ = draw(&a);
+    send(&mut a, "other", &big, false);
+    a.selected = a.tree.find("other");
+    let _ = draw(&a);
+    assert_eq!(a.body_cache.builds.get(), 2);
+}
+
+#[test]
+fn history_change_rebuilds_body_at_once() {
+    let big = json_of(100_000);
+    let mut a = app_with(&[&big]);
+    let mut bigger = big.clone();
+    bigger.extend_from_slice(b" ");
+    send(&mut a, T, &bigger, false);
+    let _ = draw(&a);
+    let n = a.body_cache.builds.get();
+    a.history_sel = Some(0);
+    let _ = draw(&a);
+    assert_eq!(a.body_cache.builds.get(), n + 1);
+    a.show_diff = true;
+    let _ = draw(&a);
+    assert_eq!(a.body_cache.builds.get(), n + 2);
+    a.on_resize();
+    let _ = draw(&a);
+    assert_eq!(a.body_cache.builds.get(), n + 3);
+}

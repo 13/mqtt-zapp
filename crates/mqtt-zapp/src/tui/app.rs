@@ -256,6 +256,9 @@ pub enum ConfirmAction {
 const STORE_BROKEN: &str = "profiles.toml has errors – fix it by hand first";
 
 /// Minimum gap between tick-driven live-filter rebuilds.
+/// Event-loop tick while something animates, and while nothing does.
+pub const FAST_TICK: Duration = Duration::from_millis(100);
+pub const IDLE_TICK: Duration = Duration::from_secs(1);
 const FILTER_REBUILD_EVERY: Duration = Duration::from_millis(500);
 
 /// A keystroke in the search bar rebuilds the filter this long after the last
@@ -625,7 +628,7 @@ impl App {
         self.dirty = true;
     }
 
-    /// Called every UI tick (100 ms): refresh the live filter so new messages
+    /// Called every UI tick (`tick_interval`): refresh the live filter so new messages
     /// show up in it, and keep redrawing while something is flashing. While
     /// frozen nothing here asks for a redraw; input and resizes still do.
     pub fn on_tick(&mut self) {
@@ -686,8 +689,30 @@ impl App {
         }
     }
 
+    /// How long the event loop may sleep before the next `on_tick`: fast
+    /// while something animates, slow when idle. Input and MQTT events wake
+    /// the loop regardless.
+    pub fn tick_interval(&self, now: Instant) -> Duration {
+        let reconnecting = matches!(
+            self.conn_state,
+            ConnState::Connecting
+                | ConnState::Disconnected {
+                    retry_in_ms: 1..,
+                    ..
+                }
+        );
+        let animating = self.filter_due.is_some()
+            || self.await_reply.is_some()
+            || self.note_at(now).is_some()
+            || self.is_flashing(TopicTree::ROOT, now)
+            || self.msg_rate.per_sec(now) > 0.0
+            || reconnecting;
+        if animating { FAST_TICK } else { IDLE_TICK }
+    }
+
     /// The terminal changed size: always redraw, frozen or not.
     pub fn on_resize(&mut self) {
+        self.body_cache.clear();
         self.dirty = true;
     }
 
