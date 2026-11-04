@@ -10,7 +10,8 @@ impl App {
         let ctrl_c =
             key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
         let guarded_esc = key.code == KeyCode::Esc && self.mode == Mode::ProfileForm;
-        if !ctrl_c && !guarded_esc {
+        let quit_key = self.mode == Mode::Browse && self.keymap.lookup(key) == Some(Action::Quit);
+        if !ctrl_c && !guarded_esc && !quit_key {
             self.armed = None;
         }
         if ctrl_c {
@@ -60,10 +61,10 @@ impl App {
     }
 
     /// Whether quitting now would throw away typed work: a filled publish
-    /// form or an edited profile form.
-    fn holds_work(&self) -> bool {
+    /// form (focused, or docked beside the panes) or an edited profile form.
+    pub(super) fn holds_work(&self) -> bool {
         match self.mode {
-            Mode::Publish => self.publish.as_ref().is_some_and(|f| !f.is_blank()),
+            Mode::Publish | Mode::Browse => self.publish.as_ref().is_some_and(|f| !f.is_blank()),
             Mode::ProfileForm => self.profile_form.as_ref().is_some_and(|f| f.is_modified()),
             _ => false,
         }

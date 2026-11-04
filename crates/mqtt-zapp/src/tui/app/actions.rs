@@ -7,6 +7,13 @@ impl App {
     pub fn handle_action(&mut self, action: Action) -> Effect {
         self.dirty = true;
         match action {
+            Action::Quit if self.holds_work() && !self.take_armed(Armed::Quit) => {
+                let note = format!(
+                    "{} again to quit",
+                    crate::tui::ui::key_for(self, Action::Quit)
+                );
+                return self.arm(Armed::Quit, &note);
+            }
             Action::Quit => return Effect::Quit,
             // The list is newest first: down the screen is older.
             Action::Up if self.focus == Focus::History => self.history_newer(),

@@ -542,3 +542,28 @@ fn ctrl_p_with_nothing_sent_says_so() {
     a.handle_key(ctrl_key('p'));
     assert_eq!(note_text(&a), "nothing sent to t yet");
 }
+
+#[test]
+fn quitting_beside_a_filled_docked_form_asks_first() {
+    let mut a = browse(&["t"]);
+    a.selected = a.tree.find("t");
+    a.handle_action(Action::Publish);
+    a.handle_key(key(KeyCode::Tab));
+    type_str(&mut a, "x");
+    a.handle_key(ctrl_key('o'));
+    assert_eq!(a.mode, Mode::Browse, "left the form, it stays docked");
+    assert!(matches!(a.handle_key(ctrl_key('c')), Effect::None));
+    assert_eq!(note_text(&a), "ctrl-c again to quit");
+    assert!(matches!(a.handle_key(ctrl_key('c')), Effect::Quit));
+    // The quit key asks the same way.
+    a.armed = None;
+    assert!(matches!(
+        a.handle_key(key(KeyCode::Char('q'))),
+        Effect::None
+    ));
+    assert_eq!(note_text(&a), "q again to quit");
+    assert!(matches!(
+        a.handle_key(key(KeyCode::Char('q'))),
+        Effect::Quit
+    ));
+}
