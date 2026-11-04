@@ -49,6 +49,16 @@ impl App {
         }
     }
 
+    /// Open the help overlay over `from` (browse or the picker), which it
+    /// returns to when closed.
+    pub(super) fn open_help(&mut self, from: Mode) {
+        self.help_query.clear();
+        self.help_scroll = 0;
+        self.help_return = from;
+        self.mode = Mode::Help;
+        self.dirty = true;
+    }
+
     /// Whether quitting now would throw away typed work: a filled publish
     /// form or an edited profile form.
     fn holds_work(&self) -> bool {
@@ -119,8 +129,8 @@ impl App {
     fn on_help_key(&mut self, key: KeyEvent) {
         self.dirty = true;
         match key.code {
-            KeyCode::Enter => self.mode = Mode::Browse,
-            KeyCode::Esc if self.help_query.is_empty() => self.mode = Mode::Browse,
+            KeyCode::Enter => self.mode = self.help_return,
+            KeyCode::Esc if self.help_query.is_empty() => self.mode = self.help_return,
             KeyCode::Esc => {
                 self.help_query.clear();
                 self.help_scroll = 0;
@@ -139,7 +149,7 @@ impl App {
                     _ => (at + page).min(max),
                 };
             }
-            KeyCode::Char('?') if self.help_query.is_empty() => self.mode = Mode::Browse,
+            KeyCode::Char('?') if self.help_query.is_empty() => self.mode = self.help_return,
             KeyCode::Char(c)
                 if !key
                     .modifiers

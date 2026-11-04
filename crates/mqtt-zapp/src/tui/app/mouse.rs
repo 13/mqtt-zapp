@@ -54,13 +54,21 @@ impl App {
         let left_click = ev.kind == MouseEventKind::Down(MouseButton::Left);
         let right_click = ev.kind == MouseEventKind::Down(MouseButton::Right);
         match self.mode {
-            Mode::Help | Mode::Stats if matches!(ev.kind, MouseEventKind::Down(_)) => {
+            Mode::Help if matches!(ev.kind, MouseEventKind::Down(_)) => {
+                self.mode = self.help_return;
+                self.dirty = true;
+            }
+            Mode::Stats if matches!(ev.kind, MouseEventKind::Down(_)) => {
                 self.mode = Mode::Browse;
                 self.dirty = true;
             }
             Mode::Picker if left_click => return self.picker_click(at, hit),
             Mode::Picker if wheel.is_some() => {
                 self.dirty = true;
+                // Moving off a profile drops its lookup, as with j/k.
+                if self.pending_password.is_some() {
+                    self.cancel_lookup();
+                }
                 if wheel == Some(true) {
                     self.picker.down();
                 } else {
@@ -102,6 +110,10 @@ impl App {
         self.dirty = true;
         if idx == self.picker.sel {
             return self.on_picker_action(Action::Select);
+        }
+        // Moving off a profile drops its lookup, as with j/k.
+        if self.pending_password.is_some() {
+            self.cancel_lookup();
         }
         self.picker.sel = idx;
         Effect::None

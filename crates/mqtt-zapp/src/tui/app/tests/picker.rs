@@ -725,3 +725,52 @@ fn esc_on_an_edited_profile_form_asks_first() {
     a.handle_key(key(KeyCode::Esc));
     assert_eq!(a.mode, Mode::Picker);
 }
+
+#[test]
+fn stale_lookup_in_picker_clears_pending() {
+    let k = profile("k", PasswordSource::Keyring);
+    let store = ProfileStore {
+        profiles: vec![k.clone()],
+    };
+    let mut a = App::new(Launch::Connect(k), store, Settings::default()).unwrap();
+    let Effect::LoadPassword { generation, .. } = a.startup_effect() else {
+        panic!("expected a lookup");
+    };
+    a.handle_action(Action::Brokers);
+    assert_eq!(a.mode, Mode::Picker);
+    // The startup lookup ends while the picker is open: dropped, and forgotten.
+    let e = a.password_loaded(generation, Ok(Some("pw".into())));
+    assert!(matches!(e, Effect::None), "{e:?}");
+    assert!(a.pending_password.is_none());
+    assert!(!a.picker.waiting_keyring);
+    // So enter on that profile starts a fresh lookup instead of doing nothing.
+    let e = a.handle_key(key(KeyCode::Enter));
+    assert!(matches!(e, Effect::LoadPassword { .. }), "{e:?}");
+}
+
+#[test]
+fn click_on_another_profile_cancels_lookup() {
+    let (mut a, _) = pending_two();
+    a.hit.set(HitAreas {
+        picker: ratatui::layout::Rect::new(0, 0, 40, 10),
+        ..HitAreas::default()
+    });
+    // Card inner starts at y 1; its first profile row is y 2, the second y 3.
+    a.handle_mouse(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: 5,
+        row: 3,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(a.picker.selected().unwrap().name, "o");
+    assert!(a.pending_password.is_none(), "lookup for k cancelled");
+}
+
+#[test]
+fn question_mark_opens_help_from_picker_and_returns() {
+    let mut a = picker_app(vec![profile("a", PasswordSource::None)]);
+    press(&mut a, '?');
+    assert_eq!(a.mode, Mode::Help);
+    a.handle_key(key(KeyCode::Esc));
+    assert_eq!(a.mode, Mode::Picker);
+}

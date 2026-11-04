@@ -66,11 +66,7 @@ impl App {
                 }
             }
             Action::Publish => self.open_publish(),
-            Action::Help => {
-                self.help_query.clear();
-                self.help_scroll = 0;
-                self.mode = Mode::Help;
-            }
+            Action::Help => self.open_help(Mode::Browse),
             Action::CycleSort => {
                 self.sort = self.sort.next();
                 self.set_note(

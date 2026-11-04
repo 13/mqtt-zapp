@@ -547,3 +547,19 @@ fn inactive_form_error_has_no_thick_border() {
     let row = s.lines().find(|l| l.contains(" publish ")).unwrap();
     assert!(row.contains('╭') && !row.contains('┏'), "{row}");
 }
+
+#[test]
+fn help_draws_over_the_picker() {
+    use mqtt_zapp_core::config::PasswordSource::None as N;
+    let mut a = picker_app(vec![profile("home", N)]);
+    a.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('?'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let s = text(&draw(&mut a, 100, 30));
+    assert!(s.contains("picker"), "the help's picker column: {s}");
+    assert!(
+        !s.contains("waiting for messages"),
+        "not the browse screen: {s}"
+    );
+}

@@ -418,6 +418,8 @@ pub struct App {
     /// A form closed with esc while it held a payload or properties; the
     /// next form opened on its topic starts from it.
     pub(super) publish_draft: Option<PublishForm>,
+    /// The mode the help overlay goes back to: browse or the picker.
+    pub help_return: Mode,
     /// A first ctrl-c or esc that would throw work away, and when.
     armed: Option<(Armed, Instant)>,
     /// A transient footer message (publish result) and when it was set.
@@ -586,6 +588,7 @@ impl App {
             sent_walk: None,
             publish_draft: None,
             armed: None,
+            help_return: Mode::Browse,
             await_reply: None,
             created: Instant::now(),
             rows_cache: RefCell::new(None),

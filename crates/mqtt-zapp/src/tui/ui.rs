@@ -41,6 +41,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     match app.mode {
         Mode::Picker | Mode::Password | Mode::ProfileForm => render_front(f, app, area),
+        Mode::Help if app.help_return == Mode::Picker => {
+            render_front(f, app, area);
+            let [main, _] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+            render_help(f, main, app);
+        }
         Mode::Confirm if on_front(app) => render_front(f, app, area),
         _ => render_browse(f, app, area),
     }

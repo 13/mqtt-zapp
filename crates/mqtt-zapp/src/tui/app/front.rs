@@ -34,7 +34,7 @@ impl App {
     }
 
     /// Forget any lookup in flight: its late answer is stale.
-    fn cancel_lookup(&mut self) {
+    pub(super) fn cancel_lookup(&mut self) {
         self.connect_gen += 1;
         self.pending_password = None;
         self.picker.waiting_keyring = false;
@@ -62,6 +62,15 @@ impl App {
                 }
         });
         if !current {
+            // This attempt's answer, but the user moved on: forget the
+            // lookup, or enter on that profile would wait for it forever.
+            if self
+                .pending_password
+                .as_ref()
+                .is_some_and(|(g, _, _)| *g == generation)
+            {
+                self.cancel_lookup();
+            }
             return Effect::None;
         }
         self.picker.waiting_keyring = false;
@@ -190,6 +199,7 @@ impl App {
             }
             Action::Up => self.picker.up(),
             Action::Down => self.picker.down(),
+            Action::Help => self.open_help(Mode::Picker),
             Action::CycleSort => {
                 self.picker.cycle_sort();
                 return Effect::SaveState(self.app_state());
