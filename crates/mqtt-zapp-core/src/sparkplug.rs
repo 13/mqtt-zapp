@@ -147,8 +147,8 @@ impl NodeAliases {
 /// that only carries an alias is shown under its name.
 ///
 /// Bounded by `MAX_ALIASES` entries and `MAX_ALIAS_BYTES` bytes. A BIRTH
-/// that would go past either records nothing and keeps the previous names;
-/// this is silent. Names and topic segments over `MAX_ALIAS_NAME` bytes are
+/// that would go past either records nothing and forgets that node's (or
+/// device's) previous names, which fall back to `alias:N`; this is silent. Names and topic segments over `MAX_ALIAS_NAME` bytes are
 /// not recorded.
 #[derive(Default)]
 pub struct Aliases {
@@ -224,45 +224,39 @@ impl Aliases {
             .and_then(|g| g.remove(edge))
             .unwrap_or_default();
         let (e0, b0) = entry.usage(key_bytes);
-        // Swap the new names in, keeping what they replace for a rollback.
-        let old_node;
-        let mut old_devices = HashMap::new();
-        let mut old_device = None;
         match device {
             None => {
-                old_node = Some(std::mem::replace(&mut entry.node, new));
-                old_devices = std::mem::take(&mut entry.devices);
+                entry.node = new;
+                entry.devices.clear();
             }
             Some(d) => {
-                old_node = None;
-                old_device = Some(if new.is_empty() {
-                    entry.devices.remove(d)
+                if new.is_empty() {
+                    entry.devices.remove(d);
                 } else {
-                    entry.devices.insert(d.to_owned(), new)
-                });
+                    entry.devices.insert(d.to_owned(), new);
+                }
             }
         }
-        let (e1, b1) = entry.usage(key_bytes);
-        let (total, bytes) = (self.total - e0 + e1, self.bytes - b0 + b1);
+        let (mut e1, mut b1) = entry.usage(key_bytes);
+        let (mut total, mut bytes) = (self.total - e0 + e1, self.bytes - b0 + b1);
         if total > MAX_ALIASES || bytes > MAX_ALIAS_BYTES {
-            match (old_node, old_device) {
-                (Some(n), _) => {
-                    entry.node = n;
-                    entry.devices = old_devices;
+            // Refused: forget this node's (or device's) names rather than keep
+            // ones the edge has since reused for other metrics. Usage only
+            // goes down; its metrics fall back to `alias:N`.
+            match device {
+                None => {
+                    entry.node.clear();
+                    entry.devices.clear();
                 }
-                (None, Some(prev)) => {
-                    let d = device.unwrap_or_default();
-                    match prev {
-                        Some(p) => entry.devices.insert(d.to_owned(), p),
-                        None => entry.devices.remove(d),
-                    };
+                Some(d) => {
+                    entry.devices.remove(d);
                 }
-                (None, None) => {}
             }
-        } else {
-            self.total = total;
-            self.bytes = bytes;
+            (e1, b1) = entry.usage(key_bytes);
+            (total, bytes) = (self.total - e0 + e1, self.bytes - b0 + b1);
         }
+        self.total = total;
+        self.bytes = bytes;
         if entry.usage(key_bytes).0 > 0 {
             self.maps
                 .entry(group.to_owned())
@@ -729,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn over_cap_rebirth_keeps_old_names() {
+    fn over_cap_rebirth_forgets_old_names() {
         let mut a = Aliases::default();
         a.decode("spBv1.0/g/NBIRTH/n1", &data(named(b"Old", 1)))
             .unwrap();
@@ -743,11 +737,19 @@ mod tests {
         assert_eq!(a.len(), 99_999);
         let p = data([named(b"X", 1), named(b"Y", 2), named(b"Z", 3)].concat());
         assert!(a.decode("spBv1.0/g/NBIRTH/n1", &p).is_some());
-        assert_eq!(a.len(), 99_999);
+        assert!(a.len() <= MAX_ALIASES);
+        assert_eq!(a.len(), 99_998);
+        assert!(a.bytes <= MAX_ALIAS_BYTES);
         let v = a
             .decode("spBv1.0/g/NDATA/n1", &data(by_alias(1, 1.0)))
             .unwrap();
-        assert_eq!(v["metrics"]["Old"], json!(1.0));
+        assert_eq!(v["metrics"]["alias:1"], json!(1.0));
+        assert!(v["metrics"].get("Old").is_none());
+        assert!(v["metrics"].get("X").is_none());
+        let v = a
+            .decode("spBv1.0/g/NDATA/n2", &data(by_alias(7, 1.0)))
+            .unwrap();
+        assert_eq!(v["metrics"]["m7"], json!(1.0));
     }
 
     #[test]
