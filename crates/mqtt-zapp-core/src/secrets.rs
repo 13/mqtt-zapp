@@ -3,6 +3,7 @@
 use crate::config::{PasswordSource, Profile};
 use anyhow::{Result, bail};
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -27,6 +28,7 @@ pub fn resolve_password(p: &Profile) -> Result<Option<String>> {
 
 pub fn password_from_env(name: &str) -> Result<String> {
     match std::env::var(name) {
+        Ok(v) if v.is_empty() => bail!("password env var {name} is empty"),
         Ok(v) => Ok(v),
         Err(_) => bail!("password env var {name} not set"),
     }
@@ -52,12 +54,16 @@ fn clip(s: &str) -> String {
 /// The child is killed after `timeout`. The password is never put into an
 /// error; the stderr first line may be.
 pub fn password_from_command(cmd: &str, timeout: Duration) -> Result<String> {
-    let mut child = Command::new("sh")
+    let mut command = Command::new("sh");
+    command
         .arg("-c")
         .arg(cmd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Its own process group, so a timeout can kill the whole tree.
+        .process_group(0);
+    let mut child = command
         .spawn()
         .map_err(|e| anyhow::anyhow!("password command failed: {e}"))?;
     fn drain<R: Read + Send + 'static>(r: Option<R>) -> mpsc::Receiver<Vec<u8>> {
@@ -78,20 +84,23 @@ pub fn password_from_command(cmd: &str, timeout: Duration) -> Result<String> {
         match child.try_wait() {
             Ok(Some(s)) => break s,
             Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                bail!(
-                    "password command failed: timed out after {}s",
-                    timeout.as_secs_f32().ceil()
-                );
+                kill_group(&mut child);
+                bail!("password command timed out");
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            Err(e) => bail!("password command failed: {e}"),
+            Err(e) => {
+                kill_group(&mut child);
+                bail!("password command failed: {e}");
+            }
         }
     };
     // A background grandchild may hold the pipes open: do not wait forever.
     let left = deadline.saturating_duration_since(Instant::now());
-    let stdout = out.recv_timeout(left).unwrap_or_default();
+    let Ok(stdout) = out.recv_timeout(left) else {
+        // A leftover process still holds stdout open.
+        kill_group(&mut child);
+        bail!("password command timed out");
+    };
     if !status.success() {
         let stderr = err
             .recv_timeout(Duration::from_millis(200))
@@ -104,7 +113,23 @@ pub fn password_from_command(cmd: &str, timeout: Duration) -> Result<String> {
     }
     let text = String::from_utf8_lossy(&stdout);
     let line = text.split('\n').next().unwrap_or("");
-    Ok(line.trim_end_matches('\r').to_owned())
+    let line = line.trim_end_matches('\r');
+    if line.is_empty() {
+        bail!("password command produced no output");
+    }
+    Ok(line.to_owned())
+}
+
+/// Kill the child's whole process group (it leads its own), then reap it.
+fn kill_group(child: &mut std::process::Child) {
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{}", child.id())])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[cfg(feature = "keyring")]
@@ -186,6 +211,96 @@ mod source_tests {
             .to_string();
         assert!(e.starts_with("password command failed: "), "{e}");
         assert!(e.contains("bad thing") && !e.contains("leaked"), "{e}");
+    }
+
+    #[test]
+    fn password_env_empty_is_error() {
+        let name = "MQTT_ZAPP_TEST_PW_EMPTY_ENV_13";
+        // SAFETY: a variable only this test touches.
+        unsafe { std::env::set_var(name, "") };
+        let e = super::password_from_env(name).unwrap_err().to_string();
+        unsafe { std::env::remove_var(name) };
+        assert_eq!(e, format!("password env var {name} is empty"));
+    }
+
+    #[test]
+    fn password_command_empty_output_is_error() {
+        let t = Duration::from_secs(10);
+        for cmd in ["true", "printf ''", "echo", "printf '\\r\\nx'"] {
+            let e = super::password_from_command(cmd, t)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(e, "password command produced no output", "{cmd}");
+        }
+    }
+
+    #[test]
+    fn password_command_grandchild_holding_pipe_times_out() {
+        let start = Instant::now();
+        let e = super::password_from_command("(sleep 30 &); echo x", Duration::from_millis(500))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(e, "password command timed out");
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn password_command_timeout_kills_the_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("m");
+        let cmd = format!("(sleep 1; touch {}) & sleep 30", marker.display());
+        let e = super::password_from_command(&cmd, Duration::from_millis(300)).unwrap_err();
+        assert_eq!(e.to_string(), "password command timed out");
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!marker.exists(), "background process survived the timeout");
+    }
+
+    #[test]
+    fn password_command_huge_output_is_bounded() {
+        let start = Instant::now();
+        let r = super::password_from_command("yes | head -c 10000000", Duration::from_secs(10));
+        assert!(start.elapsed() < Duration::from_secs(5));
+        if let Ok(pw) = r {
+            assert!(pw.len() <= 64 * 1024, "{}", pw.len());
+        }
+        // One endless line: the read stops at the cap, not at memory.
+        let r = super::password_from_command(
+            "head -c 10000000 /dev/zero | tr '\\0' a",
+            Duration::from_secs(10),
+        );
+        assert!(r.map_or(true, |pw| pw.len() <= 64 * 1024));
+    }
+
+    /// Re-run this test binary with a pipe on stdin that holds data and is
+    /// never closed: the password command must still see a closed stdin.
+    #[test]
+    fn password_command_stdin_is_closed() {
+        if std::env::var("MQTT_ZAPP_STDIN_HELPER").is_ok() {
+            let r = super::password_from_command("cat; echo end", Duration::from_secs(3));
+            println!("RESULT:{r:?}");
+            return;
+        }
+        use std::io::Write;
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "secrets::source_tests::password_command_stdin_is_closed",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("MQTT_ZAPP_STDIN_HELPER", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"leak\n").unwrap();
+        stdin.flush().unwrap();
+        let out = child.wait_with_output().unwrap();
+        drop(stdin);
+        let out = String::from_utf8_lossy(&out.stdout);
+        assert!(out.contains("RESULT:Ok(\"end\")"), "{out}");
     }
 
     #[test]

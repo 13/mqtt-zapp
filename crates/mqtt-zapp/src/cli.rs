@@ -259,7 +259,7 @@ pub enum ProfileCmd {
         #[arg(long)]
         name: String,
         /// Where the password comes from [default: prompt if --user is set, else none]
-        #[arg(long, value_enum)]
+        #[arg(long, value_enum, conflicts_with_all = ["password_env", "password_command"])]
         password_mode: Option<PasswordMode>,
         #[command(flatten)]
         conn: ConnArgs,
@@ -789,6 +789,19 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(p.password, PasswordSource::Command("pass show x".into()));
+    }
+
+    #[test]
+    fn password_mode_conflicts_with_env_and_command() {
+        for flag in [["--password-env", "V"], ["--password-command", "c"]] {
+            let r = Args::try_parse_from(
+                ["mqtt-zapp", "profile", "add", "--name", "t", "--host", "h"]
+                    .into_iter()
+                    .chain(["--password-mode", "keyring"])
+                    .chain(flag),
+            );
+            assert!(r.is_err(), "{flag:?}");
+        }
     }
 
     #[test]
