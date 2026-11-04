@@ -149,6 +149,25 @@ mqtt-zapp profile add --name b --host h --user me --password-mode keyring
 The websocket path defaults to `/`. Set a different one in the picker's form,
 or edit `ws_path` in `profiles.toml`, for example `ws_path = "/mqtt"`.
 
+### Subscriptions
+
+Each subscription is `filter[@qos]`, for example `sensors/#@1`. The QoS is
+0, 1 or 2 and defaults to 0; anything else (`a@3`, `a@x`) is an error. Only the
+part after the last `@` counts as a QoS suffix, and only when it has no `/`
+or `#`, so a filter such as `user@host/#` is taken as it is (QoS 0).
+
+`--sub` is repeatable and replaces the profile's list for this session only.
+It is never saved:
+
+```sh
+mqtt-zapp --profile home --sub 'sensors/#@1' --sub 'alerts/+'
+```
+
+With `retained = false` in a profile (the form's "retained" row), an MQTT 5
+connection asks the broker not to send stored retained messages on subscribe;
+live messages still arrive, and the `$SYS` filters are unaffected. On 3.1.1 it
+has no effect.
+
 ## ⌨️ Keys
 
 `?` shows the keys in effect, including your remaps. Type while it is open to

@@ -287,6 +287,7 @@ mod tests {
             password: PasswordSource::None,
             tls: TlsConfig::default(),
             subscriptions: vec![],
+            retained: true,
         };
         assert_eq!(super::server_url(&p), "mqtts://alice@broker.lan:8883");
         p.protocol = Protocol::Wss;
@@ -316,6 +317,7 @@ mod tests {
             password: PasswordSource::None,
             tls: TlsConfig::default(),
             subscriptions: vec![],
+            retained: true,
         }
     }
 

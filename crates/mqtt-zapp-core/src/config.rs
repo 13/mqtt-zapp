@@ -103,6 +103,18 @@ pub struct Profile {
     pub tls: TlsConfig,
     #[serde(default = "default_subscriptions")]
     pub subscriptions: Vec<String>,
+    /// MQTT 5 only: false subscribes with "do not send retained messages"
+    /// (the `$SYS` filters are exempt). Ignored on 3.1.1.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub retained: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 impl Profile {
@@ -444,6 +456,7 @@ mod tests {
             password: PasswordSource::Keyring,
             tls: TlsConfig::default(),
             subscriptions: vec!["#".into(), "$SYS/#".into()],
+            retained: true,
         }
     }
 
@@ -455,6 +468,16 @@ mod tests {
         assert_eq!(p.subscriptions, vec!["#", "$SYS/#"]);
         assert_eq!(p.ws_path, "/");
         assert!(matches!(p.password, PasswordSource::None));
+    }
+
+    #[test]
+    fn retained_defaults_true_and_is_skipped_at_default() {
+        let mut p: Profile =
+            toml::from_str("name=\"h\"\nhost=\"x\"\nport=1883\nprotocol=\"mqtt\"").unwrap();
+        assert!(p.retained);
+        assert!(!toml::to_string(&p).unwrap().contains("retained"));
+        p.retained = false;
+        assert!(toml::to_string(&p).unwrap().contains("retained = false"));
     }
 
     #[test]

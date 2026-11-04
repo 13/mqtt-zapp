@@ -21,6 +21,7 @@ fn profile(host: &str, port: u16, protocol: Protocol) -> Profile {
         password: PasswordSource::None,
         tls: TlsConfig::default(),
         subscriptions: vec!["zapp/#".into()],
+        retained: true,
     }
 }
 
@@ -367,6 +368,40 @@ async fn retained_flag_v5() {
         unreachable!()
     };
     assert!(msg.retain);
+}
+
+#[tokio::test]
+async fn v5_retained_false_skips_retained() {
+    let Some(b) = support::start(false) else {
+        return;
+    };
+    let p5 = v5(profile("127.0.0.1", b.port, Protocol::Mqtt));
+    let (conn_a, mut rx_a) = Connection::connect(&p5, None).unwrap();
+    ready(&conn_a, &mut rx_a, "zapp/ready/nr").await;
+    conn_a
+        .publish("zapp/old", b"r".to_vec(), 1, true, None)
+        .await
+        .unwrap();
+    wait_for(&mut rx_a, |e| is_message(e, "zapp/old"), 5).await;
+
+    let mut quiet = p5.clone();
+    quiet.retained = false;
+    let (conn_b, mut rx_b) = Connection::connect(&quiet, None).unwrap();
+    wait_for(&mut rx_b, is_connected, 5).await;
+    // A live publish from the same client is handled after its SUBSCRIBE, so
+    // when it arrives the retained message would already have been sent.
+    conn_b
+        .publish("zapp/live", b"l".to_vec(), 1, false, None)
+        .await
+        .unwrap();
+    // The first message must be the live one: the retained one, if it were
+    // sent, would come before it.
+    let CoreEvent::Message { topic, .. } =
+        wait_for(&mut rx_b, |e| matches!(e, CoreEvent::Message { .. }), 5).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(topic, "zapp/live", "retained message was delivered");
 }
 
 /// Only MQTT 5 can keep the retain flag on a live (not on-subscribe)

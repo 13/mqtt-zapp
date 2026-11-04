@@ -54,6 +54,11 @@ pub(super) fn value_spans(form: &ProfileForm, field: PField, width: usize) -> Ve
         } else {
             "[ ] skip certificate checks"
         })],
+        PField::Retained => vec![Span::raw(if form.retained {
+            "[x] send on subscribe (MQTT 5 only)"
+        } else {
+            "[ ] send on subscribe (MQTT 5 only)"
+        })],
         PField::Password => {
             let input = &form.password;
             if input.text().is_empty() && form.had_keyring {

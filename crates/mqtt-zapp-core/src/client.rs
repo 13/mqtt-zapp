@@ -141,17 +141,17 @@ impl Client {
     }
 
     /// Queue SUBSCRIBE without waiting; false when the request queue is full.
-    fn try_subscribe_many(&self, topics: &[String]) -> bool {
+    fn try_subscribe_many(&self, topics: &[String], retained: bool) -> bool {
         match self {
             Client::V4(c) => c.try_subscribe_many(v4_filters(topics)).is_ok(),
-            Client::V5(c) => c.try_subscribe_many(v5_filters(topics)).is_ok(),
+            Client::V5(c) => c.try_subscribe_many(v5_filters(topics, retained)).is_ok(),
         }
     }
 
-    async fn subscribe_many(&self, topics: &[String]) -> Result<()> {
+    async fn subscribe_many(&self, topics: &[String], retained: bool) -> Result<()> {
         match self {
             Client::V4(c) => Ok(c.subscribe_many(v4_filters(topics)).await?),
-            Client::V5(c) => Ok(c.subscribe_many(v5_filters(topics)).await?),
+            Client::V5(c) => Ok(c.subscribe_many(v5_filters(topics, retained)).await?),
         }
     }
 
@@ -163,21 +163,61 @@ impl Client {
     }
 }
 
+/// Splits `filter[@qos]`. The suffix counts only when what follows the last
+/// `@` has no `/` or `#`, so `user@host/#` stays a plain filter; then it must
+/// be a QoS digit 0-2.
+pub fn parse_sub(s: &str) -> Result<(String, QoS), String> {
+    if let Some((filter, q)) = s.rsplit_once('@')
+        && !q.contains(['/', '#'])
+    {
+        let qos = match q {
+            "0" => QoS::AtMostOnce,
+            "1" => QoS::AtLeastOnce,
+            "2" => QoS::ExactlyOnce,
+            _ => return Err(format!("bad QoS in \"{s}\"")),
+        };
+        return Ok((filter.to_owned(), qos));
+    }
+    Ok((s.to_owned(), QoS::AtMostOnce))
+}
+
+/// An entry that does not parse (a hand-edited profile) goes out as a plain
+/// QoS 0 filter, as before the suffix existed.
+fn split_sub(s: &str) -> (String, QoS) {
+    parse_sub(s).unwrap_or_else(|_| (s.to_owned(), QoS::AtMostOnce))
+}
+
 fn v4_filters(topics: &[String]) -> Vec<SubscribeFilter> {
     topics
         .iter()
-        .map(|t| SubscribeFilter::new(t.clone(), QoS::AtMostOnce))
+        .map(|t| {
+            let (f, q) = split_sub(t);
+            SubscribeFilter::new(f, q)
+        })
         .collect()
 }
 
 /// "Retain as published", so a live retained message keeps its flag (MQTT
-/// 5 only; 3.1.1 brokers clear it on live delivery).
-fn v5_filters(topics: &[String]) -> Vec<v5::mqttbytes::v5::Filter> {
+/// 5 only; 3.1.1 brokers clear it on live delivery). With `retained` off,
+/// the broker is told not to send retained messages on subscribe; `$SYS`
+/// filters keep the default so broker stats still arrive.
+fn v5_filters(topics: &[String], retained: bool) -> Vec<v5::mqttbytes::v5::Filter> {
+    use v5::mqttbytes::v5::RetainForwardRule;
     topics
         .iter()
         .map(|t| {
-            let mut f = v5::mqttbytes::v5::Filter::new(t.clone(), v5::mqttbytes::QoS::AtMostOnce);
+            let (path, q) = split_sub(t);
+            let qos = match q {
+                QoS::AtMostOnce => v5::mqttbytes::QoS::AtMostOnce,
+                QoS::AtLeastOnce => v5::mqttbytes::QoS::AtLeastOnce,
+                QoS::ExactlyOnce => v5::mqttbytes::QoS::ExactlyOnce,
+            };
+            let sys = path.starts_with("$SYS");
+            let mut f = v5::mqttbytes::v5::Filter::new(path, qos);
             f.preserve_retain = true;
+            if !retained && !sys {
+                f.retain_forward_rule = RetainForwardRule::Never;
+            }
             f
         })
         .collect()
@@ -356,8 +396,9 @@ impl Connection {
         let task = handle.spawn({
             let (client, cancel, finished) = (client.clone(), cancel.clone(), finished.clone());
             let subscriptions = profile.subscriptions.clone();
+            let retained = profile.retained;
             async move {
-                run(eventloop, client, subscriptions, tx, cancel).await;
+                run(eventloop, client, subscriptions, retained, tx, cancel).await;
                 finished.store(true, Ordering::SeqCst);
             }
         });
@@ -441,6 +482,7 @@ async fn run(
     mut eventloop: Loop,
     client: Client,
     subscriptions: Vec<String>,
+    retained: bool,
     tx: mpsc::Sender<CoreEvent>,
     cancel: CancellationToken,
 ) {
@@ -470,7 +512,7 @@ async fn run(
             Polled::ConnAck => {
                 connected = true;
                 up_since = Some(std::time::Instant::now());
-                subscribe(&client, &subscriptions, &tx, &cancel);
+                subscribe(&client, &subscriptions, retained, &tx, &cancel);
                 emit!(CoreEvent::State(ConnState::Connected));
             }
             Polled::Publish { topic, msg } => {
@@ -536,16 +578,17 @@ async fn run(
 fn subscribe(
     client: &Client,
     topics: &[String],
+    retained: bool,
     tx: &mpsc::Sender<CoreEvent>,
     cancel: &CancellationToken,
 ) {
-    if topics.is_empty() || client.try_subscribe_many(topics) {
+    if topics.is_empty() || client.try_subscribe_many(topics, retained) {
         return;
     }
     let (client, tx, cancel) = (client.clone(), tx.clone(), cancel.clone());
     let topics = topics.to_vec();
     tokio::spawn(async move {
-        if let Err(e) = client.subscribe_many(&topics).await
+        if let Err(e) = client.subscribe_many(&topics, retained).await
             && !cancel.is_cancelled()
         {
             let _ = tx
@@ -755,6 +798,41 @@ mod tests {
     use crate::config::PasswordSource;
 
     #[test]
+    fn parse_sub_cases() {
+        assert_eq!(parse_sub("a/#"), Ok(("a/#".into(), QoS::AtMostOnce)));
+        assert_eq!(parse_sub("a/#@2"), Ok(("a/#".into(), QoS::ExactlyOnce)));
+        assert_eq!(parse_sub("a@3"), Err("bad QoS in \"a@3\"".into()));
+        assert_eq!(parse_sub("a@x"), Err("bad QoS in \"a@x\"".into()));
+        // An `@` followed by a topic path is part of the filter.
+        assert_eq!(
+            parse_sub("user@host/#"),
+            Ok(("user@host/#".into(), QoS::AtMostOnce))
+        );
+        assert_eq!(
+            parse_sub("user@host/#@1"),
+            Ok(("user@host/#".into(), QoS::AtLeastOnce))
+        );
+    }
+
+    #[test]
+    fn v5_filters_honour_qos_and_retained() {
+        use v5::mqttbytes::QoS as Q5;
+        use v5::mqttbytes::v5::RetainForwardRule as R;
+        let topics = ["a/#@1".to_owned(), "$SYS/#".to_owned()];
+        let f = v5_filters(&topics, true);
+        assert_eq!(f[0].qos, Q5::AtLeastOnce);
+        assert_eq!(f[0].path, "a/#");
+        assert_eq!(f[0].retain_forward_rule, R::OnEverySubscribe);
+        assert!(f[0].preserve_retain);
+        let f = v5_filters(&topics, false);
+        assert_eq!(f[0].retain_forward_rule, R::Never);
+        assert_eq!(f[1].retain_forward_rule, R::OnEverySubscribe);
+        let f4 = v4_filters(&topics);
+        assert_eq!(f4[0].qos, QoS::AtLeastOnce);
+        assert_eq!(f4[0].path, "a/#");
+    }
+
+    #[test]
     fn backoff_resets_only_after_stable() {
         let stable = STABLE_AFTER;
         // Up briefly (a duplicate client id flapping): the delay keeps growing.
@@ -903,6 +981,7 @@ mod tests {
             password: PasswordSource::None,
             tls: TlsConfig::default(),
             subscriptions: vec![],
+            retained: true,
         }
     }
 

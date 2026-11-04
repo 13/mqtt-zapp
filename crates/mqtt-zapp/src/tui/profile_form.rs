@@ -3,6 +3,7 @@
 
 use super::theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use mqtt_zapp_core::client::parse_sub;
 use mqtt_zapp_core::config::{
     MqttVersion, PasswordSource, Profile, Protocol, TlsConfig, default_subscriptions,
     default_ws_path,
@@ -96,6 +97,8 @@ pub enum PField {
     Password,
     ClientId,
     Subscriptions,
+    /// MQTT 5: ask the broker to send retained messages on subscribe.
+    Retained,
     CaFile,
     ClientCert,
     ClientKey,
@@ -103,7 +106,7 @@ pub enum PField {
 }
 
 impl PField {
-    pub const ALL: [PField; 15] = [
+    pub const ALL: [PField; 16] = [
         PField::Name,
         PField::Host,
         PField::Port,
@@ -115,6 +118,7 @@ impl PField {
         PField::Password,
         PField::ClientId,
         PField::Subscriptions,
+        PField::Retained,
         PField::CaFile,
         PField::ClientCert,
         PField::ClientKey,
@@ -134,6 +138,7 @@ impl PField {
             PField::Password => "secret",
             PField::ClientId => "client id",
             PField::Subscriptions => "subscriptions",
+            PField::Retained => "retained",
             PField::CaFile => "ca file",
             PField::ClientCert => "client cert",
             PField::ClientKey => "client key",
@@ -183,6 +188,7 @@ pub struct ProfileForm {
     pub version: MqttVersion,
     pub source: PasswordSource,
     pub insecure: bool,
+    pub retained: bool,
     name: LineInput,
     host: LineInput,
     port: LineInput,
@@ -267,6 +273,7 @@ impl ProfileForm {
                     password: PasswordSource::None,
                     tls: TlsConfig::default(),
                     subscriptions: default_subscriptions(),
+                    retained: true,
                 };
                 &fresh
             }
@@ -282,6 +289,7 @@ impl ProfileForm {
             version: p.mqtt_version,
             source: p.password,
             insecure: p.tls.insecure,
+            retained: p.retained,
             name: LineInput::new(&p.name),
             host: LineInput::new(&p.host),
             port: LineInput::new(&p.port.to_string()),
@@ -325,7 +333,11 @@ impl ProfileForm {
             PField::CaFile => &self.ca_file,
             PField::ClientCert => &self.client_cert,
             PField::ClientKey => &self.client_key,
-            PField::Protocol | PField::Version | PField::PasswordSource | PField::Insecure => {
+            PField::Protocol
+            | PField::Version
+            | PField::PasswordSource
+            | PField::Insecure
+            | PField::Retained => {
                 return None;
             }
         })
@@ -344,7 +356,11 @@ impl ProfileForm {
             PField::CaFile => &mut self.ca_file,
             PField::ClientCert => &mut self.client_cert,
             PField::ClientKey => &mut self.client_key,
-            PField::Protocol | PField::Version | PField::PasswordSource | PField::Insecure => {
+            PField::Protocol
+            | PField::Version
+            | PField::PasswordSource
+            | PField::Insecure
+            | PField::Retained => {
                 return None;
             }
         })
@@ -390,6 +406,7 @@ impl ProfileForm {
                         self.source = cycle(SOURCES, self.source, fwd)
                     }
                     (PField::Insecure, Some(_)) => self.insecure = !self.insecure,
+                    (PField::Retained, Some(_)) => self.retained = !self.retained,
                     (f, _) => {
                         if let Some(input) = self.input_mut(f) {
                             input.on_key(key);
@@ -440,6 +457,9 @@ impl ProfileForm {
         if subscriptions.is_empty() {
             return Err("at least one subscription".into());
         }
+        for s in &subscriptions {
+            parse_sub(s)?;
+        }
         let tls = self.protocol.is_tls();
         let path = |l: &LineInput| optional(l).filter(|_| tls).map(PathBuf::from);
         let ws_path = self.ws_path.text.trim();
@@ -466,6 +486,7 @@ impl ProfileForm {
                     insecure: tls && self.insecure,
                 },
                 subscriptions,
+                retained: self.retained,
             },
             password: (keyring && !self.password.text.is_empty())
                 .then(|| self.password.text.clone()),

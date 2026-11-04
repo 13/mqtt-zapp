@@ -45,6 +45,7 @@ fn sample(name: &str, pw: PasswordSource) -> Profile {
             insecure: true,
         },
         subscriptions: vec!["#".into()],
+        retained: true,
     }
 }
 
@@ -108,7 +109,8 @@ fn new_form_defaults() {
             Username,
             PasswordSource,
             ClientId,
-            Subscriptions
+            Subscriptions,
+            Retained
         ]
     );
     assert_eq!(f.input(Port).unwrap().text(), "1883");
@@ -295,7 +297,7 @@ fn esc_cancels_and_enter_moves_on() {
     f.on_key(key(KeyCode::BackTab));
     assert_eq!(f.field, PField::Name);
     f.on_key(key(KeyCode::BackTab));
-    assert_eq!(f.field, PField::Subscriptions, "wraps");
+    assert_eq!(f.field, PField::Retained, "wraps");
     assert!(matches!(
         f.on_key(key(KeyCode::Esc)),
         ProfileOutcome::Cancel
@@ -309,6 +311,28 @@ fn insecure_toggles() {
     goto(&mut f, PField::Insecure);
     f.on_key(key(KeyCode::Char(' ')));
     assert!(!save(&mut f).unwrap().profile.tls.insecure);
+}
+
+#[test]
+fn form_rejects_bad_qos() {
+    let mut f = filled();
+    goto(&mut f, PField::Subscriptions);
+    type_str(&mut f, " a@3");
+    assert!(save(&mut f).is_none());
+    assert_eq!(f.error.as_deref(), Some("bad QoS in \"a@3\""));
+    let mut f = filled();
+    goto(&mut f, PField::Subscriptions);
+    type_str(&mut f, " a/#@2 user@host/#");
+    assert!(save(&mut f).is_some());
+}
+
+#[test]
+fn retained_toggles_and_is_marked_v5_only() {
+    let mut f = filled();
+    goto(&mut f, PField::Retained);
+    f.on_key(key(KeyCode::Char(' ')));
+    assert!(!save(&mut f).unwrap().profile.retained);
+    assert!(draw(&f, 80, 30).join("\n").contains("(MQTT 5 only)"));
 }
 
 fn draw(f: &ProfileForm, w: u16, h: u16) -> Vec<String> {

@@ -168,6 +168,7 @@ mod tests {
             password: pw,
             tls: TlsConfig::default(),
             subscriptions: vec!["#".into()],
+            retained: true,
         }
     }
 

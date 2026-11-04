@@ -26,6 +26,7 @@ fn profile(port: u16, subs: &[&str]) -> Profile {
         password: PasswordSource::None,
         tls: TlsConfig::default(),
         subscriptions: subs.iter().map(|s| (*s).to_owned()).collect(),
+        retained: true,
     }
 }
 

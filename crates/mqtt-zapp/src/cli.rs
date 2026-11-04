@@ -2,6 +2,7 @@
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
+use mqtt_zapp_core::client::parse_sub;
 use mqtt_zapp_core::config::{
     MqttVersion, PasswordSource, Profile, ProfileStore, Protocol, TlsConfig, default_subscriptions,
     default_ws_path,
@@ -90,6 +91,31 @@ pub struct ConnArgs {
     pub insecure: bool,
 }
 
+/// Subscription override, shared by every command that connects (`tui` now,
+/// `sub` later). It replaces the profile's list for this session only and is
+/// never saved.
+#[derive(clap::Args, Clone, Default)]
+pub struct SubArgs {
+    /// Topic filter to subscribe to, as `filter[@qos]`; repeatable. Replaces
+    /// the profile's subscriptions for this session.
+    #[arg(long = "sub", value_name = "FILTER[@QOS]", value_parser = check_sub)]
+    pub sub: Vec<String>,
+}
+
+fn check_sub(s: &str) -> Result<String, String> {
+    parse_sub(s).map(|_| s.to_owned())
+}
+
+impl SubArgs {
+    /// Applies the override to a profile about to connect.
+    pub fn apply(&self, mut p: Profile) -> Profile {
+        if !self.sub.is_empty() {
+            p.subscriptions = self.sub.clone();
+        }
+        p
+    }
+}
+
 #[derive(Parser)]
 #[command(version, about = "Terminal MQTT explorer")]
 pub struct Args {
@@ -100,6 +126,8 @@ pub struct Args {
     pub profile: Option<String>,
     #[command(flatten)]
     pub conn: ConnArgs,
+    #[command(flatten)]
+    pub subs: SubArgs,
 }
 
 #[derive(Subcommand)]
@@ -153,6 +181,7 @@ fn build_profile(name: &str, conn: &ConnArgs, host: &str, password: PasswordSour
             ..TlsConfig::default()
         },
         subscriptions: default_subscriptions(),
+        retained: true,
     }
 }
 
@@ -181,13 +210,12 @@ pub fn resolve_launch(args: &Args, store: &ProfileStore) -> Result<Launch> {
         } else {
             PasswordSource::None
         };
-        return Ok(Launch::Connect(build_profile(
-            "adhoc", &args.conn, host, pw,
-        )));
+        let p = build_profile("adhoc", &args.conn, host, pw);
+        return Ok(Launch::Connect(args.subs.apply(p)));
     }
     match &args.profile {
         Some(name) => match store.get(name) {
-            Some(p) => Ok(Launch::Connect(p.clone())),
+            Some(p) => Ok(Launch::Connect(args.subs.apply(p.clone()))),
             None => bail!("unknown profile '{name}'"),
         },
         None => Ok(Launch::Picker),
@@ -283,12 +311,38 @@ mod tests {
             password: PasswordSource::None,
             tls: TlsConfig::default(),
             subscriptions: default_subscriptions(),
+            retained: true,
         });
         s
     }
 
     fn launch(a: &[&str]) -> Result<Launch> {
         resolve_launch(&Args::parse_from(a), &store())
+    }
+
+    #[test]
+    fn cli_sub_overrides_profile() {
+        let l = launch(&[
+            "mqtt-zapp",
+            "--profile",
+            "home",
+            "--sub",
+            "a/#@1",
+            "--sub",
+            "b",
+        ]);
+        let Ok(Launch::Connect(p)) = l else { panic!() };
+        assert_eq!(p.subscriptions, ["a/#@1", "b"]);
+        // Without --sub the profile's own list stays.
+        let Ok(Launch::Connect(p)) = launch(&["mqtt-zapp", "--profile", "home"]) else {
+            panic!()
+        };
+        assert_eq!(p.subscriptions, default_subscriptions());
+        let Ok(Launch::Connect(p)) = launch(&["mqtt-zapp", "--host", "h", "--sub", "x"]) else {
+            panic!()
+        };
+        assert_eq!(p.subscriptions, ["x"]);
+        assert!(Args::try_parse_from(["mqtt-zapp", "--sub", "a@3"]).is_err());
     }
 
     #[test]

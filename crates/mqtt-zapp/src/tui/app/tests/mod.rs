@@ -189,6 +189,7 @@ fn profile(name: &str, pw: PasswordSource) -> Profile {
         password: pw,
         tls: TlsConfig::default(),
         subscriptions: vec!["#".into()],
+        retained: true,
     }
 }
 
