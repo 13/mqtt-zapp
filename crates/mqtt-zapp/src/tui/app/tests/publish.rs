@@ -367,3 +367,13 @@ fn tab_past_the_last_pane_enters_an_open_form() {
     a.handle_action(Action::FocusNext);
     assert_eq!((a.mode, a.focus), (Mode::Browse, Focus::Tree));
 }
+
+#[test]
+fn resend_refuses_control_characters() {
+    let mut a = resend_app(|m| m.payload = Bytes::from_static(b"on\x1b]0;t\x07"));
+    a.handle_action(Action::Publish);
+    assert_eq!(payload_of(&a), "");
+    assert_eq!(a.publish.as_ref().unwrap().topic_text(), "t");
+    let note = &a.status_note.as_ref().unwrap().0.text;
+    assert_eq!(note, "can't re-send: control characters");
+}

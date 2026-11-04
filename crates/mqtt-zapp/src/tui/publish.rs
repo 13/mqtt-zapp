@@ -8,7 +8,7 @@ pub use format::Format;
 
 use super::theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use mqtt_zapp_core::payload::{Props, sanitize};
+use mqtt_zapp_core::payload::{Props, is_unsafe_char, sanitize};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -18,6 +18,16 @@ use tui_textarea::TextArea;
 use unicode_width::UnicodeWidthStr;
 
 const INVALID_TOPIC: &str = "invalid topic";
+
+/// Text for a text area: CRLF becomes LF, and every other control or
+/// invisible char becomes U+FFFD, so nothing reaches the terminal raw (the
+/// text areas draw their chars as they are).
+pub(crate) fn input_safe(s: &str) -> String {
+    s.replace("\r\n", "\n")
+        .chars()
+        .map(|c| if is_unsafe_char(c) { '\u{fffd}' } else { c })
+        .collect()
+}
 
 /// Payload rows the form shows: it grows with the text between these.
 const PAYLOAD_MIN_ROWS: u16 = 4;
@@ -224,8 +234,10 @@ impl PublishForm {
         self.payload.lines().join("\n")
     }
 
-    /// Replace the payload text (from the editor or the history).
+    /// Replace the payload text (from the editor or the history), through
+    /// `input_safe`.
     pub fn set_payload(&mut self, text: &str) {
+        let text = input_safe(text);
         let mut ta = TextArea::new(text.split('\n').map(str::to_owned).collect());
         ta.move_cursor(tui_textarea::CursorMove::Bottom);
         ta.move_cursor(tui_textarea::CursorMove::End);
@@ -1027,5 +1039,12 @@ mod tests {
         assert!(f.click(Position::new(10, 1)), "topic");
         assert_eq!(f.field, Field::Topic);
         assert!(!f.click(Position::new(0, 0)), "border");
+    }
+
+    #[test]
+    fn set_payload_replaces_control_characters() {
+        let mut f = PublishForm::new("a", false);
+        f.set_payload("hi\x1b[2J\r\nx\u{202e}y\tz");
+        assert_eq!(f.payload_text(), "hi\u{fffd}[2J\nx\u{fffd}y\tz");
     }
 }

@@ -189,6 +189,13 @@ pub fn sanitize(s: &str) -> String {
 /// Upper bound on bytes handed to the clipboard.
 pub const CLIPBOARD_MAX: usize = 1 << 20;
 
+/// A char that must not reach a text input or a screen cell as is: a
+/// control (CR and ESC included) or an invisible-format char. `\n` and `\t`
+/// are fine.
+pub fn is_unsafe_char(c: char) -> bool {
+    c != '\n' && c != '\t' && (c.is_control() || is_invisible_format(c))
+}
+
 /// Bidi controls and zero-width characters that hide or reorder text.
 /// U+200D (ZWJ) is deliberately excluded: emoji sequences need it.
 fn is_invisible_format(c: char) -> bool {

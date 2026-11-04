@@ -198,6 +198,12 @@ impl App {
         {
             if m.truncated_from.is_some() {
                 note = Some("can't re-send: payload was truncated");
+            } else if let Ok(text) = std::str::from_utf8(&m.payload)
+                && text.chars().any(mqtt_zapp_core::payload::is_unsafe_char)
+            {
+                // The form could not show it exactly, so it would not send it
+                // exactly either.
+                note = Some("can't re-send: control characters");
             } else if let Ok(text) = std::str::from_utf8(&m.payload) {
                 form = PublishForm::prefilled(&topic, text, m.qos, m.retain, v5);
                 if m.sparkplug {
