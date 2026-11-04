@@ -275,3 +275,95 @@ fn reply_follow_respects_hidden_rows() {
     );
     assert!(a.await_reply.is_none());
 }
+
+#[test]
+fn esc_keeps_an_unsent_draft_for_its_topic() {
+    let mut a = browse(&["t", "u"]);
+    a.selected = a.tree.find("t");
+    a.handle_action(Action::Publish);
+    a.handle_key(key(KeyCode::Tab));
+    type_str(&mut a, "half");
+    a.handle_key(key(KeyCode::Esc));
+    a.selected = a.tree.find("u");
+    a.handle_action(Action::Publish);
+    assert_eq!(payload_of(&a), "", "another topic starts empty");
+    a.handle_key(key(KeyCode::Esc));
+    a.selected = a.tree.find("t");
+    a.handle_action(Action::Publish);
+    assert_eq!(payload_of(&a), "half");
+    assert!(
+        a.status_note
+            .as_ref()
+            .unwrap()
+            .0
+            .text
+            .contains("draft restored")
+    );
+}
+
+#[test]
+fn a_sent_payload_is_not_a_draft() {
+    let mut a = browse(&["t"]);
+    publish_one(&mut a, "t", "one");
+    a.handle_action(Action::Publish);
+    assert_eq!(payload_of(&a), "");
+}
+
+#[test]
+fn walking_sent_payloads_shows_the_position() {
+    let mut a = browse(&["t"]);
+    publish_one(&mut a, "t", "one");
+    publish_one(&mut a, "t", "two");
+    a.handle_action(Action::Publish);
+    a.handle_key(key(KeyCode::Tab));
+    let pos = |a: &App| a.publish.as_ref().unwrap().sent_pos;
+    a.handle_key(ctrl_key('p'));
+    assert_eq!(pos(&a), Some((1, 2)));
+    a.handle_key(ctrl_key('p'));
+    assert_eq!(pos(&a), Some((2, 2)));
+    a.handle_key(ctrl_key('n'));
+    a.handle_key(ctrl_key('n'));
+    assert_eq!(pos(&a), None, "back on the draft");
+    a.handle_key(ctrl_key('p'));
+    type_str(&mut a, "!");
+    assert_eq!(pos(&a), None, "editing leaves the walk");
+}
+
+#[test]
+fn ctrl_o_leaves_the_form_open_and_p_comes_back() {
+    let mut a = browse(&["cmd", "status"]);
+    a.selected = a.tree.find("cmd");
+    a.handle_action(Action::Publish);
+    a.handle_key(key(KeyCode::Tab));
+    type_str(&mut a, "on");
+    a.handle_key(ctrl_key('o'));
+    assert_eq!(a.mode, Mode::Browse);
+    assert_eq!(a.focus, Focus::Tree);
+    assert!(a.publish.is_some(), "still open");
+    // Browse keys work again: move to another topic to watch it.
+    a.handle_action(Action::Down);
+    assert_eq!(sel(&a), "status");
+    a.handle_action(Action::Publish);
+    assert_eq!(a.mode, Mode::Publish);
+    let form = a.publish.as_ref().unwrap();
+    assert_eq!(form.topic_text(), "cmd", "the form kept its topic");
+    assert_eq!(payload_of(&a), "on");
+}
+
+#[test]
+fn tab_past_the_last_pane_enters_an_open_form() {
+    let mut a = browse(&["t"]);
+    a.selected = a.tree.find("t");
+    a.handle_action(Action::Publish);
+    a.handle_key(ctrl_key('o'));
+    a.handle_action(Action::FocusNext);
+    assert_eq!((a.mode, a.focus), (Mode::Browse, Focus::Payload));
+    a.history_shown.set(false);
+    a.handle_action(Action::FocusNext);
+    assert_eq!(a.mode, Mode::Publish);
+    // Closed form: tab cycles the panes only.
+    a.handle_key(key(KeyCode::Esc));
+    a.handle_action(Action::FocusNext);
+    a.handle_action(Action::FocusNext);
+    assert_eq!((a.mode, a.focus), (Mode::Browse, Focus::Tree));
+}

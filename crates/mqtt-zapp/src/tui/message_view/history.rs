@@ -21,7 +21,7 @@ pub(super) fn render_history(f: &mut Frame, area: Rect, app: &App, s: &Shown) {
             crate::tui::ui::key_for(app, Action::Up)
         ),
     };
-    let focused = app.focus == Focus::History;
+    let focused = app.pane_focused(Focus::History);
     let block = theme::pane(&title, focused);
     let inner = block.inner(area);
     let height = inner.height as usize;

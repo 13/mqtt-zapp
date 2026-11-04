@@ -34,6 +34,8 @@ pub struct HitAreas {
     pub payload_title: Rect,
     /// The broker name in the top bar; a click opens the picker.
     pub header_broker: Rect,
+    /// The publish form, open or focused.
+    pub publish: Rect,
 }
 
 pub(super) fn inner(r: Rect) -> Rect {
@@ -64,6 +66,16 @@ impl App {
                 } else {
                     self.picker.up();
                 }
+            }
+            Mode::Publish if left_click && hit.publish.contains(at) => self.publish_click(at),
+            // A click beside the form leaves it open and acts on the panes.
+            Mode::Publish if left_click => {
+                self.leave_publish();
+                return self.browse_click(at, hit);
+            }
+            Mode::Browse if left_click && hit.publish.contains(at) => {
+                self.enter_publish();
+                self.publish_click(at);
             }
             Mode::Browse if left_click => return self.browse_click(at, hit),
             Mode::Browse if right_click => return self.tree_copy_click(at, inner(hit.tree)),

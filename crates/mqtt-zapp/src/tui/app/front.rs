@@ -139,6 +139,9 @@ impl App {
         }
         self.connected = self.picker.profiles.contains(&p).then(|| p.name.clone());
         self.session_profile = Some(p.clone());
+        // A form left open was for the old broker.
+        self.publish = None;
+        self.publish_draft = None;
         self.conn_state = ConnState::Connecting;
         self.server = Some(ServerInfo {
             name: p.name.clone(),

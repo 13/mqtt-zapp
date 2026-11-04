@@ -1,19 +1,29 @@
-//! The publish form: a topic line, a multi-line payload, QoS and retain.
-//! State and key handling live here; the overlay is drawn by `render`.
+//! The publish form: a topic line, a multi-line payload, QoS, retain and
+//! the payload format. State and key handling live here; `render` draws it
+//! docked in the message pane. Its key hints are in the footer.
+
+mod format;
+
+pub use format::Format;
 
 use super::theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mqtt_zapp_core::payload::{Props, sanitize};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use tui_textarea::TextArea;
+use unicode_width::UnicodeWidthStr;
 
 const INVALID_TOPIC: &str = "invalid topic";
-pub const HINT: &str =
-    "ctrl-s send  ctrl-e editor  ctrl-p/n history  ctrl-f json  tab next  esc close";
+
+/// Payload rows the form shows: it grows with the text between these.
+const PAYLOAD_MIN_ROWS: u16 = 4;
+const PAYLOAD_MAX_ROWS: u16 = 12;
+/// Rows the error line may wrap to.
+const ERROR_MAX_ROWS: u16 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
@@ -25,10 +35,11 @@ pub enum Field {
     UserProps,
     Qos,
     Retain,
+    Format,
 }
 
 impl Field {
-    const ORDER: [Field; 7] = [
+    const ORDER: [Field; 8] = [
         Field::Topic,
         Field::Payload,
         Field::ContentType,
@@ -36,6 +47,7 @@ impl Field {
         Field::UserProps,
         Field::Qos,
         Field::Retain,
+        Field::Format,
     ];
 
     fn is_v5_only(self) -> bool {
@@ -60,6 +72,8 @@ impl Field {
 pub enum FormOutcome {
     Continue,
     Cancel,
+    /// Leave the form open and go back to the topics.
+    Leave,
     /// Open the payload (given) in `$EDITOR`.
     Edit(String),
     Send {
@@ -84,8 +98,27 @@ pub struct PublishForm {
     /// `k=v, k2=v2`.
     pub user_props: TextArea<'static>,
     pub field: Field,
-    /// Shown in the form's title; cleared by the next key press.
+    /// Checks and pretty-prints the payload; the bytes sent are as typed.
+    pub format: Format,
+    /// Shown on its own line under the options; cleared by the next key.
     pub error: Option<String>,
+    /// While walking the sent payloads: the entry shown (1 = newest) and
+    /// how many there are.
+    pub sent_pos: Option<(usize, usize)>,
+    /// What the last frame drew where, for clicks.
+    hits: Vec<(Rect, Click)>,
+    /// The form has the keys. Off while it stays open beside the browsed
+    /// panes: no cursor, no highlighted label.
+    active: bool,
+}
+
+/// A click target in the form.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Click {
+    Focus(Field),
+    Qos(u8),
+    Retain,
+    Format(Format),
 }
 
 impl PublishForm {
@@ -105,7 +138,11 @@ impl PublishForm {
             response_topic: TextArea::default(),
             user_props: TextArea::default(),
             field: Field::Topic,
+            format: Format::Raw,
             error: None,
+            sent_pos: None,
+            hits: Vec::new(),
+            active: true,
         };
         form.sync_focus();
         form
@@ -115,6 +152,7 @@ impl PublishForm {
     pub fn prefilled(topic: &str, payload: &str, qos: u8, retain: bool, v5: bool) -> PublishForm {
         let mut form = PublishForm::new(topic, v5);
         form.set_payload(payload);
+        form.format = Format::detect(payload);
         form.qos = qos.min(2);
         form.retain = retain;
         form.field = Field::Topic;
@@ -127,10 +165,11 @@ impl PublishForm {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => return FormOutcome::Cancel,
+            KeyCode::Char('o') if ctrl => return FormOutcome::Leave,
             KeyCode::Char('s') if ctrl => return self.send(),
             KeyCode::Char('e') if ctrl => return FormOutcome::Edit(self.payload_text()),
             KeyCode::Char('f') if ctrl => {
-                if let Err(e) = self.format_json() {
+                if let Err(e) = self.format_payload() {
                     self.error = Some(e);
                 }
             }
@@ -155,16 +194,26 @@ impl PublishForm {
                         self.prop_area(self.field).input(key);
                     }
                 }
-                Field::Qos => {
-                    if let KeyCode::Char(c @ '0'..='2') = key.code {
-                        self.qos = c as u8 - b'0';
-                    }
-                }
+                Field::Qos => match key.code {
+                    KeyCode::Char(c @ '0'..='2') => self.qos = c as u8 - b'0',
+                    KeyCode::Left => self.qos = self.qos.saturating_sub(1),
+                    KeyCode::Right => self.qos = (self.qos + 1).min(2),
+                    KeyCode::Char(' ') => self.qos = (self.qos + 1) % 3,
+                    _ => {}
+                },
                 Field::Retain => {
-                    if key.code == KeyCode::Char(' ') {
+                    if matches!(key.code, KeyCode::Char(' ') | KeyCode::Enter) {
                         self.retain = !self.retain;
                     }
                 }
+                Field::Format => match key.code {
+                    KeyCode::Left => self.format = self.format.step(-1),
+                    KeyCode::Right | KeyCode::Char(' ') => self.format = self.format.step(1),
+                    KeyCode::Char('r') => self.format = Format::Raw,
+                    KeyCode::Char('j') => self.format = Format::Json,
+                    KeyCode::Char('x') => self.format = Format::Xml,
+                    _ => {}
+                },
             },
         }
         FormOutcome::Continue
@@ -197,9 +246,21 @@ impl PublishForm {
         self.sync_focus();
     }
 
-    /// Only the focused text area shows a cursor.
+    /// Whether the form has the keys; see `active`.
+    pub fn set_active(&mut self, active: bool) {
+        if self.active != active {
+            self.active = active;
+            self.sync_focus();
+        }
+    }
+
+    /// Only the focused text area of the active form shows a cursor.
     fn sync_focus(&mut self) {
-        let shown = Style::default().add_modifier(Modifier::REVERSED);
+        let shown = if self.active {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
         let hidden = Style::default();
         self.topic.set_cursor_style(if self.field == Field::Topic {
             shown
@@ -288,84 +349,183 @@ impl PublishForm {
         Ok((props != Props::default()).then_some(props))
     }
 
-    /// Pretty-print the payload as JSON. On a parse error the payload is left
-    /// as typed.
-    pub fn format_json(&mut self) -> Result<(), String> {
-        let text = self.payload.lines().join("\n");
-        let value: serde_json::Value =
-            serde_json::from_str(&text).map_err(|e| format!("invalid JSON: {e}"))?;
-        let pretty = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    /// Pretty-print the payload in its format. A raw payload that is JSON
+    /// or XML switches to that format first. On an error the payload is
+    /// left as typed.
+    pub fn format_payload(&mut self) -> Result<(), String> {
+        let text = self.payload_text();
+        if self.format == Format::Raw {
+            match Format::detect(&text) {
+                Format::Raw => return Err("not JSON or XML: nothing to format".into()),
+                f => self.format = f,
+            }
+        }
+        let pretty = self.format.pretty(&text)?;
         self.payload = TextArea::new(pretty.lines().map(str::to_owned).collect());
         self.sync_focus();
         Ok(())
     }
+
+    /// Nothing typed beyond the topic: no payload and no properties.
+    pub fn is_blank(&self) -> bool {
+        let empty = |a: &TextArea| a.lines().iter().all(|l| l.is_empty());
+        empty(&self.payload)
+            && empty(&self.content_type)
+            && empty(&self.response_topic)
+            && empty(&self.user_props)
+    }
+
+    /// The topic as one line, as it would be sent.
+    pub fn topic_text(&self) -> String {
+        self.topic.lines().join("")
+    }
+
+    /// A left click at `at`: focus the field under it, or set the QoS,
+    /// retain or format clicked. Whether anything was hit.
+    pub fn click(&mut self, at: Position) -> bool {
+        let Some(&(_, target)) = self.hits.iter().find(|(r, _)| r.contains(at)) else {
+            return false;
+        };
+        self.error = None;
+        match target {
+            Click::Focus(f) => self.field = f,
+            Click::Qos(q) => (self.field, self.qos) = (Field::Qos, q),
+            Click::Retain => (self.field, self.retain) = (Field::Retain, !self.retain),
+            Click::Format(f) => (self.field, self.format) = (Field::Format, f),
+        }
+        self.sync_focus();
+        true
+    }
 }
 
-/// The publish form: a card centred over the main area.
-pub fn render(f: &mut Frame, area: Rect, form: &PublishForm) {
-    theme::dim_backdrop(f, area);
-    let area = theme::centered(area, 80, if form.v5 { 21 } else { 18 });
+/// The error line's text and the rows it wraps to in `width` columns.
+fn error_text(form: &PublishForm, width: u16) -> Option<(String, u16)> {
+    let e = form.error.as_deref()?;
+    let text = format!("✕ {}", sanitize(e).replace('\n', " "));
+    let rows = (text.width() as u16).div_ceil(width.max(1));
+    Some((text, rows.clamp(1, ERROR_MAX_ROWS)))
+}
+
+/// Rows the form wants at `width` columns, borders included: the payload
+/// grows with its text, and an error adds its line.
+pub fn height(form: &PublishForm, width: u16) -> u16 {
+    let inner_w = width.saturating_sub(2);
+    let payload = (form.payload.lines().len() as u16).clamp(PAYLOAD_MIN_ROWS, PAYLOAD_MAX_ROWS);
+    let props = if form.v5 { 3 } else { 0 };
+    let error = error_text(form, inner_w).map_or(0, |(_, r)| r);
+    // Borders, topic, the payload's rule and rows, props, options, error.
+    2 + 1 + 1 + payload + props + 1 + error
+}
+
+/// Columns of the label column: the widest label shown.
+fn label_width(form: &PublishForm) -> u16 {
+    if form.v5 { 16 } else { 7 }
+}
+
+/// The payload's title: `payload · 42 B · json ✓ · sent 2/5`.
+fn payload_title(form: &PublishForm) -> Line<'static> {
+    let muted = Style::new().fg(theme::MUTED);
+    let text = form.payload_text();
+    let mut spans = vec![
+        Span::styled("payload", label_style(form, Field::Payload)),
+        Span::styled(format!(" · {} B", text.len()), muted),
+    ];
+    match form.format.check(&text) {
+        Some(Ok(())) => spans.push(Span::styled(
+            format!(" · {} ✓", form.format.label()),
+            Style::new().fg(theme::OK),
+        )),
+        Some(Err(_)) => spans.push(Span::styled(
+            format!(" · {} ✗", form.format.label()),
+            Style::new().fg(theme::ERR),
+        )),
+        None => {}
+    }
+    if let Some((i, n)) = form.sent_pos {
+        spans.push(Span::styled(format!(" · sent {i}/{n}"), muted));
+    }
+    Line::from(spans)
+}
+
+/// The publish form, filling `area`: docked in the message pane, below
+/// history. Records its click targets in the form.
+pub fn render(f: &mut Frame, area: Rect, form: &mut PublishForm) {
+    form.hits.clear();
     f.render_widget(Clear, area);
     let block = match &form.error {
-        Some(e) => Block::bordered()
+        Some(_) => Block::bordered()
             .border_type(BorderType::Thick)
             .title(Span::styled(
-                format!(" publish - {} ", sanitize(e).replace('\n', " ")),
+                " publish ",
                 Style::new().fg(theme::ERR).add_modifier(Modifier::BOLD),
             ))
             .border_style(Style::new().fg(theme::ERR)),
-        None => theme::pane("publish", true),
+        None => theme::pane("publish", form.active),
     };
     let inner = block.inner(area);
     f.render_widget(block, area);
     let props_h = if form.v5 { 3 } else { 0 };
-    let [topic, payload, props, opts, hint] = Layout::vertical([
+    let error = error_text(form, inner.width);
+    let [topic, payload, props, opts, err] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(2),
         Constraint::Length(props_h),
         Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(error.as_ref().map_or(0, |(_, r)| *r)),
     ])
     .areas(inner);
+    let lw = label_width(form);
     if form.v5 {
         let rows = Layout::vertical([Constraint::Length(1); 3]).split(props);
-        for (row, (label, field, area)) in rows.iter().zip([
-            ("content type: ", Field::ContentType, &form.content_type),
-            (
-                "response topic: ",
-                Field::ResponseTopic,
-                &form.response_topic,
-            ),
-            ("user props: ", Field::UserProps, &form.user_props),
+        for (row, (label, field)) in rows.iter().zip([
+            ("content type: ", Field::ContentType),
+            ("response topic: ", Field::ResponseTopic),
+            ("user props: ", Field::UserProps),
         ]) {
             let [l, body] =
-                Layout::horizontal([Constraint::Length(16), Constraint::Min(1)]).areas(*row);
+                Layout::horizontal([Constraint::Length(lw), Constraint::Min(1)]).areas(*row);
             f.render_widget(Paragraph::new(label).style(label_style(form, field)), l);
-            f.render_widget(area, body);
+            f.render_widget(&*form.prop_area(field), body);
+            form.hits.push((*row, Click::Focus(field)));
         }
     }
-    let [label, topic] =
-        Layout::horizontal([Constraint::Length(7), Constraint::Min(1)]).areas(topic);
+    form.hits.push((topic, Click::Focus(Field::Topic)));
+    let [label, topic_body] =
+        Layout::horizontal([Constraint::Length(lw), Constraint::Min(1)]).areas(topic);
     f.render_widget(
         Paragraph::new("topic: ").style(label_style(form, Field::Topic)),
         label,
     );
     f.render_widget(
-        Paragraph::new(topic_line(form, topic.width as usize)),
-        topic,
+        Paragraph::new(topic_line(form, topic_body.width as usize)),
+        topic_body,
     );
     let block = Block::new()
         .borders(Borders::TOP)
-        .title("payload")
-        .title_style(label_style(form, Field::Payload));
+        .title(payload_title(form));
     let body = block.inner(payload);
     f.render_widget(block, payload);
     f.render_widget(&form.payload, body);
-    f.render_widget(Paragraph::new(options_line(form)), opts);
-    f.render_widget(
-        Paragraph::new(HINT).style(Style::new().fg(Color::DarkGray)),
-        hint,
-    );
+    form.hits.push((payload, Click::Focus(Field::Payload)));
+    let mut x = opts.x;
+    let mut spans = Vec::new();
+    for (span, click) in options_spans(form) {
+        let w = (span.content.width() as u16).min(opts.right().saturating_sub(x));
+        if let Some(c) = click {
+            form.hits.push((Rect::new(x, opts.y, w, 1), c));
+        }
+        x += w;
+        spans.push(span);
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), opts);
+    if let Some((text, _)) = error {
+        f.render_widget(
+            Paragraph::new(text)
+                .style(Style::new().fg(theme::ERR))
+                .wrap(Wrap { trim: true }),
+            err,
+        );
+    }
 }
 
 /// The topic line, drawn by hand rather than by the text area: the text area
@@ -376,7 +536,8 @@ pub fn render(f: &mut Frame, area: Rect, form: &PublishForm) {
 fn topic_line(form: &PublishForm, width: usize) -> Line<'static> {
     let lines = form.topic.lines();
     let single = lines.len() == 1;
-    let cursor = (single && form.field == Field::Topic).then(|| form.topic.cursor().1);
+    let cursor =
+        (single && form.active && form.field == Field::Topic).then(|| form.topic.cursor().1);
     let mut cells: Vec<(String, bool)> = lines
         .join("\u{23ce}")
         .chars()
@@ -416,28 +577,53 @@ fn topic_line(form: &PublishForm, width: usize) -> Line<'static> {
 }
 
 fn label_style(form: &PublishForm, field: Field) -> Style {
-    if form.field == field {
-        Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    if form.active && form.field == field {
+        Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD)
     } else {
         Style::new()
     }
 }
 
-/// `QoS: [0] 1 2   Retain: [ ]`; the focused field's label is highlighted.
-fn options_line(form: &PublishForm) -> Line<'static> {
-    let mut spans = vec![Span::styled("QoS:", label_style(form, Field::Qos))];
-    for q in 0..=2u8 {
-        let (text, style) = if q == form.qos {
-            (format!(" [{q}]"), Style::new().add_modifier(Modifier::BOLD))
+/// `QoS [0] 1 2  Retain [ ]  Format [raw] json xml`, each value with its
+/// click target; the focused field's label is highlighted. 46 columns: it
+/// fits the message pane of an 80-column terminal.
+fn options_spans(form: &PublishForm) -> Vec<(Span<'static>, Option<Click>)> {
+    let pick = |on: bool, text: &str| {
+        if on {
+            Span::styled(
+                format!(" [{text}]"),
+                Style::new().add_modifier(Modifier::BOLD),
+            )
         } else {
-            (format!(" {q}"), Style::new())
-        };
-        spans.push(Span::styled(text, style));
+            Span::raw(format!(" {text}"))
+        }
+    };
+    let mut spans = vec![(
+        Span::styled("QoS", label_style(form, Field::Qos)),
+        Some(Click::Focus(Field::Qos)),
+    )];
+    for q in 0..=2u8 {
+        spans.push((pick(q == form.qos, &q.to_string()), Some(Click::Qos(q))));
     }
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(" Retain:", label_style(form, Field::Retain)));
-    spans.push(Span::raw(if form.retain { " [x]" } else { " [ ]" }));
-    Line::from(spans)
+    spans.push((Span::raw("  "), None));
+    spans.push((
+        Span::styled("Retain", label_style(form, Field::Retain)),
+        Some(Click::Retain),
+    ));
+    let mark = if form.retain { " [x]" } else { " [ ]" };
+    spans.push((Span::raw(mark), Some(Click::Retain)));
+    spans.push((Span::raw("  "), None));
+    spans.push((
+        Span::styled("Format", label_style(form, Field::Format)),
+        Some(Click::Focus(Field::Format)),
+    ));
+    for fmt in Format::ALL {
+        spans.push((
+            pick(fmt == form.format, fmt.label()),
+            Some(Click::Format(fmt)),
+        ));
+    }
+    spans
 }
 
 #[cfg(test)]
@@ -539,7 +725,7 @@ mod tests {
     fn shift_tab_goes_back() {
         let mut f = PublishForm::new("a", false);
         f.on_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
-        assert_eq!(f.field, Field::Retain);
+        assert_eq!(f.field, Field::Format);
     }
 
     #[test]
@@ -562,13 +748,18 @@ mod tests {
         let mut f = PublishForm::new("a", false);
         f.field = Field::Payload;
         type_str(&mut f, "{\"a\":1}");
-        assert!(f.format_json().is_ok());
+        assert!(f.format_payload().is_ok());
         assert_eq!(f.payload.lines(), ["{", "  \"a\": 1", "}"]);
+        assert_eq!(
+            f.format,
+            Format::Json,
+            "raw switches to the detected format"
+        );
 
         let mut f = PublishForm::new("a", false);
         f.field = Field::Payload;
         type_str(&mut f, "{oops");
-        assert!(f.format_json().is_err());
+        assert!(f.format_payload().is_err());
         assert_eq!(f.payload.lines(), ["{oops"]);
         // via the key: error shown, then cleared by a successful action
         f.on_key(ctrl('f'));
@@ -592,9 +783,9 @@ mod tests {
     fn control_char_topic_renders_without_escape() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        let f = PublishForm::new("a/\x1b[2Jb\tc\nd\re", false);
+        let mut f = PublishForm::new("a/\x1b[2Jb\tc\nd\re", false);
         let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        t.draw(|fr| render(fr, fr.area(), &f)).unwrap();
+        t.draw(|fr| render(fr, fr.area(), &mut f)).unwrap();
         let b = t.backend().buffer().clone();
         assert!(
             b.content
@@ -704,5 +895,137 @@ mod tests {
     fn esc_cancels() {
         let mut f = PublishForm::new("a", false);
         assert_eq!(f.on_key(key(KeyCode::Esc)), FormOutcome::Cancel);
+    }
+
+    fn draw(f: &mut PublishForm, w: u16, h: u16) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|fr| render(fr, fr.area(), f)).unwrap();
+        let b = t.backend().buffer().clone();
+        b.content
+            .chunks(w as usize)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn format_field_cycles_and_pretty_prints_xml() {
+        let mut f = PublishForm::new("a", false);
+        f.field = Field::Format;
+        f.on_key(key(KeyCode::Right));
+        assert_eq!(f.format, Format::Json);
+        f.on_key(key(KeyCode::Char('x')));
+        assert_eq!(f.format, Format::Xml);
+        f.on_key(key(KeyCode::Left));
+        assert_eq!(f.format, Format::Json);
+        f.format = Format::Xml;
+        f.set_payload("<a><b>1</b></a>");
+        f.on_key(ctrl('f'));
+        assert_eq!(f.error, None);
+        assert_eq!(f.payload.lines(), ["<a>", "  <b>1</b>", "</a>"]);
+        // The bytes sent are the text as typed (here, pretty-printed).
+        match f.on_key(ctrl('s')) {
+            FormOutcome::Send { payload, .. } => {
+                assert_eq!(payload, b"<a>\n  <b>1</b>\n</a>")
+            }
+            o => panic!("{o:?}"),
+        }
+    }
+
+    #[test]
+    fn prefilled_detects_format() {
+        let f = PublishForm::prefilled("a", "{\"x\":1}", 0, false, false);
+        assert_eq!(f.format, Format::Json);
+        let f = PublishForm::prefilled("a", "<r/>", 0, false, false);
+        assert_eq!(f.format, Format::Xml);
+        let f = PublishForm::prefilled("a", "on", 0, false, false);
+        assert_eq!(f.format, Format::Raw);
+    }
+
+    #[test]
+    fn qos_keys_step_and_cycle() {
+        let mut f = PublishForm::new("a", false);
+        f.field = Field::Qos;
+        f.on_key(key(KeyCode::Right));
+        f.on_key(key(KeyCode::Right));
+        f.on_key(key(KeyCode::Right));
+        assert_eq!(f.qos, 2, "right stops at 2");
+        f.on_key(key(KeyCode::Char(' ')));
+        assert_eq!(f.qos, 0, "space wraps");
+        f.on_key(key(KeyCode::Left));
+        assert_eq!(f.qos, 0);
+    }
+
+    #[test]
+    fn title_shows_size_validity_and_sent_position() {
+        let mut f = PublishForm::new("a", false);
+        f.format = Format::Json;
+        f.set_payload("{\"a\":1}");
+        let s = draw(&mut f, 60, 12);
+        assert!(s.contains("payload · 7 B · json ✓"), "{s}");
+        f.set_payload("{");
+        f.sent_pos = Some((2, 5));
+        let s = draw(&mut f, 60, 12);
+        assert!(s.contains("payload · 1 B · json ✗ · sent 2/5"), "{s}");
+        assert!(!s.contains("ctrl-s"), "no hint line in the form: {s}");
+    }
+
+    #[test]
+    fn error_has_its_own_line_and_keeps_the_title() {
+        let mut f = PublishForm::new("", false);
+        f.on_key(ctrl('s'));
+        let before = height(&f, 60);
+        assert_eq!(before, height(&PublishForm::new("", false), 60) + 1);
+        let s = draw(&mut f, 60, before);
+        assert!(s.contains(" publish "), "{s}");
+        assert!(s.contains("✕ invalid topic"), "{s}");
+    }
+
+    #[test]
+    fn height_grows_with_payload_within_bounds() {
+        let mut f = PublishForm::new("a", false);
+        let min = height(&f, 60);
+        f.set_payload(&"x\n".repeat(8));
+        assert_eq!(height(&f, 60), min + 9 - PAYLOAD_MIN_ROWS);
+        f.set_payload(&"x\n".repeat(100));
+        assert_eq!(height(&f, 60), min + PAYLOAD_MAX_ROWS - PAYLOAD_MIN_ROWS);
+    }
+
+    #[test]
+    fn v5_labels_line_up() {
+        let mut f = PublishForm::new("tt", true);
+        f.content_type.insert_str("ct");
+        let s = draw(&mut f, 60, 20);
+        let col = |label: &str, value: &str| {
+            let row = s.lines().find(|l| l.contains(label)).unwrap();
+            row[..row.find(value).unwrap()].chars().count()
+        };
+        assert_eq!(col("topic:", "tt"), col("content type:", "ct"), "{s}");
+    }
+
+    #[test]
+    fn clicks_focus_fields_and_set_options() {
+        let mut f = PublishForm::new("a", false);
+        let s = draw(&mut f, 70, 10);
+        let rows: Vec<&str> = s.lines().collect();
+        let opts_y = rows.iter().position(|r| r.contains("QoS [")).unwrap() as u16;
+        let x_of = |needle: &str| {
+            let r = rows[opts_y as usize];
+            r[..r.find(needle).unwrap()].chars().count() as u16
+        };
+        let (q2, retain, xml) = (x_of(" 2 "), x_of("[ ]"), x_of("xml"));
+        assert!(f.click(Position::new(q2 + 1, opts_y)));
+        assert_eq!((f.field, f.qos), (Field::Qos, 2));
+        assert!(f.click(Position::new(retain, opts_y)));
+        assert!(f.retain);
+        assert!(f.click(Position::new(xml, opts_y)));
+        assert_eq!((f.field, f.format), (Field::Format, Format::Xml));
+        assert!(f.click(Position::new(10, 3)), "payload");
+        assert_eq!(f.field, Field::Payload);
+        assert!(f.click(Position::new(10, 1)), "topic");
+        assert_eq!(f.field, Field::Topic);
+        assert!(!f.click(Position::new(0, 0)), "border");
     }
 }

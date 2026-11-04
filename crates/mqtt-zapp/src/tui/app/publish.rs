@@ -23,11 +23,24 @@ impl App {
         let Some(form) = self.publish.as_mut() else {
             return Effect::None;
         };
+        form.sent_pos = None;
         match form.on_key(key) {
             FormOutcome::Continue => Effect::None,
             FormOutcome::Edit(text) => Effect::EditPayload(text),
+            FormOutcome::Leave => {
+                self.leave_publish();
+                Effect::None
+            }
             FormOutcome::Cancel => {
-                self.publish = None;
+                // Kept for the next form on this topic, unless blank or
+                // just sent as is.
+                let sent = &self.sent;
+                if let Some(form) = self.publish.take().filter(|f| {
+                    let last = sent.get(&f.topic_text()).and_then(|l| l.front());
+                    !f.is_blank() && last != Some(&f.payload_text())
+                }) {
+                    self.publish_draft = Some(form);
+                }
                 self.mode = Mode::Browse;
                 Effect::None
             }
@@ -54,6 +67,36 @@ impl App {
         }
     }
 
+    /// A left click in the form: focus a field or set an option.
+    pub(super) fn publish_click(&mut self, at: ratatui::layout::Position) {
+        if let Some(form) = self.publish.as_mut()
+            && form.click(at)
+        {
+            self.sent_walk = None;
+            form.sent_pos = None;
+            self.dirty = true;
+        }
+    }
+
+    /// ctrl-o: back to the topics; the form stays open, keys go to browse.
+    pub(super) fn leave_publish(&mut self) {
+        self.sent_walk = None;
+        if let Some(form) = self.publish.as_mut() {
+            form.sent_pos = None;
+        }
+        self.mode = Mode::Browse;
+        self.focus = Focus::Tree;
+        self.dirty = true;
+    }
+
+    /// Give the keys back to the form left open with ctrl-o.
+    pub(super) fn enter_publish(&mut self) {
+        if self.publish.is_some() {
+            self.mode = Mode::Publish;
+            self.dirty = true;
+        }
+    }
+
     /// Replace the publish form's payload (the editor's result).
     pub fn set_publish_payload(&mut self, text: &str) {
         if let Some(form) = self.publish.as_mut() {
@@ -76,7 +119,7 @@ impl App {
         let Some(form) = self.publish.as_mut() else {
             return Effect::None;
         };
-        let topic = form.topic.lines().join("");
+        let topic = form.topic_text();
         let Some(list) = self.sent.get(&topic).filter(|l| !l.is_empty()) else {
             return Effect::None;
         };
@@ -93,6 +136,7 @@ impl App {
         if let Some((i, _)) = &next {
             form.set_payload(&list[*i]);
         }
+        form.sent_pos = next.as_ref().map(|(i, _)| (i + 1, list.len()));
         self.sent_walk = next;
         Effect::None
     }
@@ -124,6 +168,11 @@ impl App {
     }
 
     pub(super) fn open_publish(&mut self) {
+        let resend = self.focus == Focus::History && self.history_sel.is_some();
+        // A form left open comes back as it was; a re-send replaces it.
+        if self.publish.is_some() && !resend {
+            return self.enter_publish();
+        }
         let topic = self
             .selected
             .map(|id| self.tree.full_topic(id))
@@ -134,6 +183,15 @@ impl App {
             .as_ref()
             .is_some_and(|p| p.mqtt_version == mqtt_zapp_core::config::MqttVersion::V5);
         let mut form = PublishForm::new(&topic, v5);
+        if !resend
+            && let Some(draft) = self
+                .publish_draft
+                .take_if(|d| d.topic_text() == topic && d.v5 == v5)
+        {
+            form = draft;
+            form.error = None;
+            note = Some("draft restored");
+        }
         if self.focus == Focus::History
             && self.history_sel.is_some()
             && let Some(m) = crate::tui::message_view::shown_message(self)

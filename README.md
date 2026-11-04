@@ -339,9 +339,22 @@ To select text with the mouse in kitty and other terminals, press `f` first; liv
 
 ### ✉️ Publishing
 
-In the publish form, `ctrl-e` opens the payload in `$VISUAL`/`$EDITOR` (or
-`vi`), and `ctrl-p`/`ctrl-n` recall payloads sent to that topic in this
-session. In the history pane, `p` opens the form with that message filled in.
+The publish form opens at the bottom of the message pane, under the history.
+`ctrl-o` goes back to the topics with the form left open, so you can select a
+topic and watch it while you publish; `p`, `tab` past the last pane, or a click
+on the form brings you back into it as you left it. `esc` closes it.
+In the form, `ctrl-e` opens the payload in `$VISUAL`/`$EDITOR` (or `vi`), and
+`ctrl-p`/`ctrl-n` recall payloads sent to that topic in this session (the
+payload's title shows `sent 2/5`). In the history pane, `p` opens the form with
+that message filled in. The footer shows the keys of the focused field, and a
+click focuses a field or sets QoS, retain or the format.
+
+`Format` is `raw`, `json` or `xml`. It checks the payload as you type (`json ✓`
+or `json ✗` in the payload's title, next to its size) and `ctrl-f` pretty-prints
+it; on `raw`, `ctrl-f` picks JSON or XML when the payload is one of them. The
+bytes sent are always the text as typed. A form filled from history starts on
+the format of that message. `esc` keeps what you typed: the next form opened on
+the same topic starts from it.
 
 On an MQTT 5 connection the form has three more fields after the payload:
 `content type`, `response topic` and `user props`, typed as `k=v, k2=v2`

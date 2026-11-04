@@ -277,15 +277,20 @@ fn publish_overlay_renders_fields_and_error_title() {
         "publish",
         "topic: ",
         "payload",
-        "QoS: [0] 1 2   Retain: [ ]",
-        "ctrl-s send  ctrl-e editor  ctrl-p/n history",
+        "QoS [0] 1 2  Retain [ ]  Format [raw] json xml",
         "topics",
     ] {
         assert!(s.contains(want), "{want}: {s}");
     }
+    assert_eq!(s.matches("ctrl-s send").count(), 1, "hints once: {s}");
+    assert!(last_line(&draw(&mut a, 80, 24)).starts_with("ctrl-s send  enter next"));
+    a.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    for _ in 0..5 {
+        a.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+    }
     a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
     let s = text(&draw(&mut a, 80, 24));
-    assert!(s.contains("publish - invalid topic"), "{s}");
+    assert!(s.contains("✕ invalid topic"), "{s}");
 }
 
 #[test]
@@ -439,4 +444,66 @@ fn pending_lookup_shows_persistently() {
     );
     let s = text(&draw(&mut a, 90, 24));
     assert!(s.contains("connecting… (waiting for password)"), "{s}");
+}
+
+#[test]
+fn publish_form_docks_in_message_pane_under_history() {
+    let mut a = app_with(&[("a", b"1"), ("a", b"2"), ("a", b"3")]);
+    a.handle_action(Action::Down);
+    a.handle_action(Action::Publish);
+    let s = text(&draw(&mut a, 120, 40));
+    let rows: Vec<&str> = s.lines().collect();
+    let row_of = |needle: &str| rows.iter().position(|r| r.contains(needle));
+    let hist = row_of("history · ").expect("history box shown");
+    let form = row_of("● publish").expect("publish form shown");
+    assert!(form > hist, "form below history: {s}");
+    // Right pane only: the tree keeps its column, undimmed beside the form.
+    let col = rows[form]
+        .chars()
+        .position(|c| c == '╭' || c == '┏')
+        .unwrap();
+    assert!(
+        col >= 120 * 40 / 100,
+        "form starts in the message pane: {s}"
+    );
+    // The form has focus; the tree beside it is drawn unfocused.
+    assert!(
+        rows[form].starts_with('│'),
+        "tree unfocused beside the form: {s}"
+    );
+    let form_h = crate::tui::publish::height(a.publish.as_ref().unwrap(), 72);
+    assert_eq!(
+        form + usize::from(form_h),
+        rows.len() - 1,
+        "form ends above the footer"
+    );
+}
+
+#[test]
+fn left_form_stays_drawn_unfocused_and_a_click_returns() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+    let mut a = app_with(&[("a", b"1"), ("b", b"2")]);
+    a.handle_action(Action::Down);
+    a.handle_action(Action::Publish);
+    a.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    let s = text(&draw(&mut a, 120, 40));
+    let rows: Vec<&str> = s.lines().collect();
+    let form = rows
+        .iter()
+        .position(|r| r.contains("publish ─"))
+        .expect("thin border");
+    assert!(rows[1].starts_with('┏'), "tree focused: {s}");
+    assert!(last_line(&draw(&mut a, 120, 40)).contains("p back to form"));
+    // A click on the tree while in the form leaves it; on the form, enters.
+    mouse(
+        &mut a,
+        MouseEventKind::Down(MouseButton::Left),
+        60,
+        form as u16 + 1,
+    );
+    assert_eq!(a.mode, Mode::Publish);
+    draw(&mut a, 120, 40);
+    mouse(&mut a, MouseEventKind::Down(MouseButton::Left), 2, 2);
+    assert_eq!(a.mode, Mode::Browse);
+    assert!(a.publish.is_some());
 }

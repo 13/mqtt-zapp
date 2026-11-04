@@ -25,6 +25,10 @@ impl App {
                     Focus::Tree => Focus::Payload,
                     Focus::Payload if self.history_shown.get() => Focus::History,
                     Focus::Payload | Focus::History => Focus::Tree,
+                };
+                // Past the last pane, an open publish form is next.
+                if self.focus == Focus::Tree && self.publish.is_some() {
+                    self.enter_publish();
                 }
             }
             Action::ToggleDiff => {

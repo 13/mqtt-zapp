@@ -9,6 +9,46 @@ fn publish_keys_in_footer() {
 }
 
 #[test]
+fn publish_footer_follows_the_focused_field() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut a = app_with(&[("a", b"1")]);
+    a.handle_action(Action::Publish);
+    let tab = |a: &mut App| a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let footer = |a: &mut App| last_line(&draw(a, 120, 30));
+    tab(&mut a);
+    let last = footer(&mut a);
+    assert!(last.contains("ctrl-f pretty  ctrl-e editor"), "{last}");
+    assert!(!last.contains("ctrl-p/n"), "nothing sent yet: {last}");
+    tab(&mut a);
+    assert!(footer(&mut a).contains("0-2 ←/→ qos"));
+    tab(&mut a);
+    assert!(footer(&mut a).contains("space toggle"));
+    tab(&mut a);
+    assert!(footer(&mut a).contains("←/→ r/j/x format"));
+}
+
+#[test]
+fn click_in_publish_form_sets_options() {
+    let mut a = app_with(&[("a", b"1")]);
+    a.handle_action(Action::Publish);
+    let s = text(&draw(&mut a, 120, 30));
+    let rows: Vec<&str> = s.lines().collect();
+    let y = rows.iter().position(|r| r.contains("QoS [")).unwrap();
+    let x = {
+        let r = rows[y];
+        r[..r.find("json").unwrap()].chars().count() as u16
+    };
+    mouse(
+        &mut a,
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        x,
+        y as u16,
+    );
+    let form = a.publish.as_ref().unwrap();
+    assert_eq!(form.format, crate::tui::publish::Format::Json);
+}
+
+#[test]
 fn status_bar_shows_state_and_rate() {
     let mut a = app_with(&[("a", b"1")]);
     a.apply_core_event(CoreEvent::State(

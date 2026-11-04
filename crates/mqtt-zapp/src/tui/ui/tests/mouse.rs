@@ -153,7 +153,7 @@ fn picker_click_selects_then_connects() {
 }
 
 #[test]
-fn click_closes_help_and_is_ignored_in_publish() {
+fn click_closes_help_and_beside_publish_leaves_it_open() {
     let mut a = app_with(&[("a", b"1")]);
     a.handle_action(Action::Help);
     let _ = draw(&mut a, 100, 24);
@@ -161,9 +161,10 @@ fn click_closes_help_and_is_ignored_in_publish() {
     assert_eq!(a.mode, Mode::Browse);
     a.handle_action(Action::Publish);
     let _ = draw(&mut a, 100, 24);
-    click(&mut a, 10, 3);
-    assert_eq!(a.mode, Mode::Publish);
-    assert_eq!(a.selected, None);
+    click(&mut a, 10, 2);
+    assert_eq!(a.mode, Mode::Browse, "the tree click goes to the tree");
+    assert!(a.publish.is_some(), "the form stays open");
+    assert!(a.selected.is_some());
 }
 
 #[test]

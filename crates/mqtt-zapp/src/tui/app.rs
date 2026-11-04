@@ -400,8 +400,12 @@ pub struct App {
     state_read_only: bool,
     /// Unknown `state.toml` keys, written back unchanged by every save.
     state_extra: mqtt_zapp_core::state::Extra,
-    /// Open while in `Mode::Publish`.
+    /// The publish form: it has the keys in `Mode::Publish`, and stays
+    /// open beside the panes in browse after ctrl-o.
     pub publish: Option<PublishForm>,
+    /// A form closed with esc while it held a payload or properties; the
+    /// next form opened on its topic starts from it.
+    pub(super) publish_draft: Option<PublishForm>,
     /// A transient footer message (publish result) and when it was set.
     pub status_note: Option<(Note, Instant)>,
     /// The chart: `None` off, `Some(None)` the plain numeric payload,
@@ -562,6 +566,7 @@ impl App {
             theme: settings.theme,
             timestamp_format: valid_time_format(&settings.timestamp_format),
             sent_walk: None,
+            publish_draft: None,
             await_reply: None,
             created: Instant::now(),
             rows_cache: RefCell::new(None),
@@ -983,6 +988,12 @@ impl App {
                 self.payload_scroll = 0;
             }
         }
+    }
+
+    /// Whether `pane` is drawn focused: an open publish form, docked
+    /// beside the panes, takes the focus from all of them.
+    pub fn pane_focused(&self, pane: Focus) -> bool {
+        self.mode != Mode::Publish && self.focus == pane
     }
 
     fn history_len(&self) -> usize {

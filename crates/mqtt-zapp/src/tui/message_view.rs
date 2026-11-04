@@ -2,7 +2,7 @@
 //! against the previous message) and the history list. Everything that came
 //! from the broker is sanitized before it is drawn.
 
-use super::app::{App, Focus, HitAreas};
+use super::app::{App, Focus, HitAreas, Mode};
 use super::keymap::Action;
 use super::theme;
 use chrono::{DateTime, Local};
@@ -362,7 +362,10 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
         });
         // Payload and history focus both land here while there is nothing
         // to show, so the focus stays visible.
-        let block = theme::pane("message", app.focus != Focus::Tree);
+        let block = theme::pane(
+            "message",
+            !app.pane_focused(Focus::Tree) && app.mode != Mode::Publish,
+        );
         app.hit.set(HitAreas {
             payload: area,
             header_topic: Rect::default(),
@@ -501,7 +504,7 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
         payload: area,
         ..app.hit.get()
     });
-    let mut block = theme::pane(title, app.focus == Focus::Payload);
+    let mut block = theme::pane(title, app.pane_focused(Focus::Payload));
     let height = block.inner(area).height;
     app.payload_height.set(height);
     let Some((body, kind)) = body(app) else {
@@ -513,7 +516,7 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
         return;
     };
     let body = &*body;
-    let focused = app.focus == Focus::Payload;
+    let focused = app.pane_focused(Focus::Payload);
     let title_w = theme::pane_title_width(title, focused);
     let label = copy_label(title_w, title_w, area.width);
     let copy_w = label.width() as u16;

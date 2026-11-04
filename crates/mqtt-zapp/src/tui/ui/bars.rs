@@ -24,7 +24,14 @@ pub(super) fn hints(app: &App) -> Vec<(String, &'static str)> {
     match (app.mode, app.focus) {
         (Mode::Browse, Focus::Tree) => vec![
             (k(Action::Search), "search"),
-            (k(Action::Publish), "publish"),
+            (
+                k(Action::Publish),
+                if app.publish.is_some() {
+                    "back to form"
+                } else {
+                    "publish"
+                },
+            ),
             (k(Action::Help), "help"),
             (k(Action::Quit), "quit"),
             (k(Action::FocusNext), "focus"),
@@ -77,16 +84,46 @@ pub(super) fn hints(app: &App) -> Vec<(String, &'static str)> {
             ("esc".into(), "close"),
         ],
         (Mode::Confirm, _) => vec![("y".into(), "confirm"), ("esc".into(), "cancel")],
-        (Mode::Publish, _) => vec![
-            ("ctrl-s".into(), "send"),
-            ("ctrl-e".into(), "editor"),
-            ("ctrl-p/n".into(), "history"),
-            ("ctrl-f".into(), "format json"),
-            ("tab".into(), "next"),
-            ("esc".into(), "close"),
-        ],
+        (Mode::Publish, _) => publish_hints(app),
         _ => vec![],
     }
+}
+
+/// The publish form's hints: the focused field's keys after send, then the
+/// rest. `push_hints` drops from the end, so the field's own keys stay.
+fn publish_hints(app: &App) -> Vec<(String, &'static str)> {
+    use crate::tui::publish::Field;
+    let Some(form) = &app.publish else {
+        return vec![];
+    };
+    let mut hints: Vec<(String, &'static str)> = vec![("ctrl-s".into(), "send")];
+    match form.field {
+        Field::Payload => {
+            if app
+                .sent
+                .get(&form.topic_text())
+                .is_some_and(|l| !l.is_empty())
+            {
+                hints.push(("ctrl-p/n".into(), "sent"));
+            }
+            hints.push(("ctrl-f".into(), "pretty"));
+            hints.push(("ctrl-e".into(), "editor"));
+        }
+        Field::Topic | Field::ContentType | Field::ResponseTopic | Field::UserProps => {
+            hints.push(("enter".into(), "next"))
+        }
+        Field::Qos => hints.push(("0-2 ←/→".into(), "qos")),
+        Field::Retain => hints.push(("space".into(), "toggle")),
+        Field::Format => hints.push(("←/→ r/j/x".into(), "format")),
+    }
+    hints.push(("ctrl-o".into(), "topics"));
+    hints.push(("tab".into(), "next"));
+    hints.push(("esc".into(), "close"));
+    if form.field != Field::Payload {
+        hints.push(("ctrl-f".into(), "pretty"));
+        hints.push(("ctrl-e".into(), "editor"));
+    }
+    hints
 }
 
 /// Append whole hints while they fit in `width` columns.

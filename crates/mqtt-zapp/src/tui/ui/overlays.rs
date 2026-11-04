@@ -204,9 +204,10 @@ pub(super) const HELP_FIXED: &[(&str, &[(&str, &str)])] = &[
         &[
             ("ctrl-s", "send"),
             ("ctrl-e", "$EDITOR"),
-            ("ctrl-p/n", "history"),
-            ("ctrl-f", "format json"),
+            ("ctrl-p/n", "sent payloads"),
+            ("ctrl-f", "pretty-print"),
             ("tab", "next field"),
+            ("ctrl-o", "topics, form stays open"),
             ("esc", "close"),
         ],
     ),

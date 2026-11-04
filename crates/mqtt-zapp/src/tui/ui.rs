@@ -107,6 +107,9 @@ fn render_front(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(footer_line(app, area.width)), status);
 }
 
+/// Below this many rows left over, the publish form takes the whole message pane.
+const PUBLISH_MIN_MESSAGE_ROWS: u16 = 5;
+
 fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
     let [header, main, status] = Layout::vertical([
         Constraint::Length(1),
@@ -132,11 +135,34 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(main)
     };
     render_tree(f, app, tree);
-    super::message_view::settle_history_focus(app, message, stacked);
-    super::message_view::render_message(f, message, app, stacked);
-    if let (Mode::Publish, Some(form)) = (app.mode, &app.publish) {
-        super::publish::render(f, main, form);
+    // The publish form docks at the bottom of the message pane, under history.
+    let form_h = match &app.publish {
+        Some(form) => {
+            let want = super::publish::height(form, message.width).min(message.height);
+            // Too little left for the message pane: the form takes it all.
+            if message.height - want < PUBLISH_MIN_MESSAGE_ROWS {
+                message.height
+            } else {
+                want
+            }
+        }
+        _ => 0,
+    };
+    let [message, form_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(form_h)]).areas(message);
+    if message.height > 0 {
+        super::message_view::settle_history_focus(app, message, stacked);
+        super::message_view::render_message(f, message, app, stacked);
     }
+    let focused = app.mode == Mode::Publish;
+    if let Some(form) = app.publish.as_mut() {
+        form.set_active(focused);
+        super::publish::render(f, form_area, form);
+    }
+    app.hit.set(HitAreas {
+        publish: form_area,
+        ..app.hit.get()
+    });
     if app.mode == Mode::Help {
         render_help(f, main, app);
     }
@@ -153,7 +179,7 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
-    let focused = app.focus == Focus::Tree;
+    let focused = app.pane_focused(Focus::Tree);
     app.hit.set(HitAreas {
         tree: area,
         ..app.hit.get()

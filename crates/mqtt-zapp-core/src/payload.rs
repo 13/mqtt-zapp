@@ -424,13 +424,17 @@ pub fn base64(bytes: &[u8]) -> String {
 
 /// Single-line, sanitized preview of at most `max_chars` chars; ends with `…` if truncated.
 /// Only the first `max_chars * 4` bytes are examined, so cost is bounded.
+/// Line breaks fold to spaces (see `fold_lines`), so pretty JSON reads as
+/// `{ "a": 1 }`; no marker that could pass for part of the payload.
 pub fn preview(payload: &[u8], max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
     }
     let window = max_chars.saturating_mul(4);
     let slice = &payload[..payload.len().min(window)];
-    let flat = sanitize(&String::from_utf8_lossy(slice)).replace('\n', "\u{23ce}");
+    let flat = fold_lines(&sanitize(
+        &String::from_utf8_lossy(slice).replace("\r\n", "\n"),
+    ));
     if payload.len() > window || flat.chars().count() > max_chars {
         let mut out: String = flat.chars().take(max_chars - 1).collect();
         out.push('\u{2026}');
@@ -438,6 +442,31 @@ pub fn preview(payload: &[u8], max_chars: usize) -> String {
     } else {
         flat
     }
+}
+
+/// Each line break, with the blanks around it, becomes one space; breaks at
+/// the start or end are dropped. Blanks within a line are kept.
+fn fold_lines(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut lines = s.split('\n').peekable();
+    let mut first = true;
+    while let Some(line) = lines.next() {
+        let line = match (first, lines.peek().is_some()) {
+            (true, true) => line.trim_end(),
+            (true, false) => line,
+            (false, true) => line.trim(),
+            (false, false) => line.trim_start(),
+        };
+        first = false;
+        if line.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 /// Whether a status leaf's payload says the device is offline.
@@ -780,7 +809,7 @@ mod tests {
     }
     #[test]
     fn preview_truncates_and_flattens() {
-        assert_eq!(preview(b"line1\nline2-long", 10), "line1⏎lin…");
+        assert_eq!(preview(b"line1\nline2-long", 10), "line1 lin…");
     }
     #[test]
     fn hex_dump_row() {
@@ -806,5 +835,21 @@ mod tests {
         let d = hex_dump(&[0u8; 17]);
         assert_eq!(d.len(), 2);
         assert!(d[1].starts_with("00000010  00 "));
+    }
+
+    #[test]
+    fn preview_folds_line_breaks_to_spaces() {
+        assert_eq!(
+            preview(b"{\n  \"hello\": \"22\",\n}", 80),
+            r#"{ "hello": "22", }"#
+        );
+        assert_eq!(
+            preview(b"a\r\n\r\n  b\n", 80),
+            "a b",
+            "CRLF and blank lines"
+        );
+        assert_eq!(preview(b"\n\n  x", 80), "x", "leading breaks dropped");
+        assert_eq!(preview(b"  a  b  ", 80), "  a  b  ", "one line kept as is");
+        assert!(!preview(b"x\ny", 80).contains('\u{23ce}'));
     }
 }
