@@ -61,7 +61,7 @@ impl App {
     fn is_live_session_selected(&self) -> bool {
         let gave_up = matches!(
             self.conn_state,
-            ConnState::Disconnected { retry_in_ms: 0, .. }
+            ConnState::Disconnected { retry_in_ms: 0, .. } | ConnState::Failed { .. }
         );
         self.connected.is_some()
             && !gave_up

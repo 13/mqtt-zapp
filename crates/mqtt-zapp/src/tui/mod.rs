@@ -302,7 +302,10 @@ async fn event_loop(
                     }
                 }
                 // The connection task ended.
-                None => session.rx = None,
+                None => {
+                    session.rx = None;
+                    app.on_connection_ended();
+                }
             },
             Some(note) = notes.recv() => {
                 boost = coalesce(boost, Instant::now());

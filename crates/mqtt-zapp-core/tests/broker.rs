@@ -116,7 +116,7 @@ async fn retained_message_delivered_on_subscribe_with_retain_flag() {
 }
 
 #[tokio::test]
-async fn auth_ok_and_bad_password_reports_disconnected() {
+async fn auth_ok_and_bad_password_reports_failed() {
     let Some(b) = support::start(true) else {
         return;
     };
@@ -127,22 +127,58 @@ async fn auth_ok_and_bad_password_reports_disconnected() {
     wait_for(&mut rx_good, is_connected, 5).await;
 
     let (_bad, mut rx_bad) = Connection::connect(&p, Some("wrong".into())).unwrap();
-    let CoreEvent::State(ConnState::Disconnected {
-        reason,
-        retry_in_ms,
-    }) = wait_for(&mut rx_bad, is_disconnected, 5).await
+    let CoreEvent::State(ConnState::Failed { reason }) = wait_for(
+        &mut rx_bad,
+        |e| matches!(e, CoreEvent::State(ConnState::Failed { .. })),
+        5,
+    )
+    .await
     else {
         unreachable!()
     };
     assert!(!reason.is_empty());
-    assert_eq!(retry_in_ms, 1000);
-    // Still alive: it retries after the backoff and reports again.
-    let CoreEvent::State(ConnState::Disconnected { retry_in_ms, .. }) =
-        wait_for(&mut rx_bad, is_disconnected, 5).await
-    else {
-        unreachable!()
+}
+
+#[tokio::test]
+async fn auth_refused_stops_retrying() {
+    if std::process::Command::new("mosquitto_passwd")
+        .arg("-h")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("SKIP: mosquitto_passwd not on PATH");
+        return;
+    }
+    let Some(b) = support::start(true) else {
+        return;
     };
-    assert_eq!(retry_in_ms, 2000);
+    let p = profile("127.0.0.1", b.port, Protocol::Mqtt);
+    let mut p = p;
+    p.username = Some("zapp".into());
+    let (_conn, mut rx) = Connection::connect(&p, Some("wrong".into())).unwrap();
+    let mut connecting = 0;
+    let mut failed = 0;
+    let _ = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                CoreEvent::State(ConnState::Connecting) => connecting += 1,
+                CoreEvent::State(ConnState::Failed { reason }) => {
+                    assert!(!reason.is_empty());
+                    failed += 1;
+                }
+                CoreEvent::State(ConnState::Connected) => panic!("must not connect"),
+                CoreEvent::State(ConnState::Disconnected { .. }) => {
+                    panic!("a refusal is final, not a retry")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await;
+    assert_eq!(failed, 1);
+    assert_eq!(connecting, 1, "no second connection attempt");
 }
 
 #[tokio::test]
@@ -387,7 +423,7 @@ async fn reconnects_after_broker_restart_v5() {
 }
 
 #[tokio::test]
-async fn auth_bad_password_v5_reports_disconnected() {
+async fn auth_bad_password_v5_reports_failed() {
     let Some(b) = support::start(true) else {
         return;
     };
@@ -396,7 +432,12 @@ async fn auth_bad_password_v5_reports_disconnected() {
     let (_good, mut rx_good) = Connection::connect(&p, Some("zapp-pw".into())).unwrap();
     wait_for(&mut rx_good, is_connected, 5).await;
     let (_c, mut rx) = Connection::connect(&p, Some("wrong".into())).unwrap();
-    wait_for(&mut rx, is_disconnected, 5).await;
+    wait_for(
+        &mut rx,
+        |e| matches!(e, CoreEvent::State(ConnState::Failed { .. })),
+        5,
+    )
+    .await;
 }
 
 #[tokio::test]

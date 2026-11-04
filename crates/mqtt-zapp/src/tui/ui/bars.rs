@@ -245,6 +245,18 @@ pub(super) fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16,
             },
             theme::ERR,
         ),
+        ConnState::Failed { reason } if reason == mqtt_zapp_core::client::TASK_ENDED => (
+            "✕ ",
+            single_line(reason),
+            " — pick the profile again to retry".into(),
+            theme::ERR,
+        ),
+        ConnState::Failed { reason } => (
+            "✕ authentication failed: ",
+            single_line(reason),
+            " — pick the profile again to retry".into(),
+            theme::ERR,
+        ),
     };
     let pill_style = Style::new().fg(color).add_modifier(Modifier::BOLD);
     let muted = Style::new().fg(theme::MUTED);

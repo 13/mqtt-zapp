@@ -471,3 +471,18 @@ fn starred_chip_in_footer() {
     let last = last_line(&draw(&mut a, 100, 24));
     assert!(last.contains(" ★ starred (1) "), "{last}");
 }
+
+#[test]
+fn header_shows_auth_failure_with_hint() {
+    let mut a = app_with(&[("a", b"1")]);
+    a.apply_core_event(CoreEvent::State(
+        mqtt_zapp_core::client::ConnState::Failed {
+            reason: "bad\x1b[31m creds".into(),
+        },
+    ));
+    let s = text(&draw(&mut a, 120, 24));
+    let top = s.lines().next().unwrap();
+    assert!(top.contains("authentication failed: bad"), "{top}");
+    assert!(top.contains("pick the profile again to retry"), "{top}");
+    assert!(!top.contains('\x1b'), "{top}");
+}

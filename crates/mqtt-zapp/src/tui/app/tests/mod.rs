@@ -452,3 +452,25 @@ fn idle_tick_is_slow() {
     let later = Instant::now() + Duration::from_secs(60);
     assert_eq!(a.tick_interval(later), Duration::from_secs(1));
 }
+
+#[test]
+fn closed_channel_marks_failed() {
+    let mut a = app();
+    a.apply_core_event(CoreEvent::State(ConnState::Connected));
+    a.on_connection_ended();
+    assert!(
+        matches!(&a.conn_state, ConnState::Failed { reason } if reason == "connection task ended")
+    );
+    // A failure never keeps the fast tick.
+    assert_eq!(a.tick_interval(Instant::now()), Duration::from_secs(1));
+}
+
+#[test]
+fn closed_channel_keeps_an_earlier_failure_reason() {
+    let mut a = app();
+    a.apply_core_event(CoreEvent::State(ConnState::Failed {
+        reason: "refused".into(),
+    }));
+    a.on_connection_ended();
+    assert!(matches!(&a.conn_state, ConnState::Failed { reason } if reason == "refused"));
+}

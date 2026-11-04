@@ -689,6 +689,19 @@ impl App {
         }
     }
 
+    /// The connection task is gone (its channel closed): say so, and stop
+    /// showing a live state.
+    pub fn on_connection_ended(&mut self) {
+        // A refusal already said why; the closing channel that follows it is
+        // not news.
+        if !matches!(self.conn_state, ConnState::Failed { .. }) {
+            self.conn_state = ConnState::Failed {
+                reason: mqtt_zapp_core::client::TASK_ENDED.into(),
+            };
+            self.dirty = true;
+        }
+    }
+
     /// How long the event loop may sleep before the next `on_tick`: fast
     /// while something animates, slow when idle. Input and MQTT events wake
     /// the loop regardless.

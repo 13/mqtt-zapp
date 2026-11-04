@@ -27,6 +27,24 @@ const REQUEST_CAPACITY: usize = 100;
 const PUBLISH_TIMEOUT: Duration = Duration::from_secs(5);
 const BACKOFF_START_MS: u64 = 1_000;
 const BACKOFF_MAX_MS: u64 = 30_000;
+/// How long a connection must stay up before the backoff starts over; a
+/// broker that accepts and then drops us (a duplicate client id) keeps
+/// growing the delay instead of flapping at the start value.
+const STABLE_AFTER: Duration = Duration::from_secs(10);
+
+/// The delay to use after a connection ended, given the previous delay and
+/// how long that connection was up (`None`: it never connected).
+fn next_backoff(prev: u64, connected_for: Option<Duration>) -> u64 {
+    match connected_for {
+        Some(d) if d >= STABLE_AFTER => BACKOFF_START_MS,
+        _ => prev,
+    }
+}
+
+/// The delay after one more failed attempt.
+fn grow_backoff(b: u64) -> u64 {
+    (b * 2).min(BACKOFF_MAX_MS)
+}
 /// Largest packet MQTT 3.1.1 can encode; rumqttc's 10 KiB default would drop
 /// the connection on big payloads.
 const MAX_PACKET: usize = 268_435_455;
@@ -35,11 +53,22 @@ const MAX_PACKET: usize = 268_435_455;
 /// so a clear is not silently lost the way a QoS 0 publish can be.
 pub const CLEAR_QOS: u8 = 1;
 
+/// The `Failed` reason when the connection task is gone without saying why.
+pub const TASK_ENDED: &str = "connection task ended";
+
 #[derive(Debug, Clone, Serialize)]
 pub enum ConnState {
     Connecting,
     Connected,
-    Disconnected { reason: String, retry_in_ms: u64 },
+    Disconnected {
+        reason: String,
+        retry_in_ms: u64,
+    },
+    /// Gave up for good (a refused login, a dead connection task): nothing
+    /// retries until the user connects again.
+    Failed {
+        reason: String,
+    },
 }
 
 impl ConnState {
@@ -163,10 +192,15 @@ enum Loop {
 /// What `run` needs from one poll, version-independent.
 enum Polled {
     ConnAck,
-    Publish { topic: String, msg: Message },
+    Publish {
+        topic: String,
+        msg: Message,
+    },
     OutgoingDisconnect,
     Other,
     Err(String),
+    /// The broker refused our credentials: retrying cannot help.
+    AuthRefused(String),
 }
 
 /// Largest payload decoded as Sparkplug: the JSON form is many times larger
@@ -226,6 +260,26 @@ fn props_from_v5(p: v5::mqttbytes::v5::PublishProperties) -> Props {
     .capped()
 }
 
+fn classify_v4(e: rumqttc::ConnectionError) -> Polled {
+    use rumqttc::ConnectReturnCode as C;
+    match e {
+        rumqttc::ConnectionError::ConnectionRefused(C::BadUserNamePassword | C::NotAuthorized) => {
+            Polled::AuthRefused(e.to_string())
+        }
+        e => Polled::Err(e.to_string()),
+    }
+}
+
+fn classify_v5(e: v5::ConnectionError) -> Polled {
+    use v5::mqttbytes::v5::ConnectReturnCode as C;
+    match e {
+        v5::ConnectionError::ConnectionRefused(
+            C::BadUserNamePassword | C::NotAuthorized | C::Banned,
+        ) => Polled::AuthRefused(e.to_string()),
+        e => Polled::Err(e.to_string()),
+    }
+}
+
 impl Loop {
     /// Forget the requests rumqttc kept across a failed connection (in flight
     /// or queued), so a clear or publish made while disconnected is never
@@ -247,7 +301,7 @@ impl Loop {
                 },
                 Ok(Event::Outgoing(Outgoing::Disconnect)) => Polled::OutgoingDisconnect,
                 Ok(_) => Polled::Other,
-                Err(e) => Polled::Err(e.to_string()),
+                Err(e) => classify_v4(e),
             },
             Loop::V5(l) => match l.poll().await {
                 Ok(v5::Event::Incoming(v5::Incoming::ConnAck(_))) => Polled::ConnAck,
@@ -270,7 +324,7 @@ impl Loop {
                 }
                 Ok(v5::Event::Outgoing(Outgoing::Disconnect)) => Polled::OutgoingDisconnect,
                 Ok(_) => Polled::Other,
-                Err(e) => Polled::Err(e.to_string()),
+                Err(e) => classify_v5(e),
             },
         }
     }
@@ -400,6 +454,7 @@ async fn run(
     }
     let mut backoff = BACKOFF_START_MS;
     let mut connected = false;
+    let mut up_since: Option<std::time::Instant> = None;
     let mut dropped: u64 = 0;
     // Kept across reconnects; the broker's retained BIRTHs come again anyway.
     let mut aliases = sparkplug::Aliases::default();
@@ -414,7 +469,7 @@ async fn run(
         match polled {
             Polled::ConnAck => {
                 connected = true;
-                backoff = BACKOFF_START_MS;
+                up_since = Some(std::time::Instant::now());
                 subscribe(&client, &subscriptions, &tx, &cancel);
                 emit!(CoreEvent::State(ConnState::Connected));
             }
@@ -431,8 +486,14 @@ async fn run(
             // Pings and acks: a quiet broker still gets the count out.
             Polled::Other => flush_dropped(&tx, &mut dropped),
             Polled::OutgoingDisconnect => {}
+            Polled::AuthRefused(reason) => {
+                eventloop.drop_pending();
+                emit!(CoreEvent::State(ConnState::Failed { reason }));
+                return;
+            }
             Polled::Err(reason) => {
                 connected = false;
+                backoff = next_backoff(backoff, up_since.take().map(|t| t.elapsed()));
                 let unsent = eventloop.drop_pending();
                 let reason = if unsent > 0 {
                     format!("{reason} · dropped {unsent} unsent")
@@ -449,7 +510,7 @@ async fn run(
                     _ = tx.closed() => return,
                     _ = tokio::time::sleep(Duration::from_millis(backoff)) => {}
                 }
-                backoff = (backoff * 2).min(BACKOFF_MAX_MS);
+                backoff = grow_backoff(backoff);
                 emit!(CoreEvent::State(ConnState::Connecting));
             }
         }
@@ -459,7 +520,7 @@ async fn run(
         let _ = tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 match eventloop.poll(&mut aliases).await {
-                    Polled::OutgoingDisconnect | Polled::Err(_) => break,
+                    Polled::OutgoingDisconnect | Polled::Err(_) | Polled::AuthRefused(_) => break,
                     _ => {}
                 }
             }
@@ -692,6 +753,25 @@ mod insecure {
 mod tests {
     use super::*;
     use crate::config::PasswordSource;
+
+    #[test]
+    fn backoff_resets_only_after_stable() {
+        let stable = STABLE_AFTER;
+        // Up briefly (a duplicate client id flapping): the delay keeps growing.
+        assert_eq!(next_backoff(4_000, Some(Duration::from_millis(200))), 4_000);
+        assert_eq!(
+            next_backoff(4_000, Some(stable - Duration::from_millis(1))),
+            4_000
+        );
+        // Never connected: unchanged.
+        assert_eq!(next_backoff(8_000, None), 8_000);
+        // Stayed up long enough: back to the start.
+        assert_eq!(next_backoff(8_000, Some(stable)), BACKOFF_START_MS);
+        assert_eq!(next_backoff(30_000, Some(stable * 3)), BACKOFF_START_MS);
+        // The doubling is capped.
+        assert_eq!(grow_backoff(1_000), 2_000);
+        assert_eq!(grow_backoff(BACKOFF_MAX_MS), BACKOFF_MAX_MS);
+    }
 
     #[test]
     fn flush_dropped_waits_for_room_then_resets() {
