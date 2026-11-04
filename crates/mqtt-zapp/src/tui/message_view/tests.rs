@@ -1409,10 +1409,15 @@ fn overlay_draws_legend_and_colours() {
     let b = draw(&a);
     let s = text(&b);
     assert!(s.contains("chart · b + a"), "{s}");
-    assert!(
-        s.contains("b") && lines(&b).iter().any(|l| l.contains(" a")),
-        "{s}"
-    );
+    // The legend box lists both names, below the title row.
+    let ls = lines(&b);
+    let boxed = |n: &str| ls.iter().skip(1).any(|l| l.contains(&format!("│{n}│")));
+    assert!(boxed("b") && boxed("a"), "{s}");
+    assert!(ls.iter().any(|l| l.contains("┌─┐")), "{s}");
+    // One series: no legend.
+    a.chart_pinned.clear();
+    let ls = lines(&draw(&a));
+    assert!(!ls.iter().any(|l| l.contains("┌─┐")), "legend hidden");
     assert!(has_fg(&b, SERIES_COLORS[0]), "current colour");
     assert!(has_fg(&b, SERIES_COLORS[1]), "pinned colour");
 }

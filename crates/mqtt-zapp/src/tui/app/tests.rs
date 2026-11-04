@@ -2118,3 +2118,16 @@ fn chart_pin_without_chart_notes() {
     assert!(a.chart_pinned.is_empty());
     assert_eq!(note_text(&a), "nothing to pin");
 }
+
+#[test]
+fn chart_cycle_when_all_pinned_shows_first() {
+    let mut a = chart_app(r#"{"a":1,"b":2}"#, 3);
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::ChartPin);
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::ChartPin);
+    a.handle_action(Action::Chart);
+    assert_eq!(a.chart, None);
+    a.handle_action(Action::Chart);
+    assert_eq!(a.chart, Some(Some("a".into())));
+}

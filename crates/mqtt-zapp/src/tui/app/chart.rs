@@ -14,7 +14,9 @@ impl App {
         // Pinned series are already charted: `c` steps over them.
         let free = |s: &&Option<String>| !self.chart_pinned.contains(s);
         let next = match &self.chart {
-            None => series.iter().find(free).cloned(),
+            // With every series pinned there is nothing free: show the first
+            // as the current one (the overlay dedups it) rather than stay off.
+            None => series.iter().find(free).or_else(|| series.first()).cloned(),
             Some(cur) => series
                 .iter()
                 .position(|s| s == cur)

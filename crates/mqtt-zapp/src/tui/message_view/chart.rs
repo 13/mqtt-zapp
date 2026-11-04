@@ -223,6 +223,9 @@ pub(super) fn render_chart(f: &mut Frame, area: Rect, app: &App, s: &Shown, path
     let muted = Style::new().fg(theme::MUTED);
     let chart = Chart::new(data)
         .block(block)
+        // The default hides a legend over a quarter of the chart, which is
+        // always the case in the short chart pane.
+        .hidden_legend_constraints((Constraint::Ratio(1, 2), Constraint::Ratio(2, 3)))
         .legend_position((paths.len() > 1).then_some(LegendPosition::TopLeft))
         .x_axis(Axis::default().bounds([0.0, x_max]))
         .y_axis(Axis::default().bounds([lo - pad, hi + pad]).labels([
