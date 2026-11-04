@@ -329,7 +329,64 @@ fn keyring_lookup_does_not_block() {
     assert!(start.elapsed() < Duration::from_secs(1));
     assert!(!called.load(Ordering::SeqCst), "lookup ran inline");
     assert!(matches!(e, Effect::LoadPassword { .. }), "got {e:?}");
-    assert_eq!(a.note_at(Instant::now()), Some(&Note::info("connecting…")));
+    assert!(a.picker.waiting_keyring);
+}
+
+fn pending_two() -> (App, u64) {
+    let mut a = picker_app(vec![
+        profile("k", PasswordSource::Keyring),
+        profile("o", PasswordSource::None),
+    ]);
+    let e = a.begin_connect(profile("k", PasswordSource::Keyring));
+    let Effect::LoadPassword { generation, .. } = e else {
+        panic!("{e:?}")
+    };
+    (a, generation)
+}
+
+#[test]
+fn late_password_after_cancel_is_ignored() {
+    let (mut a, g) = pending_two();
+    a.server = Some(ServerInfo {
+        name: "live".into(),
+        url: String::new(),
+        subscriptions: vec![],
+        warning: None,
+    });
+    a.connected = Some("o".into());
+    a.handle_key(key(KeyCode::Esc));
+    assert_eq!(a.mode, Mode::Browse);
+    assert!(!a.picker.waiting_keyring);
+    let e = a.password_loaded(g, Ok(Some("pw".into())));
+    assert!(matches!(e, Effect::None), "{e:?}");
+    assert_eq!(a.mode, Mode::Browse);
+    assert_eq!(a.connected.as_deref(), Some("o"));
+}
+
+#[test]
+fn late_password_during_profile_edit_is_ignored() {
+    let (mut a, g) = pending_two();
+    press(&mut a, 'e');
+    assert_eq!(a.mode, Mode::ProfileForm);
+    let e = a.password_loaded(g, Ok(None));
+    assert!(matches!(e, Effect::None), "{e:?}");
+    assert_eq!(a.mode, Mode::ProfileForm);
+    // Even if the mode were back at the picker, the lookup was cancelled.
+    a.mode = Mode::Picker;
+    let e = a.password_loaded(g, Ok(Some("pw".into())));
+    assert!(matches!(e, Effect::None), "{e:?}");
+}
+
+#[test]
+fn enter_while_pending_does_not_relookup() {
+    let (mut a, g) = pending_two();
+    let e = a.handle_key(key(KeyCode::Enter));
+    assert!(matches!(e, Effect::None), "{e:?}");
+    assert!(a.picker.waiting_keyring);
+    // The first lookup is still the live one.
+    let e = a.password_loaded(g, Ok(Some("pw".into())));
+    assert!(matches!(e, Effect::Connect(..)), "{e:?}");
+    assert!(!a.picker.waiting_keyring);
 }
 
 #[test]

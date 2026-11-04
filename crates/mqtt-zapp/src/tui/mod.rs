@@ -154,8 +154,13 @@ impl Session {
                 // UI thread. The result re-enters through `password_loaded`.
                 let tx = self.password_tx.clone();
                 let name = profile.name;
-                tokio::task::spawn_blocking(move || {
-                    let r = load(&name).map_err(|e| format!("{e:#}"));
+                tokio::spawn(async move {
+                    // A panic in the lookup must still answer, or the
+                    // picker would wait forever.
+                    let r = match tokio::task::spawn_blocking(move || load(&name)).await {
+                        Ok(r) => r.map_err(|e| format!("{e:#}")),
+                        Err(_) => Err("keyring lookup failed".to_owned()),
+                    };
                     let _ = tx.send((generation, r));
                 });
             }

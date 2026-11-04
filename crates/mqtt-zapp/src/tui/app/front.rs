@@ -9,15 +9,14 @@ impl App {
     /// or switch to `Mode::Password` (returning `Effect::None`) when the user
     /// has to type it.
     pub fn begin_connect(&mut self, p: Profile) -> Effect {
-        self.connect_gen += 1;
-        self.pending_password = None;
+        self.cancel_lookup();
         let password = match p.password {
             PasswordSource::None => None,
             // The lookup can block behind an unlock prompt: off-thread.
             PasswordSource::Keyring => {
                 let generation = self.connect_gen;
                 self.pending_password = Some((generation, p.clone()));
-                self.set_note(Note::info("connecting…"), Instant::now());
+                self.picker.waiting_keyring = true;
                 self.dirty = true;
                 return Effect::LoadPassword {
                     profile: p,
@@ -30,6 +29,14 @@ impl App {
         self.connect_effect(p, password)
     }
 
+    /// Forget any lookup in flight: its late answer is stale.
+    fn cancel_lookup(&mut self) {
+        self.connect_gen += 1;
+        self.pending_password = None;
+        self.picker.waiting_keyring = false;
+        self.dirty = true;
+    }
+
     /// The off-thread lookup for `generation` finished. A stale result
     /// (another profile was picked meanwhile) is dropped; a failed or empty
     /// lookup falls back to asking.
@@ -38,15 +45,23 @@ impl App {
         generation: u64,
         result: std::result::Result<Option<String>, String>,
     ) -> Effect {
+        // Only still on the picker, on the same attempt: anything else
+        // means the user moved on.
+        let current = self.mode == Mode::Picker
+            && self
+                .pending_password
+                .as_ref()
+                .is_some_and(|(g, _)| *g == generation);
+        if !current {
+            return Effect::None;
+        }
+        self.picker.waiting_keyring = false;
         match self.pending_password.take() {
-            Some((g, p)) if g == generation => match result {
+            Some((_, p)) => match result {
                 Ok(Some(pw)) => self.connect_effect(p, Some(pw)),
                 Ok(None) | Err(_) => self.ask_password(p),
             },
-            other => {
-                self.pending_password = other;
-                Effect::None
-            }
+            None => Effect::None,
         }
     }
 
@@ -112,6 +127,17 @@ impl App {
     /// Keys in the picker: through the keymap.
     pub(super) fn on_picker_action(&mut self, action: Action) -> Effect {
         self.dirty = true;
+        // Selecting the profile being looked up again is a no-op; any other
+        // action means the user moved on, so the late answer is dropped.
+        let same = action == Action::Select
+            && matches!((&self.pending_password, self.picker.selected()),
+                (Some((_, p)), Some(s)) if p.name == s.name);
+        if same {
+            return Effect::None;
+        }
+        if self.pending_password.is_some() {
+            self.cancel_lookup();
+        }
         match action {
             Action::Quit => return Effect::Quit,
             Action::Cancel | Action::Brokers if self.in_session() => self.mode = Mode::Browse,
