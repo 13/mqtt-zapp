@@ -34,6 +34,7 @@ fn send(a: &mut App, topic: &str, payload: &[u8], retain: bool) {
             retain,
             received_at: SystemTime::now(),
             truncated_from: None,
+            sparkplug: false,
             props: None,
         },
     });
@@ -1212,6 +1213,7 @@ fn app_with_props(props: Props) -> App {
             retain: false,
             received_at: SystemTime::now(),
             truncated_from: None,
+            sparkplug: false,
             props: Some(Box::new(props)),
         },
     });
@@ -1448,4 +1450,29 @@ fn overlay_highlights_all_charted_lines() {
     assert!(highlighted(&b, row_with(&b, "\"a\": 2")));
     assert!(highlighted(&b, row_with(&b, "\"b\": 3")));
     assert!(!highlighted(&b, row_with(&b, "\"c\": 4")));
+}
+
+#[test]
+fn sparkplug_badge_and_chart_path() {
+    let mut a = app_depth(100);
+    a.apply_core_event(CoreEvent::Message {
+        topic: T.into(),
+        msg: Message {
+            payload: Bytes::from_static(br#"{"timestamp":1,"metrics":{"Temperature":21.5}}"#),
+            qos: 0,
+            retain: false,
+            received_at: SystemTime::now(),
+            truncated_from: None,
+            props: None,
+            sparkplug: true,
+        },
+    });
+    a.selected = a.tree.find(T);
+    let t = text(&draw(&a));
+    assert!(t.contains(" SPARKPLUG "), "{t}");
+    assert!(!t.contains(" JSON "));
+    assert!(
+        a.chart_series()
+            .contains(&Some("metrics.Temperature".into()))
+    );
 }

@@ -4,6 +4,7 @@ pub mod diff;
 pub mod payload;
 pub mod search;
 pub mod secrets;
+pub mod sparkplug;
 pub mod state;
 pub mod stats;
 pub mod tree;

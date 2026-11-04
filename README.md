@@ -27,6 +27,7 @@ the feature set of MQTT Explorer.
 
 - 🌳 **Live topic tree:** message and topic counts per level, retained markers, and natural, count or recent sorting.
 - 🔍 **Pretty payloads:** JSON is pretty-printed, and the diff shows what changed since the previous message, or since one you mark.
+- 🏭 **Sparkplug B:** `spBv1.0/…` payloads are decoded to JSON, so you can search, diff and chart their metrics.
 - 📈 **Charts:** plot any numeric field from a topic's history. `c` cycles through the fields, or click a number to chart it.
 - ✉️ **Publish:** a form with your `$EDITOR` for the payload, and a per-topic recall of what you sent.
 - 🧹 **Retained housekeeping:** delete one retained message, clear a whole subtree, or delete a topic outright.
@@ -277,10 +278,6 @@ A key is either a single character or a name: `esc`, `enter`, `tab`, `space`,
 `backspace` or `delete`. Either can be prefixed with `ctrl-` or `alt-`.
 
 </details>
-
-## 🗺️ Roadmap
-
-- Sparkplug B decoding
 
 ## 📄 License
 

@@ -14,6 +14,8 @@ pub struct Message {
     /// MQTT 5 publish properties worth showing; `None` when there are none.
     /// Boxed: serde's `rc` feature (needed for `Arc`) is not enabled.
     pub props: Option<Box<Props>>,
+    /// The payload is the JSON form of a decoded Sparkplug B message.
+    pub sparkplug: bool,
 }
 
 /// The MQTT 5 publish properties the header shows.
@@ -471,6 +473,7 @@ mod tests {
             retain: false,
             received_at: std::time::SystemTime::now(),
             truncated_from: None,
+            sparkplug: false,
             props: None,
         };
         m.truncate_to(10);

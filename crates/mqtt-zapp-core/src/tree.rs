@@ -510,6 +510,7 @@ mod tests {
             retain: false,
             received_at: std::time::SystemTime::now(),
             truncated_from: None,
+            sparkplug: false,
             props: None,
         }
     }
@@ -621,6 +622,7 @@ mod tests {
             retain,
             received_at: std::time::SystemTime::now(),
             truncated_from: None,
+            sparkplug: false,
             props: None,
         };
         let mut t = TopicTree::new(5);
@@ -663,6 +665,7 @@ mod tests {
             retain: false,
             received_at: SystemTime::now(),
             truncated_from: None,
+            sparkplug: false,
             props: None,
         }
     }

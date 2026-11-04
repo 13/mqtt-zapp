@@ -5,6 +5,7 @@
 
 use crate::config::{MqttVersion, Profile, Protocol, TlsConfig};
 use crate::payload::{Message, Props};
+use crate::sparkplug;
 use anyhow::{Context, Result, anyhow, bail};
 use rumqttc::tokio_rustls::rustls;
 use rumqttc::v5;
@@ -153,9 +154,26 @@ enum Polled {
 /// pin the whole read chunk: a 4-byte `latest` could hold megabytes alive
 /// and `max_history_mb` would no longer bound real memory. The copy is the
 /// only one; `latest` and history share it.
-fn incoming(payload: &[u8], qos: u8, retain: bool, props: Option<Box<Props>>) -> Message {
+///
+/// A Sparkplug B payload (by topic) is stored as its JSON form, so the cap
+/// in `tree.insert` applies to that; one that does not decode stays raw.
+fn incoming(
+    topic: &str,
+    payload: &[u8],
+    qos: u8,
+    retain: bool,
+    props: Option<Box<Props>>,
+) -> Message {
+    let decoded = sparkplug::is_sparkplug_topic(topic)
+        .then(|| sparkplug::decode(payload))
+        .flatten()
+        .and_then(|v| serde_json::to_vec(&v).ok());
     Message {
-        payload: bytes::Bytes::copy_from_slice(payload),
+        sparkplug: decoded.is_some(),
+        payload: decoded.map_or_else(
+            || bytes::Bytes::copy_from_slice(payload),
+            bytes::Bytes::from,
+        ),
         qos,
         retain,
         received_at: SystemTime::now(),
@@ -194,7 +212,7 @@ impl Loop {
             Loop::V4(l) => match l.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => Polled::ConnAck,
                 Ok(Event::Incoming(Packet::Publish(p))) => Polled::Publish {
-                    msg: incoming(&p.payload, p.qos as u8, p.retain, None),
+                    msg: incoming(&p.topic, &p.payload, p.qos as u8, p.retain, None),
                     topic: p.topic,
                 },
                 Ok(Event::Outgoing(Outgoing::Disconnect)) => Polled::OutgoingDisconnect,
@@ -203,18 +221,22 @@ impl Loop {
             },
             Loop::V5(l) => match l.poll().await {
                 Ok(v5::Event::Incoming(v5::Incoming::ConnAck(_))) => Polled::ConnAck,
-                Ok(v5::Event::Incoming(v5::Incoming::Publish(p))) => Polled::Publish {
-                    msg: incoming(
-                        &p.payload,
-                        p.qos as u8,
-                        p.retain,
-                        p.properties
-                            .map(props_from_v5)
-                            .filter(|p| !p.is_empty())
-                            .map(Box::new),
-                    ),
-                    topic: String::from_utf8_lossy(&p.topic).into_owned(),
-                },
+                Ok(v5::Event::Incoming(v5::Incoming::Publish(p))) => {
+                    let topic = String::from_utf8_lossy(&p.topic).into_owned();
+                    Polled::Publish {
+                        msg: incoming(
+                            &topic,
+                            &p.payload,
+                            p.qos as u8,
+                            p.retain,
+                            p.properties
+                                .map(props_from_v5)
+                                .filter(|p| !p.is_empty())
+                                .map(Box::new),
+                        ),
+                        topic,
+                    }
+                }
                 Ok(v5::Event::Outgoing(Outgoing::Disconnect)) => Polled::OutgoingDisconnect,
                 Ok(_) => Polled::Other,
                 Err(e) => Polled::Err(e.to_string()),
@@ -656,7 +678,7 @@ mod tests {
         // rumqttc hands out the payload as a slice of its shared read chunk.
         let chunk = bytes::Bytes::from(vec![7u8; 64 * 1024]);
         let p = chunk.slice(100..104);
-        let m = incoming(&p, 1, true, None);
+        let m = incoming("t", &p, 1, true, None);
         assert_eq!(&m.payload[..], &[7u8; 4][..]);
         assert_eq!((m.qos, m.retain, m.truncated_from), (1, true, None));
         let range = chunk.as_ptr_range();
@@ -664,6 +686,24 @@ mod tests {
             !range.contains(&m.payload.as_ptr()),
             "the stored payload must not pin the read chunk"
         );
+    }
+
+    #[test]
+    fn sparkplug_payload_is_stored_as_json() {
+        let p = [0x08, 0xe8, 0x07, 0x18, 0x03]; // timestamp 1000, seq 3
+        let m = incoming("spBv1.0/g/NDATA/n", &p, 0, false, None);
+        assert!(m.sparkplug);
+        assert_eq!(&m.payload[..], br#"{"timestamp":1000,"seq":3}"#);
+        let m = incoming("spBv1.0/g/NDATA/n", b"not protobuf {", 0, false, None);
+        assert!(!m.sparkplug);
+        assert_eq!(&m.payload[..], b"not protobuf {");
+    }
+
+    #[test]
+    fn state_topic_is_not_decoded() {
+        let m = incoming("spBv1.0/STATE/h", b"{\"online\":true}", 0, true, None);
+        assert!(!m.sparkplug);
+        assert_eq!(&m.payload[..], b"{\"online\":true}");
     }
 
     #[test]

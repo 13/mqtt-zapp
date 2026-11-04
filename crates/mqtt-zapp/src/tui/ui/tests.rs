@@ -24,6 +24,7 @@ fn app_with(items: &[(&str, &[u8])]) -> App {
                 retain: false,
                 received_at: SystemTime::now(),
                 truncated_from: None,
+                sparkplug: false,
                 props: None,
             },
         });
@@ -462,6 +463,7 @@ fn tree_click_uses_drawn_rows() {
             retain: false,
             received_at: SystemTime::now(),
             truncated_from: None,
+            sparkplug: false,
             props: None,
         },
     });
@@ -486,6 +488,7 @@ fn tree_click_after_reset_tree_does_not_panic() {
             retain: false,
             received_at: SystemTime::now(),
             truncated_from: None,
+            sparkplug: false,
             props: None,
         },
     });
@@ -820,6 +823,7 @@ fn header_shows_topics_refused_badge() {
                 retain: false,
                 received_at: SystemTime::now(),
                 truncated_from: None,
+                sparkplug: false,
                 props: None,
             },
         });
@@ -935,6 +939,7 @@ fn retained(a: &mut App, topic: &str, payload: &[u8]) {
             retain: true,
             received_at: SystemTime::now(),
             truncated_from: None,
+            sparkplug: false,
             props: None,
         },
     });
@@ -962,6 +967,7 @@ fn retained_marker_on_row() {
             retain: false,
             received_at: SystemTime::now(),
             truncated_from: None,
+            sparkplug: false,
             props: None,
         },
     });

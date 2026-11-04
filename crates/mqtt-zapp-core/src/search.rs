@@ -273,6 +273,7 @@ mod tests {
             retain: false,
             received_at: SystemTime::now(),
             truncated_from: None,
+            sparkplug: false,
             props: None,
         }
     }
@@ -412,6 +413,7 @@ mod tests {
                 retain: false,
                 received_at: SystemTime::now(),
                 truncated_from: None,
+                sparkplug: false,
                 props: None,
             },
         );
@@ -439,6 +441,7 @@ mod tests {
                 retain: false,
                 received_at: SystemTime::now(),
                 truncated_from: None,
+                sparkplug: false,
                 props: None,
             },
         );

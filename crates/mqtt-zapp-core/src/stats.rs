@@ -47,6 +47,7 @@ mod tests {
                 retain: true,
                 received_at: SystemTime::now(),
                 truncated_from: None,
+                sparkplug: false,
                 props: None,
             },
         );

@@ -142,6 +142,7 @@ fn body(app: &App) -> Option<Built> {
         k => k,
     };
     let label = match kind {
+        PayloadKind::Json(_) if s.msg.sparkplug => "SPARKPLUG",
         PayloadKind::Json(_) => "JSON",
         PayloadKind::Text(_) => "TEXT",
         PayloadKind::Binary => "BINARY",
