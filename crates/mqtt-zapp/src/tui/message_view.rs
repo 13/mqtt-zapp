@@ -513,8 +513,9 @@ fn props_line(props: &Props, width: u16) -> Line<'static> {
     // Leading and trailing space frame the row.
     let room = width.saturating_sub(2);
     let tail = |k: usize| {
-        if k < chips.len() {
-            format!(" +{} more", chips.len() - k)
+        let more = chips.len() - k + props.dropped_user;
+        if more > 0 {
+            format!(" +{more} more")
         } else {
             String::new()
         }
@@ -533,7 +534,11 @@ fn props_line(props: &Props, width: u16) -> Line<'static> {
         }
     }
     // All chips fit with no tail; otherwise the most that leaves room for it.
-    let k = if fit == chips.len() { fit } else { best };
+    let k = if fit == chips.len() && props.dropped_user == 0 {
+        fit
+    } else {
+        best
+    };
     let mut text = format!(" {}{}", chips[..k].join("  "), tail(k));
     if k == 0 && text.width() > width {
         text = tail(0).chars().take(width).collect();

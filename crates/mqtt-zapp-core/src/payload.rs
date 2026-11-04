@@ -27,6 +27,61 @@ pub struct Props {
     /// `payload_format_indicator == 1`.
     pub payload_utf8: Option<bool>,
     pub user: Vec<(String, String)>,
+    /// User properties cut by `capped`, so the header can still count them.
+    pub dropped_user: usize,
+}
+
+/// Limits applied to wire-supplied properties before they are stored.
+pub const PROPS_MAX_USER: usize = 32;
+pub const PROPS_MAX_STR: usize = 256;
+pub const PROPS_MAX_CORR: usize = 64;
+
+fn cut(s: &mut String, max: usize) {
+    if s.len() > max {
+        let mut n = max;
+        while !s.is_char_boundary(n) {
+            n -= 1;
+        }
+        s.truncate(n);
+    }
+}
+
+impl Props {
+    /// Bound the heap a publisher can make us keep per message.
+    pub fn capped(mut self) -> Props {
+        for s in [&mut self.content_type, &mut self.response_topic]
+            .into_iter()
+            .flatten()
+        {
+            cut(s, PROPS_MAX_STR);
+        }
+        if let Some(c) = &mut self.correlation_data
+            && c.len() > PROPS_MAX_CORR
+        {
+            *c = c.slice(..PROPS_MAX_CORR);
+        }
+        if self.user.len() > PROPS_MAX_USER {
+            self.dropped_user += self.user.len() - PROPS_MAX_USER;
+            self.user.truncate(PROPS_MAX_USER);
+        }
+        for (k, v) in &mut self.user {
+            cut(k, PROPS_MAX_STR);
+            cut(v, PROPS_MAX_STR);
+        }
+        self
+    }
+
+    /// Heap bytes held, counted toward the history budget.
+    pub fn heap_len(&self) -> usize {
+        self.content_type.as_ref().map_or(0, String::len)
+            + self.response_topic.as_ref().map_or(0, String::len)
+            + self.correlation_data.as_ref().map_or(0, Bytes::len)
+            + self
+                .user
+                .iter()
+                .map(|(k, v)| k.len() + v.len())
+                .sum::<usize>()
+    }
 }
 
 impl Props {
@@ -63,6 +118,11 @@ impl Props {
 }
 
 impl Message {
+    /// Bytes this message adds to the history budget: payload plus props.
+    pub fn size(&self) -> usize {
+        self.payload.len() + self.props.as_ref().map_or(0, |p| p.heap_len())
+    }
+
     /// Keep at most `max` payload bytes, recording the original length.
     /// The kept bytes are copied so the large buffer is freed.
     pub fn truncate_to(&mut self, max: usize) {
@@ -355,6 +415,7 @@ mod tests {
             message_expiry: Some(60),
             payload_utf8: Some(true),
             user: vec![("a".into(), "1".into())],
+            dropped_user: 0,
         };
         assert_eq!(
             p.summary(),
@@ -376,6 +437,25 @@ mod tests {
             ..Props::default()
         };
         assert!(!p.summary()[0].contains('\u{202e}'));
+    }
+
+    #[test]
+    fn capped_bounds_props() {
+        let p = Props {
+            content_type: Some("é".repeat(400)),
+            correlation_data: Some(Bytes::from(vec![1u8; 500])),
+            user: (0..300)
+                .map(|i| (format!("k{i}"), "v".repeat(1024)))
+                .collect(),
+            ..Props::default()
+        }
+        .capped();
+        assert_eq!(p.user.len(), PROPS_MAX_USER);
+        assert_eq!(p.dropped_user, 300 - PROPS_MAX_USER);
+        assert!(p.user.iter().all(|(k, v)| k.len() <= 256 && v.len() == 256));
+        assert_eq!(p.content_type.as_ref().unwrap().len(), 256);
+        assert_eq!(p.correlation_data.as_ref().unwrap().len(), PROPS_MAX_CORR);
+        assert!(p.heap_len() <= 256 + 64 + 32 * (256 + 256));
     }
 
     #[test]

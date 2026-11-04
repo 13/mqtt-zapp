@@ -152,7 +152,7 @@ impl TopicTree {
             }
             node.history_seq.pop_front();
             if let Some(m) = node.history.pop_front() {
-                self.bytes -= m.payload.len();
+                self.bytes -= m.size();
                 self.entries -= 1;
             }
         }
@@ -211,7 +211,7 @@ impl TopicTree {
         {
             self.order.push_front((cur, old));
         }
-        self.bytes += msg.payload.len();
+        self.bytes += msg.size();
         node.history.push_back(msg);
         node.history_seq.push_back(self.next_seq);
         self.order.push_back((cur, self.next_seq));
@@ -220,7 +220,7 @@ impl TopicTree {
         while node.history.len() > self.history_depth {
             node.history_seq.pop_front();
             if let Some(m) = node.history.pop_front() {
-                self.bytes -= m.payload.len();
+                self.bytes -= m.size();
                 self.entries -= 1;
             }
         }
@@ -261,7 +261,7 @@ impl TopicTree {
         while let Some(n) = stack.pop() {
             let node = &mut self.nodes[n];
             stack.extend(std::mem::take(&mut node.children).into_values());
-            self.bytes -= node.history.iter().map(|m| m.payload.len()).sum::<usize>();
+            self.bytes -= node.history.iter().map(Message::size).sum::<usize>();
             self.entries -= node.history.len();
             node.history.clear();
             node.history_seq.clear();
@@ -512,6 +512,22 @@ mod tests {
             truncated_from: None,
             props: None,
         }
+    }
+
+    #[test]
+    fn props_bytes_count_toward_history_bytes() {
+        let mut t = TopicTree::new(5);
+        let mut m = msg("abc");
+        m.props = Some(Box::new(crate::payload::Props {
+            content_type: Some("text/plain".into()),
+            user: vec![("k".into(), "vv".into())],
+            ..Default::default()
+        }));
+        t.insert("a", m);
+        assert_eq!(t.history_bytes(), 3 + 10 + 3);
+        let a = t.find("a").unwrap();
+        t.remove(a);
+        assert_eq!(t.history_bytes(), 0);
     }
 
     #[test]

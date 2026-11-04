@@ -173,7 +173,9 @@ fn props_from_v5(p: v5::mqttbytes::v5::PublishProperties) -> Props {
         message_expiry: p.message_expiry_interval,
         payload_utf8: (p.payload_format_indicator == Some(1)).then_some(true),
         user: p.user_properties,
+        dropped_user: 0,
     }
+    .capped()
 }
 
 impl Loop {
@@ -662,6 +664,20 @@ mod tests {
             !range.contains(&m.payload.as_ptr()),
             "the stored payload must not pin the read chunk"
         );
+    }
+
+    #[test]
+    fn v5_props_are_capped_at_ingestion() {
+        let wire = v5::mqttbytes::v5::PublishProperties {
+            user_properties: (0..300)
+                .map(|i| (format!("k{i}"), "v".repeat(1024)))
+                .collect(),
+            ..Default::default()
+        };
+        let p = props_from_v5(wire);
+        assert_eq!(p.user.len(), 32);
+        assert_eq!(p.dropped_user, 268);
+        assert!(p.user.iter().all(|(_, v)| v.len() <= 256));
     }
 
     fn profile(host: &str, protocol: Protocol, ws_path: &str) -> Profile {

@@ -1278,3 +1278,19 @@ fn props_row_in_compact_header() {
     assert!(l[0].contains(" TEXT "), "{:?}", l[0]);
     assert!(l[1].contains("type text/plain"), "{:?}", l[1]);
 }
+
+#[test]
+fn props_row_counts_capped_pairs_in_more() {
+    let props = Props {
+        user: (0..300)
+            .map(|i| (format!("k{i}"), "v".to_owned()))
+            .collect(),
+        ..Props::default()
+    }
+    .capped();
+    let a = app_with_props(props);
+    let row = draw_sized(&a, 400, 30, false)[2].clone();
+    // All 32 kept pairs fit at this width; the tail counts the 268 dropped.
+    assert!(row.contains("k31=v"), "{row:?}");
+    assert!(row.contains("+268 more"), "{row:?}");
+}
