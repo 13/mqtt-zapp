@@ -1264,7 +1264,7 @@ dependencies = [
  "chrono",
  "directories",
  "keyring",
- "rand 0.8.8",
+ "rand 0.9.5",
  "rcgen",
  "regex",
  "rumqttc",

@@ -216,7 +216,7 @@ impl Profile {
         {
             return id.to_owned();
         }
-        let n: u32 = rand::thread_rng().gen_range(0..1 << 24);
+        let n: u32 = rand::rng().random_range(0..1 << 24);
         format!("mqtt-zapp-{n:06x}")
     }
 }
@@ -385,7 +385,7 @@ pub fn write_private(path: &Path, contents: &str) -> Result<()> {
     let path = resolved.as_path();
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path.file_name().context("path has no file name")?;
-    let n: u32 = rand::thread_rng().r#gen();
+    let n: u32 = rand::rng().random();
     let tmp = dir.join(format!(
         ".{}.{}.{n}.tmp",
         name.to_string_lossy(),

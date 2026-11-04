@@ -414,7 +414,7 @@ pub struct App {
     session_profile: Option<Profile>,
     /// Topics whose retained message was just cleared by a delete: the
     /// broker's empty echo is dropped once, so the topic stays gone.
-    cleared_echo: HashSet<String>,
+    pub(in crate::tui) cleared_echo: HashSet<String>,
     /// Why `profiles.toml` could not be loaded; shown in the empty picker.
     pub store_error: Option<String>,
     /// `state.toml` could not be read or backed up: never save it.

@@ -187,6 +187,17 @@ async fn tui_against_mosquitto() {
         10,
     )
     .await;
+    // The note means the clear was queued, not that the broker has it: wait
+    // for its echo (the empty retained message) before a fresh subscriber
+    // looks, or the old retained message can still be served to it.
+    pump_until(
+        &mut app,
+        &mut session,
+        &mut notes,
+        |a| a.cleared_echo.is_empty(),
+        10,
+    )
+    .await;
 
     // A fresh subscriber must see no retained message on the topic.
     // `zapp/e2e/other` is the positive control: it must still arrive.

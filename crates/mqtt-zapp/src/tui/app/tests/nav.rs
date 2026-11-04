@@ -440,7 +440,9 @@ fn rows_fast_at_50k() {
     let cached = s.elapsed();
     assert!(std::rc::Rc::ptr_eq(&rows, &again));
     eprintln!("rows_fast_at_50k: first {first:?}, cached {cached:?}");
-    assert!(first < Duration::from_millis(60), "first {first:?}");
+    // About 30 ms here; shared CI runners have measured 73 ms. The guard is
+    // for an algorithmic slip (seconds), not for runner noise.
+    assert!(first < Duration::from_millis(250), "first {first:?}");
     assert!(cached < Duration::from_millis(1), "cached {cached:?}");
 }
 
