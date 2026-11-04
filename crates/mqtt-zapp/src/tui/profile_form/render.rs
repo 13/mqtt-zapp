@@ -134,7 +134,10 @@ pub fn render(f: &mut Frame, area: Rect, form: &ProfileForm) {
         .collect();
     f.render_widget(Paragraph::new(lines), rows);
     let (text, color) = match form.warning() {
-        Some(w) => (format!(" note: {w}; ignored on 3.1.1"), theme::WARN),
+        Some(w) => (
+            format!(" {w} (ignored) · ctrl-s save · esc cancel"),
+            theme::WARN,
+        ),
         None => (format!(" {HINT}"), theme::MUTED),
     };
     f.render_widget(Paragraph::new(text).style(Style::new().fg(color)), hint);

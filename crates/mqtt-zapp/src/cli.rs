@@ -92,6 +92,9 @@ pub struct ConnArgs {
     /// Keep-alive interval in seconds [default: 60]. MQTT 5 needs at least 5.
     #[arg(long, value_name = "SECS")]
     pub keepalive: Option<u16>,
+    /// Client id [default: random each run]. --no-clean needs one.
+    #[arg(long, value_name = "ID")]
+    pub client_id: Option<String>,
     /// Ask the broker to keep the session (clean session off / clean start off)
     #[arg(long)]
     pub no_clean: bool,
@@ -103,6 +106,9 @@ pub struct ConnArgs {
 impl ConnArgs {
     /// Session flags override the saved profile's for this run only.
     fn apply_session(&self, mut p: Profile) -> Profile {
+        if self.client_id.is_some() {
+            p.client_id.clone_from(&self.client_id);
+        }
         p.keepalive_s = self.keepalive.or(p.keepalive_s);
         if self.no_clean {
             p.clean_session = Some(false);
@@ -193,7 +199,7 @@ fn build_profile(name: &str, conn: &ConnArgs, host: &str, password: PasswordSour
         protocol,
         mqtt_version: conn.mqtt_version.into(),
         ws_path: default_ws_path(),
-        client_id: None,
+        client_id: conn.client_id.clone(),
         username: conn.user.clone(),
         password,
         tls: TlsConfig {
@@ -402,6 +408,56 @@ mod tests {
         };
         let e = profile_for_add("n", None, &conn).unwrap_err();
         assert!(e.to_string().starts_with("keepalive"), "{e}");
+    }
+
+    #[test]
+    fn cli_client_id_flag() {
+        let Ok(Launch::Connect(p)) = launch(&["mqtt-zapp", "--host", "h", "--client-id", "me"])
+        else {
+            panic!()
+        };
+        assert_eq!(p.client_id.as_deref(), Some("me"));
+        let Ok(Launch::Connect(p)) = launch(&[
+            "mqtt-zapp",
+            "--profile",
+            "home",
+            "--client-id",
+            "me",
+            "--no-clean",
+        ]) else {
+            panic!()
+        };
+        assert_eq!(p.client_id.as_deref(), Some("me"));
+        assert_eq!(p.session_error(), None);
+        // profile add: --no-clean alone is refused, with an id it is saved.
+        let add = |extra: &[&str]| {
+            let mut a = vec![
+                "mqtt-zapp",
+                "profile",
+                "add",
+                "--name",
+                "n",
+                "--host",
+                "h",
+                "--no-clean",
+            ];
+            a.extend(extra);
+            let Some(Cmd::Profile(ProfileCmd::Add { conn, .. })) = Args::parse_from(a).cmd else {
+                panic!()
+            };
+            profile_for_add("n", None, &conn)
+        };
+        assert!(
+            add(&[])
+                .unwrap_err()
+                .to_string()
+                .contains("set a client id")
+        );
+        let p = add(&["--client-id", "me"]).unwrap();
+        assert_eq!(
+            (p.client_id.as_deref(), p.clean_session),
+            (Some("me"), Some(false))
+        );
     }
 
     #[test]

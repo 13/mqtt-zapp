@@ -1054,6 +1054,39 @@ mod tests {
     }
 
     #[test]
+    fn empty_client_id_with_no_clean_does_not_panic() {
+        for v in [MqttVersion::V311, MqttVersion::V5] {
+            for id in ["", "  "] {
+                let mut p = profile("h", Protocol::Mqtt, "/");
+                p.mqtt_version = v;
+                p.client_id = Some(id.into());
+                p.clean_session = Some(false);
+                let e = if v == MqttVersion::V5 {
+                    mqtt_options_v5(&p, None).map(|_| ())
+                } else {
+                    mqtt_options(&p, None).map(|_| ())
+                };
+                assert!(format!("{:#}", e.unwrap_err()).contains("set a client id"));
+            }
+        }
+    }
+
+    #[test]
+    fn no_clean_requires_client_id() {
+        let mut p = profile("h", Protocol::Mqtt, "/");
+        p.client_id = None;
+        assert!(mqtt_options(&p, None).is_ok());
+        p.clean_session = Some(false);
+        assert!(mqtt_options(&p, None).is_err());
+        p.client_id = Some("me".into());
+        assert!(mqtt_options(&p, None).is_ok());
+        // An explicit clean session needs no id.
+        p.client_id = None;
+        p.clean_session = Some(true);
+        assert!(mqtt_options(&p, None).is_ok());
+    }
+
+    #[test]
     fn v5_session_expiry_in_connect_props() {
         let mut p = profile("h", Protocol::Mqtt, "/");
         p.mqtt_version = MqttVersion::V5;

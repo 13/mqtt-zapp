@@ -171,7 +171,9 @@ has no effect.
 Session options, each a profile field, a form row and a flag (`profile add`
 saves them; with `--profile` or `--host` they apply to that run only):
 `--keepalive SECS` (default 60; MQTT 5 needs at least 5), `--no-clean` (keep the
-broker-side session: clean session off, or clean start off on MQTT 5) and
+broker-side session: clean session off, or clean start off on MQTT 5; this needs
+a stable client id, `--client-id` or the form's "client id" row, and is refused
+without one) and
 `--session-expiry SECS` (MQTT 5 only; the form notes that it is ignored on 3.1.1).
 
 ## ⌨️ Keys

@@ -107,7 +107,7 @@ pub struct Profile {
     /// (the `$SYS` filters are exempt). Ignored on 3.1.1.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub retained: bool,
-    /// Keep-alive in seconds; the rumqttc default (5 s) when unset.
+    /// Keep-alive in seconds; the rumqttc default (60 s) when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keepalive_s: Option<u16>,
     /// `Some(false)` asks the broker to keep the session (MQTT 5: clean
@@ -132,6 +132,16 @@ impl Profile {
     /// keep-alive of at least 5 s, so that is refused here rather than
     /// left to panic at connect time. (0 turns keep-alive off on 3.1.1.)
     pub fn session_error(&self) -> Option<String> {
+        // A kept session needs a stable id: a random one is never resumed,
+        // and rumqttc asserts against an empty id without a clean session.
+        if self.clean_session == Some(false)
+            && self
+                .client_id
+                .as_deref()
+                .is_none_or(|id| id.trim().is_empty())
+        {
+            return Some("session kept: set a client id".into());
+        }
         match (self.mqtt_version, self.keepalive_s) {
             (MqttVersion::V5, Some(k)) if k < 5 => {
                 Some("keepalive: MQTT 5 needs at least 5 s".into())
@@ -149,8 +159,10 @@ impl Profile {
     /// The configured client id, or a fresh `mqtt-zapp-xxxxxx` on every call.
     /// Callers should keep the result for the whole session.
     pub fn effective_client_id(&self) -> String {
-        if let Some(id) = &self.client_id {
-            return id.clone();
+        if let Some(id) = self.client_id.as_deref().map(str::trim)
+            && !id.is_empty()
+        {
+            return id.to_owned();
         }
         let n: u32 = rand::thread_rng().gen_range(0..1 << 24);
         format!("mqtt-zapp-{n:06x}")
@@ -526,6 +538,17 @@ mod tests {
         p.mqtt_version = MqttVersion::V311;
         p.session_expiry_s = Some(10);
         assert_eq!(p.session_warning(), Some("session expiry needs MQTT 5"));
+    }
+
+    #[test]
+    fn blank_client_id_counts_as_unset() {
+        let mut p = sample("x");
+        p.client_id = Some("  ".into());
+        assert!(p.effective_client_id().starts_with("mqtt-zapp-"));
+        p.client_id = Some(" me ".into());
+        assert_eq!(p.effective_client_id(), "me");
+        p.clean_session = Some(false);
+        assert_eq!(p.session_error(), None);
     }
 
     #[test]
