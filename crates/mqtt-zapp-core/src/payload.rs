@@ -10,7 +10,8 @@ pub struct Message {
     pub qos: u8,
     pub retain: bool,
     pub received_at: SystemTime,
-    /// The payload's length on the wire when `truncate_to` cut it.
+    /// The stored payload's length before `truncate_to` cut it (the decoded
+    /// JSON length for Sparkplug, not the wire length).
     pub truncated_from: Option<usize>,
     /// MQTT 5 publish properties worth showing; `None` when there are none.
     /// Shared (`Arc`): `latest` and its history entries point at one copy.

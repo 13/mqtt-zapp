@@ -183,7 +183,8 @@ fn build_body(s: &Shown, kind: PayloadKind, show_diff: bool) -> Body {
         // `body` already made a cut JSON payload text; the marker is not JSON.
         return match (kind, s.msg.truncated_from) {
             (_, Some(n)) => {
-                lines.push(format!("… truncated ({n} bytes)"));
+                let what = if s.msg.sparkplug { " decoded" } else { "" };
+                lines.push(format!("… truncated ({n} bytes{what})"));
                 Body::Plain(lines)
             }
             (PayloadKind::Json(_), None) => Body::Json(lines),

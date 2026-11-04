@@ -1456,7 +1456,8 @@ fn overlay_highlights_all_charted_lines() {
 
 fn sparkplug_app(truncated_from: Option<usize>) -> App {
     let mut a = app_depth(100);
-    let json = format!(r#"{{"metrics":{{"T":1}},"pad":"{}"}}"#, "x".repeat(560));
+    let json = format!(r#"{{"metrics":{{"T":1}},"pad":"{}"}}"#, "x".repeat(572));
+    assert_eq!(json.len(), 600, "fixture");
     a.apply_core_event(CoreEvent::Message {
         topic: T.into(),
         msg: Message {
@@ -1485,6 +1486,15 @@ fn sparkplug_badge_shows_wire_size() {
 fn cut_sparkplug_keeps_badge() {
     let t = text(&draw(&sparkplug_app(Some(5000))));
     assert!(t.contains(" SPARKPLUG "), "{t}");
+    assert!(t.contains(" 120 B "), "{t}");
+}
+
+#[test]
+fn cut_sparkplug_note_says_decoded() {
+    let t = text(&draw(&sparkplug_app(Some(5000))));
+    assert!(t.contains("truncated (5000 bytes decoded)"), "{t}");
+    let t = text(&draw(&app_with(&[b"plain"])));
+    assert!(!t.contains("decoded"), "{t}");
 }
 
 #[test]
