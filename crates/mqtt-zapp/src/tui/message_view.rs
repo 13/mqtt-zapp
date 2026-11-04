@@ -289,6 +289,21 @@ fn width_of(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.content.width()).sum()
 }
 
+/// Whether the header has a props row: when `msg` or any history entry has
+/// properties. Keyed on the whole history so the boxes below do not move
+/// while browsing it.
+fn props_row_shown(node: &TopicNode, msg: &Message) -> bool {
+    msg.props.is_some() || node.history.iter().any(|m| m.props.is_some())
+}
+
+/// The props row for `msg`: its chips, or a muted filler without any.
+fn props_row(msg: &Message, width: u16) -> Line<'static> {
+    match msg.props.as_deref() {
+        Some(p) => props_line(p, width),
+        None => Line::styled(" no properties", Style::new().fg(theme::MUTED)),
+    }
+}
+
 /// Rows the history box gets in a message pane of `area`, before any
 /// focus override: 0 means it is not drawn. History takes at most half of
 /// what the meta line leaves, so the payload keeps room in short (stacked)
@@ -304,7 +319,12 @@ fn history_rows(area: Rect, stacked: bool, entries: usize, props: bool) -> u16 {
 /// focus but the box is not shown, focus moves to the payload.
 pub fn settle_history_focus(app: &mut App, area: Rect, stacked: bool) {
     let fits = shown(app).is_some_and(|s| {
-        history_rows(area, stacked, s.node.history.len(), s.msg.props.is_some()) > 0
+        history_rows(
+            area,
+            stacked,
+            s.node.history.len(),
+            props_row_shown(s.node, s.msg),
+        ) > 0
     });
     app.history_shown.set(fits);
     if !fits && app.focus == Focus::History {
@@ -344,9 +364,9 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
         return;
     };
     let card = !stacked && area.height >= HEADER_CARD_MIN_HEIGHT;
-    let props = s.msg.props.as_deref();
-    let header_rows = if card { 3 } else { 1 } + u16::from(props.is_some());
-    let hist_rows = history_rows(area, stacked, s.node.history.len(), props.is_some());
+    let props = props_row_shown(s.node, s.msg);
+    let header_rows = if card { 3 } else { 1 } + u16::from(props);
+    let hist_rows = history_rows(area, stacked, s.node.history.len(), props);
     app.history_shown.set(hist_rows > 0);
     if hist_rows == 0 {
         app.hit.set(HitAreas {
@@ -392,7 +412,7 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
             ..app.hit.get()
         });
         let mut text = vec![row];
-        text.extend(props.map(|p| props_line(p, inner.width)));
+        text.extend(props.then(|| props_row(s.msg, inner.width)));
         f.render_widget(Paragraph::new(text).block(block), meta);
     } else {
         // ` ⧉ ` at the right end; the row is cut short of it. Too narrow
@@ -403,15 +423,15 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
             0
         };
         let (meta, props_area) = match props {
-            Some(_) => {
+            true => {
                 let [m, p] =
                     Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(meta);
                 (m, Some(p))
             }
-            None => (meta, None),
+            false => (meta, None),
         };
-        if let (Some(p), Some(area)) = (props, props_area) {
-            f.render_widget(Paragraph::new(props_line(p, area.width)), area);
+        if let Some(area) = props_area {
+            f.render_widget(Paragraph::new(props_row(s.msg, area.width)), area);
         }
         let [row_area, glyph] =
             Layout::horizontal([Constraint::Min(0), Constraint::Length(glyph_w)]).areas(meta);

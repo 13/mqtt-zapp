@@ -251,7 +251,13 @@ pub(super) fn props_line(props: &Props, width: u16) -> Line<'static> {
         best
     };
     let mut text = format!(" {}{}", chips[..k].join("  "), tail(k));
-    if k == 0 && text.width() > width {
+    if k == 0 && !chips.is_empty() {
+        // Not even the first chip fits beside the tail: cut it to fill the
+        // room, counting it as shown.
+        let rest = tail(1);
+        let cut = take_width(&chips[0], room.saturating_sub(rest.width() + 1), false);
+        text = format!(" {cut}…{rest}");
+    } else if k == 0 && text.width() > width {
         text = tail(0).chars().take(width).collect();
     }
     Line::styled(text, Style::new().fg(theme::MUTED))

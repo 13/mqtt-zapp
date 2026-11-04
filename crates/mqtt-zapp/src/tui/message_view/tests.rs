@@ -1586,3 +1586,73 @@ fn close_hint_never_garbles_a_long_title() {
         }
     }
 }
+
+fn send_props(a: &mut App, props: Option<Props>) {
+    a.apply_core_event(CoreEvent::Message {
+        topic: T.into(),
+        msg: Message {
+            payload: Bytes::from_static(b"x"),
+            qos: 1,
+            retain: false,
+            received_at: SystemTime::now(),
+            truncated_from: None,
+            sparkplug: false,
+            wire_len: None,
+            props: props.map(std::sync::Arc::new),
+        },
+    });
+}
+
+fn history_with_one_props() -> App {
+    let mut a = app_depth(100);
+    send_props(&mut a, None);
+    send_props(
+        &mut a,
+        Some(Props {
+            content_type: Some("text/plain".into()),
+            ..Props::default()
+        }),
+    );
+    send_props(&mut a, None);
+    a.selected = a.tree.find(T);
+    a
+}
+
+#[test]
+fn header_height_stable_across_history() {
+    let mut a = history_with_one_props();
+    let top = |a: &App| {
+        draw_sized(a, 100, 30, false)
+            .iter()
+            .position(|r| r.contains("payload"))
+            .expect("payload box")
+    };
+    let live = top(&a);
+    for i in 0..3 {
+        a.history_sel = Some(i);
+        assert_eq!(top(&a), live, "history_sel {i}");
+    }
+}
+
+#[test]
+fn entry_without_props_says_so() {
+    let mut a = history_with_one_props();
+    a.history_sel = Some(0);
+    let l = draw_sized(&a, 100, 30, false);
+    assert!(l[2].contains(" no properties"), "{:?}", l[2]);
+    a.history_sel = Some(1);
+    let l = draw_sized(&a, 100, 30, false);
+    assert!(l[2].contains("type text/plain"), "{:?}", l[2]);
+}
+
+#[test]
+fn oversized_first_chip_is_cut() {
+    let a = app_with_props(Props {
+        content_type: Some("a".repeat(1024)),
+        ..Props::default()
+    });
+    let row = draw_sized(&a, 60, 30, false)[2].clone();
+    assert!(row.contains("type "), "{row:?}");
+    assert!(row.contains('…'), "{row:?}");
+    assert!(row.width() <= 60, "{row:?}");
+}
