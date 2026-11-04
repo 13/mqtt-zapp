@@ -131,3 +131,20 @@ fn starred_view_resets_on_connection_switch() {
     a.reset_tree();
     assert!(!a.starred_only);
 }
+
+#[test]
+fn rename_connected_profile_keeps_stars() {
+    let _cfg = ConfigDir::new("star-rename");
+    let mut a = star_app("home");
+    select_topic(&mut a, "a/b/c");
+    star_press(&mut a, '*');
+    assert!(a.is_starred("a/b/c"));
+    a.profile_renamed("home", "house");
+    assert!(a.is_starred("a/b/c"), "star survives the rename");
+    assert_eq!(a.starred_count(), 1);
+    select_topic(&mut a, "a/x");
+    star_press(&mut a, '*');
+    assert_eq!(a.starred_count(), 2);
+    let s = state_file();
+    assert!(s.contains("house") && !s.contains("home"), "{s}");
+}

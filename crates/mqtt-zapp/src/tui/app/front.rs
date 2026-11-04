@@ -232,6 +232,11 @@ impl App {
         if self.connected.as_deref() == Some(old) {
             self.connected = Some(new.to_owned());
         }
+        // Stars are keyed by the session's profile name: follow the rename.
+        if let Some(p) = self.session_profile.as_mut().filter(|p| p.name == old) {
+            p.name = new.to_owned();
+            self.star_gen += 1;
+        }
     }
 
     /// A profile edit was saved (`original` = its old name, if any).
