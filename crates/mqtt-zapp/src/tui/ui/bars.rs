@@ -164,13 +164,8 @@ pub(super) fn push_hints(spans: &mut Vec<Span<'static>>, hints: &[(String, &str)
 pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
     let width = usize::from(width);
     if app.mode == Mode::SearchInput {
-        let mut spans = vec![
-            Span::styled(
-                if app.search_regex { "regex/" } else { "/" },
-                Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(format!("{}▏", single_line(&app.search))),
-        ];
+        let prompt = if app.search_regex { "regex/" } else { "/" };
+        let query = single_line(&app.search);
         let mut right = Vec::new();
         push_hints(
             &mut right,
@@ -185,6 +180,20 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
             width,
         );
         let right_w = spans_width(&right).saturating_sub(2);
+        // `prompt`, the query, the cursor, then the hints; a long query
+        // pushes the hints out, then shows its tail.
+        let used = prompt.width() + query.width() + 1;
+        if used + 1 + right_w > width {
+            right.clear();
+        }
+        let room = width.saturating_sub(prompt.width() + 1);
+        let mut spans = vec![
+            Span::styled(
+                prompt,
+                Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{}▏", theme::take_width(&query, room, true))),
+        ];
         let pad = width.saturating_sub(spans_width(&spans) + right_w);
         if !right.is_empty() && pad > 0 {
             spans.push(Span::raw(" ".repeat(pad)));
@@ -286,8 +295,9 @@ pub(super) fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16,
             .bg(theme::ACCENT)
             .add_modifier(Modifier::BOLD),
     );
-    // (prefix, reason, suffix): only the reason is ever cut.
-    let (prefix, reason, suffix, color) = match &app.conn_state {
+    // (prefix, reason, suffix): the reason is cut; a failure's retry hint
+    // goes first, before the reason or anything else.
+    let (prefix, reason, mut suffix, color) = match &app.conn_state {
         ConnState::Connected => ("● connected", String::new(), String::new(), theme::OK),
         ConnState::Connecting => ("◌ connecting", String::new(), String::new(), theme::WARN),
         ConnState::Disconnected {
@@ -306,13 +316,13 @@ pub(super) fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16,
         ConnState::Failed { reason } if reason == mqtt_zapp_core::client::TASK_ENDED => (
             "✕ ",
             single_line(reason),
-            " — pick the profile again to retry".into(),
+            " · pick the profile to retry".into(),
             theme::ERR,
         ),
         ConnState::Failed { reason } => (
             "✕ authentication failed: ",
             single_line(reason),
-            " — pick the profile again to retry".into(),
+            " · pick the profile to retry".into(),
             theme::ERR,
         ),
     };
@@ -364,6 +374,11 @@ pub(super) fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16,
         .frozen
         .then(|| Span::styled(" · ❄ frozen", Style::new().fg(theme::WARN)));
     let fixed = badge.width() + 1 + frozen.as_ref().map_or(0, Span::width);
+    if matches!(app.conn_state, ConnState::Failed { .. })
+        && fixed + prefix.width() + reason.width() + suffix.width() > width
+    {
+        suffix.clear();
+    }
     // The cuts count the reason at most `REASON_MIN` wide: it is ellipsized
     // into whatever is left, so a long one must not push the rest out.
     let reason_w = reason.width().min(REASON_MIN);

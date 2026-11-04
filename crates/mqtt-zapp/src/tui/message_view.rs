@@ -4,7 +4,7 @@
 
 use super::app::{App, Focus, HitAreas, Mode};
 use super::keymap::Action;
-use super::theme;
+use super::theme::{self, take_width};
 use chrono::{DateTime, Local};
 use mqtt_zapp_core::diff::{ChangeKind, Diff, LineTag, diff};
 use mqtt_zapp_core::payload::{PayloadKind, Props, detect, pretty_lines, preview, sanitize};

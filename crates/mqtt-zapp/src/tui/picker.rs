@@ -257,6 +257,9 @@ pub fn render_picker(
 /// A small modal under the picker: the broker and the masked input.
 pub fn render_password(f: &mut Frame, area: Rect, st: &PasswordState) {
     let title = format!("password · {}", st.profile.name);
+    let modal = theme::centered(area, 50, 5);
+    // Inside the border, after ` › ` and before the cursor.
+    let room = usize::from(modal.width).saturating_sub(2 + 3 + 1);
     let lines = vec![
         Line::styled(
             format!(" {}", server_url(&st.profile)),
@@ -265,10 +268,9 @@ pub fn render_password(f: &mut Frame, area: Rect, st: &PasswordState) {
         Line::default(),
         Line::from(vec![
             Span::styled(" › ", Style::new().fg(theme::ACCENT)),
-            Span::raw(format!("{}▏", st.masked())),
+            Span::raw(format!("{}▏", theme::take_width(&st.masked(), room, true))),
         ]),
     ];
-    let modal = theme::centered(area, 50, 5);
     f.render_widget(Clear, modal);
     f.render_widget(
         Paragraph::new(lines).block(theme::pane(&title, true)),
@@ -453,6 +455,25 @@ mod tests {
             input: "pä".into(),
         };
         assert_eq!(st.masked(), "••");
+    }
+
+    #[test]
+    fn long_password_keeps_the_cursor_in_view() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let st = PasswordState {
+            profile: profile("a"),
+            input: "x".repeat(80),
+        };
+        let mut t = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        t.draw(|f| render_password(f, f.area(), &st)).unwrap();
+        let text: String = t
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("•▏"), "{text}");
     }
 
     #[test]

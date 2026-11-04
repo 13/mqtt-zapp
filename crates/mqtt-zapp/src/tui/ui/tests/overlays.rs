@@ -578,3 +578,28 @@ fn help_footer_and_empty_picker_use_remapped_keys() {
     let help = text(&draw(&mut a, 120, 40));
     assert!(help.contains("F freezes"), "{help}");
 }
+
+#[test]
+fn field_picker_cuts_wide_labels_by_width() {
+    let key = "温".repeat(30);
+    let payload = format!("{{\"{key}\":42,\"b\":1}}");
+    let mut a = app_with(&[("t", payload.as_bytes())]);
+    a.selected = a.tree.find("t");
+    a.handle_action(Action::ChartPick);
+    assert_eq!(a.mode, Mode::FieldPicker);
+    let s = text(&draw(&mut a, 100, 30));
+    // The card's row: the label cut with `…`, the value against the border.
+    let row = s.lines().find(|l| l.contains("…") && l.contains('温'));
+    let row = row.unwrap_or_else(|| panic!("{s}"));
+    assert!(row.contains(" 42 ┃"), "{row}");
+}
+
+#[test]
+fn long_field_filter_keeps_the_cursor_in_view() {
+    let mut a = app_with(&[("t", br#"{"a":1,"b":2}"#)]);
+    a.selected = a.tree.find("t");
+    a.handle_action(Action::ChartPick);
+    a.field_picker.as_mut().unwrap().query = "q".repeat(70);
+    let s = text(&draw(&mut a, 100, 30));
+    assert!(s.contains("q▏"), "{s}");
+}

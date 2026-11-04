@@ -160,6 +160,29 @@ pub fn select(mut line: Line<'_>, focused: bool) -> Line<'_> {
     line.style(sel)
 }
 
+/// Keep `max` display columns of `s`, from the end (`true`) or the start.
+pub fn take_width(s: &str, max: usize, from_end: bool) -> String {
+    let mut out = Vec::new();
+    let mut w = 0;
+    let chars: Vec<char> = if from_end {
+        s.chars().rev().collect()
+    } else {
+        s.chars().collect()
+    };
+    for c in chars {
+        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if w + cw > max {
+            break;
+        }
+        w += cw;
+        out.push(c);
+    }
+    if from_end {
+        out.reverse();
+    }
+    out.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -942,11 +942,11 @@ fn history_row(b: &Buffer, needle: &str) -> String {
 fn history_preview_uses_the_whole_row() {
     let long = "a".repeat(200);
     let a = app_with(&[long.as_bytes(), long.as_bytes()]);
-    // 100 columns: 98 inside, `HH:MM:SS` + 2 spaces leaves 88.
+    // 100 columns: 98 inside, `HH:MM:SS` + 3 (the mark's column) leaves 87.
     let row = history_row(&draw(&a), "aaa");
     assert_eq!(row.chars().count(), 98, "{row:?}");
     assert!(row.ends_with("a…"), "{row:?}");
-    assert_eq!(row.matches('a').count(), 87);
+    assert_eq!(row.matches('a').count(), 86);
     // Narrow pane: still fills the row, never past the border.
     for w in [20u16, 30, 45] {
         let mut t = Terminal::new(TestBackend::new(w, 30)).unwrap();
@@ -1814,4 +1814,38 @@ fn crlf_text_diff_has_no_replacement_chars() {
     let s = text(&draw(&a));
     assert!(s.contains("+ c") && s.contains("- b"), "{s}");
     assert!(!s.contains('\u{fffd}'), "{s}");
+}
+
+#[test]
+fn history_rows_align_with_a_mark() {
+    let mut a = app_with(&[b"P1", b"P22", b"P333"]);
+    let h = &a.tree.node(a.selected.unwrap()).history;
+    a.diff_base = Some((h[0].received_at, h[0].payload.len()));
+    let l = lines(&draw(&a));
+    let col = |needle: &str| {
+        let row = l.iter().find(|r| r.contains(needle) && r.contains(':'));
+        let row = row.unwrap_or_else(|| panic!("{needle}: {l:#?}"));
+        assert!(row.contains('◆') == (needle == "P1"), "{row}");
+        row[..row.find(needle).unwrap()].chars().count()
+    };
+    assert_eq!(col("P1"), col("P22"));
+}
+
+#[test]
+fn compact_header_drops_clock_before_cutting_chips() {
+    let mut a = app_depth(100);
+    let topic = "building/floor-three/room-forty-two/sensor/temperature";
+    send(&mut a, topic, b"21.5", true);
+    a.selected = a.tree.find(topic);
+    for w in [60, 44] {
+        let mut t = Terminal::new(TestBackend::new(w, 24)).unwrap();
+        t.draw(|f| render_message(f, f.area(), &a, true)).unwrap();
+        let row = lines(t.backend().buffer())[0].replace('⧉', "");
+        let row = row.trim_end();
+        assert!(row.contains(" RETAINED"), "{w}: {row}");
+        assert!(
+            row.ends_with(" RETAINED") || row.ends_with("  now"),
+            "{w}: {row}"
+        );
+    }
 }

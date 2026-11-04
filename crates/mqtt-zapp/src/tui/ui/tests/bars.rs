@@ -523,7 +523,7 @@ fn header_shows_auth_failure_with_hint() {
     let s = text(&draw(&mut a, 120, 24));
     let top = s.lines().next().unwrap();
     assert!(top.contains("authentication failed: bad"), "{top}");
-    assert!(top.contains("pick the profile again to retry"), "{top}");
+    assert!(top.contains("pick the profile to retry"), "{top}");
     assert!(!top.contains('\x1b'), "{top}");
 }
 
@@ -536,4 +536,29 @@ fn payload_focus_hints_back_to_an_open_form() {
     a.focus = Focus::Payload;
     let last = last_line(&draw(&mut a, 140, 30));
     assert!(last.contains("p back to form"), "{last}");
+}
+
+#[test]
+fn long_search_shows_its_tail() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut a = app_with(&[("a", b"1")]);
+    a.handle_action(Action::Search);
+    let q = format!("{}TAIL", "x".repeat(86));
+    for c in q.chars() {
+        a.on_search_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let last = last_line(&draw(&mut a, 80, 10));
+    assert!(last.trim_end().ends_with("TAIL▏"), "{last}");
+}
+
+#[test]
+fn auth_failure_keeps_the_reason_at_80_cols() {
+    let mut a = app_with(&[("a", b"1")]);
+    a.apply_core_event(CoreEvent::State(
+        mqtt_zapp_core::client::ConnState::Failed {
+            reason: "Not authorized".into(),
+        },
+    ));
+    let top = first_line(&draw(&mut a, 80, 10));
+    assert!(top.contains("Not authorized"), "{top}");
 }

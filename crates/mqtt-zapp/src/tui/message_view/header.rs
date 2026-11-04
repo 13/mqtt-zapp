@@ -2,29 +2,6 @@
 
 use super::*;
 
-/// Keep `max` display columns of `s`, from the end (`true`) or the start.
-pub(super) fn take_width(s: &str, max: usize, from_end: bool) -> String {
-    let mut out = Vec::new();
-    let mut w = 0;
-    let chars: Vec<char> = if from_end {
-        s.chars().rev().collect()
-    } else {
-        s.chars().collect()
-    };
-    for c in chars {
-        let cw = c.width().unwrap_or(0);
-        if w + cw > max {
-            break;
-        }
-        w += cw;
-        out.push(c);
-    }
-    if from_end {
-        out.reverse();
-    }
-    out.into_iter().collect()
-}
-
 /// Split `topic` into (parents with their trailing `/`, leaf), fitted so
 /// that both take at most `width` columns. Whole middle levels go first
 /// (`a/…/`), then all but `…/`; the leaf is cut (from the left) only once
@@ -192,6 +169,8 @@ pub(super) fn time_spans(clock: &str, age: &str) -> Vec<Span<'static>> {
 }
 
 /// One row: path with the leaf highlighted, the badges, `time · age`.
+/// When it does not fit, the clock goes first, then the age, then the path
+/// shrinks below half the row; chips are shown whole or not at all.
 pub(super) fn header_compact(
     s: &Shown,
     topic: &str,
@@ -201,18 +180,46 @@ pub(super) fn header_compact(
     width: u16,
 ) -> Line<'static> {
     let muted = Style::new().fg(theme::MUTED);
-    let (parents, leaf) = fit_topic(topic, (width as usize / 2).max(8));
+    let width = usize::from(width);
+    let width_of = |v: &[Span]| v.iter().map(Span::width).sum::<usize>();
+    let mut chips = badges(s, kind);
+    let (clock, age) = (
+        clock(s.msg.received_at, time_fmt),
+        age(s.msg.received_at, now),
+    );
+    let rights = [
+        time_spans(&clock, &age),
+        vec![Span::raw(age.clone())],
+        vec![],
+    ];
+    let path = |room: usize| {
+        let (parents, leaf) = fit_topic(topic, room);
+        (parents.width() + leaf.width(), parents, leaf)
+    };
+    let half = path((width / 2).max(8));
+    // A chip and its leading gap leave together, from the end.
+    while width_of(&chips) + 1 > width && chips.len() > 1 {
+        chips.truncate(chips.len() - 2);
+    }
+    let chips_w = width_of(&chips);
+    let fits = |path_w: usize, right: &[Span]| {
+        let gap = if right.is_empty() { 0 } else { 2 };
+        path_w + 1 + chips_w + gap + width_of(right) <= width
+    };
+    let (right, (_, parents, leaf)) = match rights.iter().find(|r| fits(half.0, r)) {
+        Some(r) => (r.clone(), half),
+        None => (vec![], path(width.saturating_sub(chips_w + 1))),
+    };
     let mut spans = vec![
         Span::styled(parents, muted),
         leaf_span(&leaf),
         Span::raw(" "),
     ];
-    spans.extend(badges(s, kind));
-    spans.push(Span::raw("  "));
-    spans.extend(time_spans(
-        &clock(s.msg.received_at, time_fmt),
-        &age(s.msg.received_at, now),
-    ));
+    spans.extend(chips);
+    if !right.is_empty() {
+        spans.push(Span::raw("  "));
+        spans.extend(right);
+    }
     Line::from(spans)
 }
 

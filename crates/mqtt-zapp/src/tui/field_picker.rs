@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 const WIDTH: u16 = 56;
 const HEIGHT: u16 = 16;
@@ -62,11 +63,13 @@ pub(super) fn render(f: &mut Frame, area: Rect, app: &App, p: &FieldPicker) {
     let sel = p.sel.min(found.len().saturating_sub(1));
     let top = sel.saturating_sub(list_h - 1);
     let muted = Style::new().fg(theme::MUTED);
+    let width = usize::from(inner.width);
+    let query = sanitize(&p.query).replace('\n', " ");
+    let room = width.saturating_sub(" filter: ".len() + 1);
     let mut lines = vec![Line::from(vec![
         Span::styled(" filter: ", muted),
-        Span::raw(format!("{}▏", sanitize(&p.query).replace('\n', " "))),
+        Span::raw(format!("{}▏", theme::take_width(&query, room, true))),
     ])];
-    let width = usize::from(inner.width);
     for (i, s) in found.iter().enumerate().skip(top).take(list_h) {
         let label = sanitize(name(s)).replace('\n', " ");
         let value = payload
@@ -74,9 +77,16 @@ pub(super) fn render(f: &mut Frame, area: Rect, app: &App, p: &FieldPicker) {
             .and_then(|b| numeric_at(b, s.as_deref()))
             .map(|v| v.to_string())
             .unwrap_or_default();
-        let room = width.saturating_sub(value.chars().count() + 3).max(1);
-        let shown: String = label.chars().take(room).collect();
-        let pad = room.saturating_sub(shown.chars().count());
+        let room = width.saturating_sub(value.width() + 3).max(1);
+        let shown = if label.width() > room {
+            format!(
+                "{}…",
+                theme::take_width(&label, room.saturating_sub(1), false)
+            )
+        } else {
+            label
+        };
+        let pad = room.saturating_sub(shown.width());
         let base = if i == sel {
             Style::new().bg(theme::SEL_BG).fg(theme::SEL_FG)
         } else {

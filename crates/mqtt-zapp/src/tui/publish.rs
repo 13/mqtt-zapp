@@ -592,7 +592,7 @@ fn topic_line(form: &PublishForm, width: usize) -> Line<'static> {
     if cursor.is_some_and(|c| c >= cells.len()) {
         cells.push((" ".into(), true));
     }
-    let widths: Vec<usize> = cells.iter().map(|(t, _)| t.chars().count()).collect();
+    let widths: Vec<usize> = cells.iter().map(|(t, _)| t.width()).collect();
     let end = cells.iter().position(|(_, cur)| *cur).unwrap_or(0);
     let mut skip = 0;
     let mut used: usize = widths[..(end + 1).min(widths.len())].iter().sum();
@@ -847,6 +847,19 @@ mod tests {
         assert_eq!(cur, Some(line.spans.len() - 1), "cursor at end, visible");
         let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
         assert!(used <= 20, "{used}");
+    }
+
+    #[test]
+    fn cjk_topic_keeps_cursor_visible() {
+        let f = PublishForm::new(&"\u{6e29}".repeat(40), false);
+        let line = topic_line(&f, 20);
+        let used: usize = line.spans.iter().map(|s| s.content.width()).sum();
+        assert!(used <= 20, "{used}");
+        let cur = line
+            .spans
+            .iter()
+            .position(|s| s.style.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(cur, Some(line.spans.len() - 1), "cursor at end, visible");
     }
 
     #[test]
