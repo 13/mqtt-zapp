@@ -1,6 +1,7 @@
 //! `sub` and `pub`: the client without the TUI. Nothing here touches the
 //! terminal mode. Exit codes: 0 done, 1 an I/O error, 2 a connect, auth or
-//! publish failure (clap's usage errors are 2 as well).
+//! publish failure (clap's usage errors are 2 as well), 3 `sub -n` or
+//! `--retained-only` ended after dropping messages.
 
 use crate::cli::{Format, PubCmd, SubCmd, Target, resolve_headless};
 use anyhow::{Context, Result, anyhow, bail};
@@ -19,6 +20,8 @@ macro_rules! warn {
 }
 
 const FAIL: i32 = 2;
+/// A bounded `sub` lost messages because its output was too slow.
+const DROPPED: i32 = 3;
 /// `--retained-only` stops after this much silence.
 const RETAINED_IDLE: Duration = Duration::from_secs(2);
 /// How long `pub` waits for the write or the acknowledgement.
@@ -120,20 +123,33 @@ pub async fn sub(cmd: &SubCmd) -> i32 {
         Err(e) => return report(&e),
     };
     let mut out = LineWriter::new(std::io::stdout());
-    let stop = sub_loop(cmd, &mut rx, &mut out).await;
+    let mut dropped = 0u64;
+    let stop = sub_loop(cmd, &mut rx, &mut out, &mut dropped).await;
     let flushed = out.flush();
     conn.close(CLOSE_WAIT).await;
+    exit_code(stop, flushed, dropped, cmd)
+}
+
+/// The exit code of a finished `sub`. Dropped messages make a bounded run
+/// (`-n`, `--retained-only`) exit 3: its output is known to be short.
+fn exit_code(stop: Stop, flushed: std::io::Result<()>, dropped: u64, cmd: &SubCmd) -> i32 {
     match (stop, flushed) {
         (Stop::Fail(c), _) => c,
         (Stop::Done, Err(e)) if e.kind() != ErrorKind::BrokenPipe => {
             warn!("error: writing to stdout: {e}");
             1
         }
+        (Stop::Done, _) if dropped > 0 && (cmd.count.is_some() || cmd.retained_only) => DROPPED,
         (Stop::Done, _) => 0,
     }
 }
 
-async fn sub_loop(cmd: &SubCmd, rx: &mut Receiver<CoreEvent>, out: &mut impl Write) -> Stop {
+async fn sub_loop(
+    cmd: &SubCmd,
+    rx: &mut Receiver<CoreEvent>,
+    out: &mut impl Write,
+    dropped: &mut u64,
+) -> Stop {
     let mut seen = 0usize;
     if cmd.count == Some(0) {
         return Stop::Done;
@@ -185,6 +201,10 @@ async fn sub_loop(cmd: &SubCmd, rx: &mut Receiver<CoreEvent>, out: &mut impl Wri
             }
             Some(CoreEvent::State(ConnState::Disconnected { reason, .. })) => {
                 warn!("warning: disconnected: {reason}; reconnecting");
+            }
+            Some(CoreEvent::Dropped(n)) => {
+                *dropped += n;
+                warn!("warning: dropped {n} messages (output too slow)");
             }
             Some(_) => {}
             None => {
@@ -264,5 +284,48 @@ mod tests {
         assert_eq!(text_line("a/b", &[0xff, 0x00, 0x01]), "a/b <base64:/wAB>");
         assert_eq!(text_line("a/b", b"\x1b[31mred"), "a/b \\u{1b}[31mred");
         assert_eq!(text_line("t\nx", b"p"), "t\\nx p");
+    }
+
+    fn sub_cmd(extra: &[&str]) -> SubCmd {
+        use clap::Parser;
+        let mut a = vec!["mqtt-zapp", "sub", "--host", "h"];
+        a.extend_from_slice(extra);
+        match crate::cli::Args::parse_from(a).cmd {
+            Some(crate::cli::Cmd::Sub(c)) => c,
+            _ => panic!("not a sub command"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dropped_event_is_counted_and_exits_3_when_bounded() {
+        let cmd = sub_cmd(&["-n", "1"]);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        tx.send(CoreEvent::Dropped(3)).await.unwrap();
+        tx.send(CoreEvent::Message {
+            topic: "a".into(),
+            msg: mqtt_zapp_core::payload::Message {
+                payload: (&b"x"[..]).into(),
+                qos: 0,
+                retain: false,
+                received_at: std::time::SystemTime::UNIX_EPOCH,
+                truncated_from: None,
+                props: None,
+                sparkplug: false,
+                wire_len: None,
+            },
+        })
+        .await
+        .unwrap();
+        let mut dropped = 0;
+        let mut out = Vec::new();
+        let stop = sub_loop(&cmd, &mut rx, &mut out, &mut dropped).await;
+        assert!(matches!(stop, Stop::Done));
+        assert_eq!(dropped, 3);
+        assert_eq!(exit_code(stop, Ok(()), dropped, &cmd), 3);
+        // An unbounded run (ctrl-c ends it) stays 0: it only warns.
+        let open = sub_cmd(&[]);
+        assert_eq!(exit_code(Stop::Done, Ok(()), 3, &open), 0);
+        assert_eq!(exit_code(Stop::Done, Ok(()), 0, &cmd), 0);
+        assert_eq!(exit_code(Stop::Fail(2), Ok(()), 3, &cmd), 2);
     }
 }

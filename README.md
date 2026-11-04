@@ -230,6 +230,11 @@ in a payload are escaped, and a space in a topic is `\x20`. Scripts should parse
 live message or after 2 s of silence. `pub` takes `-m TEXT`, `-f FILE` or
 `--stdin`. Ctrl-c, `-n` and a closed pipe (`| head`) all end `sub` with exit 0.
 
+If the output is too slow, messages are dropped: `sub` prints
+`warning: dropped N messages (output too slow)` to stderr, and a run bounded by
+`-n` or `--retained-only` then exits 3 instead of 0, because its output is
+known to be short.
+
 ## ⌨️ Keys
 
 `?` shows the keys in effect, including your remaps. Type while it is open to
