@@ -12,7 +12,7 @@ pub(super) fn render_stats(f: &mut Frame, area: Rect, app: &App) {
     let mut lines = vec![Line::default()];
     if stats.is_empty() {
         lines.push(Line::styled(
-            " no $SYS data – subscribe to $SYS/# (the default)",
+            " no $SYS data · subscribe to $SYS/# (the default)",
             muted,
         ));
     }
@@ -60,11 +60,8 @@ pub(super) fn render_confirm(f: &mut Frame, area: Rect, c: &super::super::app::C
     }
     f.render_widget(Clear, card);
     let mut hint = vec![Span::raw(" ")];
-    hint.extend(theme::key_hint("y", "yes"));
-    hint.push(Span::styled(
-        "any other key: no",
-        Style::new().fg(theme::MUTED),
-    ));
+    hint.extend(theme::key_hint("y", "confirm"));
+    hint.extend(theme::key_hint("any other key", "cancels"));
     let mut lines: Vec<Line> = text
         .into_iter()
         .map(|l| Line::raw(format!(" {l}")))
@@ -221,7 +218,30 @@ pub(super) const HELP_FIXED: &[(&str, &[(&str, &str)])] = &[
     ),
     (
         "search",
-        &[("ctrl-r", "regex on/off"), ("enter", "keep filter")],
+        &[
+            ("ctrl-r", "regex on/off"),
+            ("enter", "keep filter"),
+            ("esc", "clear search"),
+        ],
+    ),
+    (
+        "field picker",
+        &[
+            ("type", "filter fields"),
+            ("up/down ctrl-p/n", "move"),
+            ("enter", "chart field"),
+            ("esc", "close"),
+        ],
+    ),
+    ("confirm", &[("y", "confirm"), ("any other key", "cancels")]),
+    (
+        "profile form",
+        &[
+            ("ctrl-s", "save"),
+            ("tab", "next field"),
+            ("space", "change option"),
+            ("esc", "cancel (twice if edited)"),
+        ],
     ),
 ];
 

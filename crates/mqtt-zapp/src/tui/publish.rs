@@ -623,7 +623,7 @@ fn label_style(form: &PublishForm, field: Field) -> Style {
     }
 }
 
-/// `QoS [0] 1 2  Retain [ ]  Format [raw] json xml`, each value with its
+/// `qos [0] 1 2  retain [ ]  format [raw] json xml`, each value with its
 /// click target; the focused field's label is highlighted. 46 columns: it
 /// fits the message pane of an 80-column terminal.
 fn options_spans(form: &PublishForm) -> Vec<(Span<'static>, Option<Click>)> {
@@ -638,7 +638,7 @@ fn options_spans(form: &PublishForm) -> Vec<(Span<'static>, Option<Click>)> {
         }
     };
     let mut spans = vec![(
-        Span::styled("QoS", label_style(form, Field::Qos)),
+        Span::styled("qos", label_style(form, Field::Qos)),
         Some(Click::Focus(Field::Qos)),
     )];
     for q in 0..=2u8 {
@@ -646,14 +646,14 @@ fn options_spans(form: &PublishForm) -> Vec<(Span<'static>, Option<Click>)> {
     }
     spans.push((Span::raw("  "), None));
     spans.push((
-        Span::styled("Retain", label_style(form, Field::Retain)),
+        Span::styled("retain", label_style(form, Field::Retain)),
         Some(Click::Retain),
     ));
     let mark = if form.retain { " [x]" } else { " [ ]" };
     spans.push((Span::raw(mark), Some(Click::Retain)));
     spans.push((Span::raw("  "), None));
     spans.push((
-        Span::styled("Format", label_style(form, Field::Format)),
+        Span::styled("format", label_style(form, Field::Format)),
         Some(Click::Focus(Field::Format)),
     ));
     for fmt in Format::ALL {
@@ -1062,7 +1062,7 @@ mod tests {
         let mut f = PublishForm::new("a", false);
         let s = draw(&mut f, 70, 10);
         let rows: Vec<&str> = s.lines().collect();
-        let opts_y = rows.iter().position(|r| r.contains("QoS [")).unwrap() as u16;
+        let opts_y = rows.iter().position(|r| r.contains("qos [")).unwrap() as u16;
         let x_of = |needle: &str| {
             let r = rows[opts_y as usize];
             r[..r.find(needle).unwrap()].chars().count() as u16

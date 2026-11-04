@@ -33,7 +33,7 @@ fn click_in_publish_form_sets_options() {
     a.handle_action(Action::Publish);
     let s = text(&draw(&mut a, 120, 30));
     let rows: Vec<&str> = s.lines().collect();
-    let y = rows.iter().position(|r| r.contains("QoS [")).unwrap();
+    let y = rows.iter().position(|r| r.contains("qos [")).unwrap();
     let x = {
         let r = rows[y];
         r[..r.find("json").unwrap()].chars().count() as u16

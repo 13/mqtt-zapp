@@ -78,11 +78,13 @@ pub(super) fn hints(app: &App) -> Vec<(String, &'static str)> {
             ("esc".into(), "cancel"),
         ],
         (Mode::FieldPicker, _) => vec![
+            ("type".into(), "filter"),
             ("enter".into(), "chart"),
-            ("up/down".into(), "move"),
+            ("up/down ctrl-p/n".into(), "move"),
             ("esc".into(), "close"),
         ],
-        (Mode::Confirm, _) => vec![("y".into(), "confirm"), ("esc".into(), "cancel")],
+        (Mode::Confirm, _) => vec![("y".into(), "confirm"), ("any other key".into(), "cancels")],
+        (Mode::Stats, _) => vec![("any key".into(), "closes")],
         (Mode::Publish, _) => publish_hints(app),
         _ => vec![],
     }
@@ -164,7 +166,7 @@ pub(super) fn push_hints(spans: &mut Vec<Span<'static>>, hints: &[(String, &str)
 pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
     let width = usize::from(width);
     if app.mode == Mode::SearchInput {
-        let prompt = if app.search_regex { "regex/" } else { "/" };
+        let prompt = if app.search_regex { "regex: " } else { "/" };
         let query = single_line(&app.search);
         let mut right = Vec::new();
         push_hints(

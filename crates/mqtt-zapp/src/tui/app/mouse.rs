@@ -58,6 +58,16 @@ impl App {
                 self.mode = self.help_return;
                 self.dirty = true;
             }
+            Mode::Help if wheel.is_some() => {
+                let (max, _) = self.help_view.get();
+                let at = self.help_scroll.min(max);
+                self.help_scroll = if wheel == Some(true) {
+                    (at + WHEEL_LINES as usize).min(max)
+                } else {
+                    at.saturating_sub(WHEEL_LINES as usize)
+                };
+                self.dirty = true;
+            }
             Mode::Stats if matches!(ev.kind, MouseEventKind::Down(_)) => {
                 self.mode = Mode::Browse;
                 self.dirty = true;
@@ -87,8 +97,9 @@ impl App {
             }
             Mode::Browse if left_click => return self.browse_click(at, hit),
             Mode::Browse if right_click => return self.tree_copy_click(at, inner(hit.tree)),
-            Mode::Browse => {
-                if let Some(down) = wheel {
+            // The wheel scrolls the panes beside the form; keys stay in it.
+            Mode::Browse | Mode::Publish => {
+                if let Some(down) = wheel.filter(|_| !hit.publish.contains(at)) {
                     self.browse_wheel(at, hit, down);
                 }
             }

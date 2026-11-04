@@ -16,7 +16,7 @@ use unicode_width::UnicodeWidthStr;
 
 /// The empty picker's hint, naming the add-profile key.
 pub fn empty_hint(add_key: &str) -> String {
-    format!("no profiles – press {add_key} to add one")
+    format!("no profiles · press {add_key} to add one")
 }
 
 #[derive(Debug, Default)]

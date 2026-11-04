@@ -102,7 +102,7 @@ pub fn render(f: &mut Frame, area: Rect, form: &ProfileForm) {
         Some(e) => Block::bordered()
             .border_type(BorderType::Thick)
             .title(Span::styled(
-                format!(" {title} - {} ", sanitize(e).replace('\n', " ")),
+                format!(" {title} · {} ", sanitize(e).replace('\n', " ")),
                 Style::new().fg(theme::ERR).add_modifier(Modifier::BOLD),
             ))
             .border_style(Style::new().fg(theme::ERR)),

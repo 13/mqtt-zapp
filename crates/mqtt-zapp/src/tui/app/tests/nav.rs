@@ -511,7 +511,7 @@ fn freeze_key_toggles_and_redraws() {
     assert!(a.dirty, "the frozen badge must be drawn");
     assert_eq!(
         a.note_at(Instant::now()),
-        Some(&Note::info("display frozen – f to resume"))
+        Some(&Note::info("display frozen · f to resume"))
     );
     a.dirty = false;
     // A tick alone does not redraw a frozen display; a key does.

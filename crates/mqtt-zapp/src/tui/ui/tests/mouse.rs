@@ -471,3 +471,29 @@ fn chart_click_with_active_filter_hits_same_line() {
     click_payload_row(&mut a, &b, "\"h\": 41");
     assert_eq!(a.chart, Some(Some("h".into())));
 }
+
+#[test]
+fn wheel_scrolls_help() {
+    use crossterm::event::MouseEventKind;
+    let mut a = app_with(&[("a", b"1")]);
+    a.handle_action(Action::Help);
+    let _ = draw(&mut a, 80, 14);
+    mouse(&mut a, MouseEventKind::ScrollDown, 40, 7);
+    assert!(a.help_scroll > 0);
+    assert_eq!(a.mode, Mode::Help, "the wheel does not close help");
+    mouse(&mut a, MouseEventKind::ScrollUp, 40, 7);
+    assert_eq!(a.help_scroll, 0);
+}
+
+#[test]
+fn wheel_over_tree_scrolls_while_form_focused() {
+    use crossterm::event::MouseEventKind;
+    let mut a = app_with(&[("a", b"1"), ("b", b"2"), ("c", b"3")]);
+    a.selected = a.tree.find("a");
+    a.handle_action(Action::Publish);
+    assert_eq!(a.mode, Mode::Publish);
+    let _ = draw(&mut a, 100, 24);
+    mouse(&mut a, MouseEventKind::ScrollDown, 10, 5);
+    assert_eq!(a.selected, a.tree.find("b"));
+    assert_eq!(a.mode, Mode::Publish, "the form keeps the keys");
+}

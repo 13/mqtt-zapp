@@ -278,7 +278,7 @@ fn publish_overlay_renders_fields_and_error_title() {
         "publish",
         "topic: ",
         "payload",
-        "QoS [0] 1 2  Retain [ ]  Format [raw] json xml",
+        "qos [0] 1 2  retain [ ]  format [raw] json xml",
         "topics",
     ] {
         assert!(s.contains(want), "{want}: {s}");
@@ -361,7 +361,7 @@ fn confirm_wraps_long_prompt() {
         let want: String = prompt.split_whitespace().collect();
         assert!(joined.contains(&want), "w={w}: {rows:#?}");
         assert!(
-            rows.last().unwrap().starts_with("y yes"),
+            rows.last().unwrap().starts_with("y confirm"),
             "w={w}: {rows:#?}"
         );
     }
@@ -617,4 +617,94 @@ fn stats_title_says_offline() {
     let s = text(&draw(&mut a, 100, 30));
     assert!(s.contains("broker stats · offline"), "{s}");
     assert!(!s.contains("· live"), "{s}");
+}
+
+#[test]
+fn help_lists_every_fixed_context() {
+    let names: Vec<&str> = HELP_FIXED.iter().map(|(n, _)| *n).collect();
+    for want in [
+        "publish form",
+        "search",
+        "field picker",
+        "confirm",
+        "profile form",
+    ] {
+        assert!(names.contains(&want), "{want}: {names:?}");
+    }
+    let search = HELP_FIXED.iter().find(|(n, _)| *n == "search").unwrap().1;
+    assert!(search.iter().any(|(k, _)| *k == "esc"), "{search:?}");
+}
+
+#[test]
+fn confirm_card_and_footer_agree() {
+    let mut a = app_with(&[]);
+    a.conn_state = mqtt_zapp_core::client::ConnState::Connected;
+    retained(&mut a, "a/b", b"1");
+    a.selected = a.tree.find("a");
+    a.handle_action(Action::ClearRetained);
+    let b = draw(&mut a, 100, 24);
+    let s = text(&b);
+    let card = s
+        .lines()
+        .find(|l| l.contains("┃ y"))
+        .unwrap_or_else(|| panic!("{s}"));
+    let footer = last_line(&b);
+    for part in [card, footer.as_str()] {
+        assert!(part.contains("y confirm"), "{part}");
+        assert!(part.contains("any other key cancels"), "{part}");
+    }
+}
+
+#[test]
+fn stats_footer_says_any_key_closes() {
+    let mut a = app_with(&[("$SYS/broker/clients/connected", b"7")]);
+    a.handle_action(Action::Stats);
+    let footer = last_line(&draw(&mut a, 100, 24));
+    assert!(footer.contains("any key closes"), "{footer}");
+}
+
+#[test]
+fn field_picker_footer_mentions_filter_and_ctrl_p() {
+    let mut a = app_with(&[("t", br#"{"a":1,"b":2}"#)]);
+    a.selected = a.tree.find("t");
+    a.handle_action(Action::ChartPick);
+    let footer = last_line(&draw(&mut a, 100, 24));
+    assert!(
+        footer.contains("type filter") && footer.contains("ctrl-p/n"),
+        "{footer}"
+    );
+}
+
+/// One separator in user-facing copy: ` · `. Scans the string literals of
+/// the files that hold notes, hints and card text.
+#[test]
+fn no_dash_separators_in_copy() {
+    let sources = [
+        ("app.rs", include_str!("../../app.rs")),
+        ("app/actions.rs", include_str!("../../app/actions.rs")),
+        ("picker.rs", include_str!("../../picker.rs")),
+        ("ui/overlays.rs", include_str!("../overlays.rs")),
+        ("ui/bars.rs", include_str!("../bars.rs")),
+        (
+            "profile_form/render.rs",
+            include_str!("../../profile_form/render.rs"),
+        ),
+        ("publish.rs", include_str!("../../publish.rs")),
+    ];
+    for (name, src) in sources {
+        for (i, line) in src.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || !code.contains('"') {
+                continue;
+            }
+            for dash in [" – ", " — ", " - "] {
+                let quoted = code.split('"').skip(1).step_by(2);
+                assert!(
+                    !quoted.clone().any(|q| q.contains(dash)),
+                    "{name}:{}: {code}",
+                    i + 1
+                );
+            }
+        }
+    }
 }

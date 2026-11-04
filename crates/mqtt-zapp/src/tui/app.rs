@@ -294,7 +294,7 @@ pub enum ConfirmAction {
     },
 }
 
-const STORE_BROKEN: &str = "profiles.toml has errors – fix it by hand first";
+const STORE_BROKEN: &str = "profiles.toml has errors · fix it by hand first";
 
 /// Event-loop tick while something animates, and while nothing does.
 pub const FAST_TICK: Duration = Duration::from_millis(100);
