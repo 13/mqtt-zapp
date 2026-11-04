@@ -338,6 +338,40 @@ fn walk_numbers(v: &serde_json::Value, path: String, out: &mut Vec<String>) {
     }
 }
 
+/// Walk `path` through `v`. At an object the longest key equal to the rest
+/// of the path (or a prefix of it followed by `.`) wins, so keys containing
+/// dots resolve; at an array the leading segment is the index.
+fn resolve<'a>(v: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    let mut v = v;
+    let mut rest = path;
+    loop {
+        match v {
+            serde_json::Value::Object(m) => {
+                let (key, child) = m
+                    .iter()
+                    .filter(|(k, _)| {
+                        rest.strip_prefix(k.as_str())
+                            .is_some_and(|r| r.is_empty() || r.starts_with('.'))
+                    })
+                    .max_by_key(|(k, _)| k.len())?;
+                v = child;
+                rest = &rest[key.len()..];
+            }
+            serde_json::Value::Array(a) => {
+                let seg = rest.split('.').next()?;
+                v = a.get(seg.parse::<usize>().ok()?)?;
+                rest = &rest[seg.len()..];
+            }
+            _ => return None,
+        }
+        match rest.strip_prefix('.') {
+            Some(r) => rest = r,
+            None if rest.is_empty() => return Some(v),
+            None => return None,
+        }
+    }
+}
+
 /// The payload as a finite number (`path` `None`), or the number at a
 /// dotted JSON path.
 pub fn numeric_at(payload: &[u8], path: Option<&str>) -> Option<f64> {
@@ -348,18 +382,8 @@ pub fn numeric_at(payload: &[u8], path: Option<&str>) -> Option<f64> {
             .parse::<f64>()
             .ok()?,
         Some(path) => {
-            let mut v: serde_json::Value = serde_json::from_slice(payload).ok()?;
-            for key in path.split('.') {
-                v = match v {
-                    serde_json::Value::Object(mut m) => m.remove(key)?,
-                    serde_json::Value::Array(mut a) => {
-                        let i: usize = key.parse().ok()?;
-                        (i < a.len()).then(|| a.swap_remove(i))?
-                    }
-                    _ => return None,
-                };
-            }
-            v.as_f64()?
+            let root: serde_json::Value = serde_json::from_slice(payload).ok()?;
+            resolve(&root, path)?.as_f64()?
         }
     };
     x.is_finite().then_some(x)
@@ -569,6 +593,34 @@ mod tests {
         assert_eq!(numeric_lines(b" 7 \n"), vec![(0, None)]);
         assert!(numeric_lines(b"hello").is_empty());
         assert!(numeric_lines(b"\x00\x01").is_empty());
+    }
+
+    #[test]
+    fn numeric_at_dotted_key() {
+        let p = br#"{"metrics":{"Inputs.A":3}}"#;
+        assert_eq!(numeric_at(p, Some("metrics.Inputs.A")), Some(3.0));
+    }
+
+    #[test]
+    fn numeric_at_prefers_longest_key() {
+        let p = br#"{"a.b":1,"a":{"b":2}}"#;
+        assert_eq!(numeric_at(p, Some("a.b")), Some(1.0));
+    }
+
+    #[test]
+    fn numeric_at_array_then_dotted() {
+        let p = br#"{"x":[{"y.z":5}]}"#;
+        assert_eq!(numeric_at(p, Some("x.0.y.z")), Some(5.0));
+    }
+
+    #[test]
+    fn every_numeric_path_resolves() {
+        let p = br#"{"a.b":{"c":1},"d":[2,{"e.f":3}]}"#;
+        let paths = numeric_paths(p);
+        assert_eq!(paths.len(), 3);
+        for path in paths {
+            assert!(numeric_at(p, Some(&path)).is_some(), "{path}");
+        }
     }
 
     #[test]
