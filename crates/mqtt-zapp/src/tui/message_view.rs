@@ -7,7 +7,7 @@ use super::keymap::Action;
 use super::theme;
 use chrono::{DateTime, Local};
 use mqtt_zapp_core::diff::{ChangeKind, Diff, LineTag, diff};
-use mqtt_zapp_core::payload::{PayloadKind, detect, pretty_lines, preview, sanitize};
+use mqtt_zapp_core::payload::{PayloadKind, Props, detect, pretty_lines, preview, sanitize};
 use mqtt_zapp_core::{Message, TopicNode};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -505,13 +505,49 @@ fn header_compact(
     Line::from(spans)
 }
 
+/// The props row: chips joined by two spaces in the muted colour, filled
+/// greedily into `width` columns; chips that do not fit become ` +N more`.
+fn props_line(props: &Props, width: u16) -> Line<'static> {
+    let chips: Vec<String> = props.summary().iter().map(|c| one_line(c)).collect();
+    let width = usize::from(width);
+    // Leading and trailing space frame the row.
+    let room = width.saturating_sub(2);
+    let tail = |k: usize| {
+        if k < chips.len() {
+            format!(" +{} more", chips.len() - k)
+        } else {
+            String::new()
+        }
+    };
+    let mut used = 0;
+    let mut fit = 0;
+    let mut best = 0;
+    for (i, c) in chips.iter().enumerate() {
+        used += c.width() + if i > 0 { 2 } else { 0 };
+        if used > room {
+            break;
+        }
+        fit = i + 1;
+        if used + tail(fit).width() <= room {
+            best = fit;
+        }
+    }
+    // All chips fit with no tail; otherwise the most that leaves room for it.
+    let k = if fit == chips.len() { fit } else { best };
+    let mut text = format!(" {}{}", chips[..k].join("  "), tail(k));
+    if k == 0 && text.width() > width {
+        text = tail(0).chars().take(width).collect();
+    }
+    Line::styled(text, Style::new().fg(theme::MUTED))
+}
+
 /// Rows the history box gets in a message pane of `area`, before any
 /// focus override: 0 means it is not drawn. History takes at most half of
 /// what the meta line leaves, so the payload keeps room in short (stacked)
 /// layouts.
-fn history_rows(area: Rect, stacked: bool, entries: usize) -> u16 {
+fn history_rows(area: Rect, stacked: bool, entries: usize, props: bool) -> u16 {
     let card = !stacked && area.height >= HEADER_CARD_MIN_HEIGHT;
-    let header_rows = if card { 3 } else { 1 };
+    let header_rows = if card { 3 } else { 1 } + u16::from(props);
     let half = area.height.saturating_sub(header_rows) / 2;
     (entries.min(HISTORY_ROWS) as u16).min(half.saturating_sub(2))
 }
@@ -519,7 +555,9 @@ fn history_rows(area: Rect, stacked: bool, entries: usize) -> u16 {
 /// Whether the history box fits in the message pane `area`. If history has
 /// focus but the box is not shown, focus moves to the payload.
 pub fn settle_history_focus(app: &mut App, area: Rect, stacked: bool) {
-    let fits = shown(app).is_some_and(|s| history_rows(area, stacked, s.node.history.len()) > 0);
+    let fits = shown(app).is_some_and(|s| {
+        history_rows(area, stacked, s.node.history.len(), s.msg.props.is_some()) > 0
+    });
     app.history_shown.set(fits);
     if !fits && app.focus == Focus::History {
         app.focus = Focus::Payload;
@@ -558,8 +596,9 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
         return;
     };
     let card = !stacked && area.height >= HEADER_CARD_MIN_HEIGHT;
-    let header_rows = if card { 3 } else { 1 };
-    let hist_rows = history_rows(area, stacked, s.node.history.len());
+    let props = s.msg.props.as_deref();
+    let header_rows = if card { 3 } else { 1 } + u16::from(props.is_some());
+    let hist_rows = history_rows(area, stacked, s.node.history.len(), props.is_some());
     app.history_shown.set(hist_rows > 0);
     if hist_rows == 0 {
         app.hit.set(HitAreas {
@@ -604,7 +643,9 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
             header_copy: copy_rect(meta, copy_w),
             ..app.hit.get()
         });
-        f.render_widget(Paragraph::new(row).block(block), meta);
+        let mut text = vec![row];
+        text.extend(props.map(|p| props_line(p, inner.width)));
+        f.render_widget(Paragraph::new(text).block(block), meta);
     } else {
         // ` ⧉ ` at the right end; the row is cut short of it. Too narrow
         // a row keeps all its columns for the path.
@@ -613,6 +654,17 @@ pub fn render_message(f: &mut Frame, area: Rect, app: &App, stacked: bool) {
         } else {
             0
         };
+        let (meta, props_area) = match props {
+            Some(_) => {
+                let [m, p] =
+                    Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(meta);
+                (m, Some(p))
+            }
+            None => (meta, None),
+        };
+        if let (Some(p), Some(area)) = (props, props_area) {
+            f.render_widget(Paragraph::new(props_line(p, area.width)), area);
+        }
         let [row_area, glyph] =
             Layout::horizontal([Constraint::Min(0), Constraint::Length(glyph_w)]).areas(meta);
         let row = header_compact(&s, &topic, kind, &app.timestamp_format, now, row_area.width);

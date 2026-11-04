@@ -277,6 +277,40 @@ async fn receives_published_message_v5() {
 }
 
 #[tokio::test]
+async fn v5_properties_arrive() {
+    use rumqttc::v5::{AsyncClient, MqttOptions, mqttbytes::QoS, mqttbytes::v5::PublishProperties};
+    let Some(b) = support::start(false) else {
+        return;
+    };
+    let p5 = v5(profile("127.0.0.1", b.port, Protocol::Mqtt));
+    let (conn, mut rx) = Connection::connect(&p5, None).unwrap();
+    ready(&conn, &mut rx, "zapp/ready/props").await;
+
+    let opts = MqttOptions::new("props-pub", "127.0.0.1", b.port);
+    let (client, mut ev) = AsyncClient::new(opts, 10);
+    let props = PublishProperties {
+        content_type: Some("application/json".into()),
+        user_properties: vec![("src".into(), "test".into())],
+        ..Default::default()
+    };
+    client
+        .publish_with_properties("zapp/props", QoS::AtLeastOnce, false, "{}", props)
+        .await
+        .unwrap();
+    // Drive the publisher's event loop until the broker has acked.
+    let drive = tokio::spawn(async move { while ev.poll().await.is_ok() {} });
+    let CoreEvent::Message { msg, .. } =
+        wait_for(&mut rx, |e| is_message(e, "zapp/props"), 5).await
+    else {
+        unreachable!()
+    };
+    drive.abort();
+    let props = msg.props.expect("properties should arrive");
+    assert_eq!(props.content_type.as_deref(), Some("application/json"));
+    assert_eq!(props.user, [("src".to_owned(), "test".to_owned())]);
+}
+
+#[tokio::test]
 async fn retained_flag_v5() {
     let Some(b) = support::start(false) else {
         return;

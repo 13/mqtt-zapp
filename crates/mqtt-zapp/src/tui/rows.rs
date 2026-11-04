@@ -85,6 +85,7 @@ mod tests {
             retain: false,
             received_at: SystemTime::now(),
             truncated_from: None,
+            props: None,
         }
     }
 

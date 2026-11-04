@@ -273,6 +273,7 @@ mod tests {
             retain: false,
             received_at: SystemTime::now(),
             truncated_from: None,
+            props: None,
         }
     }
 
@@ -411,6 +412,7 @@ mod tests {
                 retain: false,
                 received_at: SystemTime::now(),
                 truncated_from: None,
+                props: None,
             },
         );
         assert!(filter(&t, "zz").unwrap().matches.is_empty());
@@ -437,6 +439,7 @@ mod tests {
                 retain: false,
                 received_at: SystemTime::now(),
                 truncated_from: None,
+                props: None,
             },
         );
         assert_eq!(filter(&t, "temp").unwrap().matches.len(), 1);

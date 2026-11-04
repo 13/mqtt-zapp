@@ -4,6 +4,7 @@ use crate::tui::app::{App, Focus, Mode};
 use crate::tui::keymap::Action;
 use mqtt_zapp_core::client::CoreEvent;
 use mqtt_zapp_core::config::{ProfileStore, Settings};
+use mqtt_zapp_core::payload::Props;
 use mqtt_zapp_core::{Bytes, Message};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -33,6 +34,7 @@ fn send(a: &mut App, topic: &str, payload: &[u8], retain: bool) {
             retain,
             received_at: SystemTime::now(),
             truncated_from: None,
+            props: None,
         },
     });
 }
@@ -1198,4 +1200,81 @@ fn large_binary_hex_dump_is_capped() {
         l.last().unwrap(),
         &format!("… {} more bytes not shown", p.len() - PRETTY_MAX)
     );
+}
+
+fn app_with_props(props: Props) -> App {
+    let mut a = app_depth(100);
+    a.apply_core_event(CoreEvent::Message {
+        topic: T.into(),
+        msg: Message {
+            payload: Bytes::from_static(b"x"),
+            qos: 1,
+            retain: false,
+            received_at: SystemTime::now(),
+            truncated_from: None,
+            props: Some(Box::new(props)),
+        },
+    });
+    a.selected = a.tree.find(T);
+    a
+}
+
+fn draw_sized(a: &App, w: u16, h: u16, stacked: bool) -> Vec<String> {
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    t.draw(|f| render_message(f, f.area(), a, stacked)).unwrap();
+    lines(t.backend().buffer())
+}
+
+#[test]
+fn props_row_shown_in_card() {
+    let a = app_with_props(Props {
+        content_type: Some("text/plain".into()),
+        user: vec![("dev".into(), "42".into())],
+        ..Props::default()
+    });
+    let l = draw_sized(&a, 100, 30, false);
+    let row = l
+        .iter()
+        .position(|r| r.contains("type text/plain") && r.contains("dev=42"))
+        .expect("props row");
+    // Card: border, badges, props, then the payload pane starts at row 4.
+    assert_eq!(row, 2, "{l:#?}");
+    assert!(l[4].contains("payload"), "{:?}", l[4]);
+    // Without props the card is 3 rows tall.
+    let plain = draw_sized(&app_with(&[b"x"]), 100, 30, false);
+    assert!(plain[3].contains("payload"), "{:?}", plain[3]);
+}
+
+#[test]
+fn props_row_is_one_line_and_ellipsized() {
+    let a = app_with_props(Props {
+        user: (0..300)
+            .map(|i| (format!("k{i}"), "v".to_owned()))
+            .collect(),
+        ..Props::default()
+    });
+    let l = draw_sized(&a, 80, 30, false);
+    let row = &l[2];
+    assert!(row.contains("k0=v"), "{row:?}");
+    let at = row.find(" +").expect("more marker");
+    let rest = row[at..].trim_end().trim_end_matches('│').trim_end();
+    let n: usize = rest
+        .strip_prefix(" +")
+        .and_then(|r| r.strip_suffix(" more"))
+        .and_then(|r| r.parse().ok())
+        .unwrap_or_else(|| panic!("tail {rest:?}"));
+    let shown = row.matches("=v").count();
+    assert_eq!(shown + n, 300);
+    assert!(l[3].starts_with('╰'), "{:?}", l[3]);
+}
+
+#[test]
+fn props_row_in_compact_header() {
+    let a = app_with_props(Props {
+        content_type: Some("text/plain".into()),
+        ..Props::default()
+    });
+    let l = draw_sized(&a, 79, 24, true);
+    assert!(l[0].contains(" TEXT "), "{:?}", l[0]);
+    assert!(l[1].contains("type text/plain"), "{:?}", l[1]);
 }

@@ -11,6 +11,55 @@ pub struct Message {
     pub received_at: SystemTime,
     /// The payload's length on the wire when `truncate_to` cut it.
     pub truncated_from: Option<usize>,
+    /// MQTT 5 publish properties worth showing; `None` when there are none.
+    /// Boxed: serde's `rc` feature (needed for `Arc`) is not enabled.
+    pub props: Option<Box<Props>>,
+}
+
+/// The MQTT 5 publish properties the header shows.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Props {
+    pub content_type: Option<String>,
+    pub response_topic: Option<String>,
+    pub correlation_data: Option<Bytes>,
+    /// Seconds.
+    pub message_expiry: Option<u32>,
+    /// `payload_format_indicator == 1`.
+    pub payload_utf8: Option<bool>,
+    pub user: Vec<(String, String)>,
+}
+
+impl Props {
+    pub fn is_empty(&self) -> bool {
+        *self == Props::default()
+    }
+
+    /// Display chips: type, reply, corr, expiry, utf8, then `k=v` pairs.
+    /// Every wire-derived string is sanitized.
+    pub fn summary(&self) -> Vec<String> {
+        let mut v = Vec::new();
+        if let Some(t) = &self.content_type {
+            v.push(format!("type {}", sanitize(t)));
+        }
+        if let Some(t) = &self.response_topic {
+            v.push(format!("reply {}", sanitize(t)));
+        }
+        if let Some(c) = &self.correlation_data {
+            let hex: String = c.iter().take(8).map(|b| format!("{b:02x}")).collect();
+            let more = if c.len() > 8 { "\u{2026}" } else { "" };
+            v.push(format!("corr {hex}{more}"));
+        }
+        if let Some(e) = self.message_expiry {
+            v.push(format!("expiry {e}s"));
+        }
+        if self.payload_utf8 == Some(true) {
+            v.push("utf8".to_owned());
+        }
+        for (k, val) in &self.user {
+            v.push(format!("{}={}", sanitize(k), sanitize(val)));
+        }
+        v
+    }
 }
 
 impl Message {
@@ -298,6 +347,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn props_summary_order() {
+        let p = Props {
+            content_type: Some("application/json".into()),
+            response_topic: Some("r/t".into()),
+            correlation_data: Some(Bytes::from_static(&[1, 2, 3, 4, 5, 6, 7, 8, 9])),
+            message_expiry: Some(60),
+            payload_utf8: Some(true),
+            user: vec![("a".into(), "1".into())],
+        };
+        assert_eq!(
+            p.summary(),
+            [
+                "type application/json",
+                "reply r/t",
+                "corr 0102030405060708\u{2026}",
+                "expiry 60s",
+                "utf8",
+                "a=1"
+            ]
+        );
+    }
+
+    #[test]
+    fn props_summary_sanitizes() {
+        let p = Props {
+            user: vec![("k".into(), "x\u{202e}y".into())],
+            ..Props::default()
+        };
+        assert!(!p.summary()[0].contains('\u{202e}'));
+    }
+
+    #[test]
+    fn empty_props_is_empty() {
+        assert!(Props::default().is_empty());
+    }
+
+    #[test]
     fn truncate_to_marks_original_len() {
         let mut m = Message {
             payload: Bytes::copy_from_slice(b"0123456789"),
@@ -305,6 +391,7 @@ mod tests {
             retain: false,
             received_at: std::time::SystemTime::now(),
             truncated_from: None,
+            props: None,
         };
         m.truncate_to(10);
         assert_eq!(

@@ -4,7 +4,7 @@
 //! or end the task; it stops only on `disconnect()` or when the receiver drops.
 
 use crate::config::{MqttVersion, Profile, Protocol, TlsConfig};
-use crate::payload::Message;
+use crate::payload::{Message, Props};
 use anyhow::{Context, Result, anyhow, bail};
 use rumqttc::tokio_rustls::rustls;
 use rumqttc::v5;
@@ -153,13 +153,26 @@ enum Polled {
 /// pin the whole read chunk: a 4-byte `latest` could hold megabytes alive
 /// and `max_history_mb` would no longer bound real memory. The copy is the
 /// only one; `latest` and history share it.
-fn incoming(payload: &[u8], qos: u8, retain: bool) -> Message {
+fn incoming(payload: &[u8], qos: u8, retain: bool, props: Option<Box<Props>>) -> Message {
     Message {
         payload: bytes::Bytes::copy_from_slice(payload),
         qos,
         retain,
         received_at: SystemTime::now(),
         truncated_from: None,
+        props,
+    }
+}
+
+/// The properties the header shows, taken from a v5 publish.
+fn props_from_v5(p: v5::mqttbytes::v5::PublishProperties) -> Props {
+    Props {
+        content_type: p.content_type,
+        response_topic: p.response_topic,
+        correlation_data: p.correlation_data,
+        message_expiry: p.message_expiry_interval,
+        payload_utf8: (p.payload_format_indicator == Some(1)).then_some(true),
+        user: p.user_properties,
     }
 }
 
@@ -179,7 +192,7 @@ impl Loop {
             Loop::V4(l) => match l.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => Polled::ConnAck,
                 Ok(Event::Incoming(Packet::Publish(p))) => Polled::Publish {
-                    msg: incoming(&p.payload, p.qos as u8, p.retain),
+                    msg: incoming(&p.payload, p.qos as u8, p.retain, None),
                     topic: p.topic,
                 },
                 Ok(Event::Outgoing(Outgoing::Disconnect)) => Polled::OutgoingDisconnect,
@@ -189,7 +202,15 @@ impl Loop {
             Loop::V5(l) => match l.poll().await {
                 Ok(v5::Event::Incoming(v5::Incoming::ConnAck(_))) => Polled::ConnAck,
                 Ok(v5::Event::Incoming(v5::Incoming::Publish(p))) => Polled::Publish {
-                    msg: incoming(&p.payload, p.qos as u8, p.retain),
+                    msg: incoming(
+                        &p.payload,
+                        p.qos as u8,
+                        p.retain,
+                        p.properties
+                            .map(props_from_v5)
+                            .filter(|p| !p.is_empty())
+                            .map(Box::new),
+                    ),
                     topic: String::from_utf8_lossy(&p.topic).into_owned(),
                 },
                 Ok(v5::Event::Outgoing(Outgoing::Disconnect)) => Polled::OutgoingDisconnect,
@@ -633,7 +654,7 @@ mod tests {
         // rumqttc hands out the payload as a slice of its shared read chunk.
         let chunk = bytes::Bytes::from(vec![7u8; 64 * 1024]);
         let p = chunk.slice(100..104);
-        let m = incoming(&p, 1, true);
+        let m = incoming(&p, 1, true, None);
         assert_eq!(&m.payload[..], &[7u8; 4][..]);
         assert_eq!((m.qos, m.retain, m.truncated_from), (1, true, None));
         let range = chunk.as_ptr_range();

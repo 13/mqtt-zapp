@@ -510,6 +510,7 @@ mod tests {
             retain: false,
             received_at: std::time::SystemTime::now(),
             truncated_from: None,
+            props: None,
         }
     }
 
@@ -604,6 +605,7 @@ mod tests {
             retain,
             received_at: std::time::SystemTime::now(),
             truncated_from: None,
+            props: None,
         };
         let mut t = TopicTree::new(5);
         let id = t.insert("a", m("1", true)).unwrap();
@@ -645,6 +647,7 @@ mod tests {
             retain: false,
             received_at: SystemTime::now(),
             truncated_from: None,
+            props: None,
         }
     }
 

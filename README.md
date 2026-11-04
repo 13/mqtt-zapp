@@ -30,7 +30,7 @@ the feature set of MQTT Explorer.
 - 📈 **Charts:** plot any numeric field from a topic's history. `c` cycles through the fields, or click a number to chart it.
 - ✉️ **Publish:** a form with your `$EDITOR` for the payload, and a per-topic recall of what you sent.
 - 🧹 **Retained housekeeping:** delete one retained message, clear a whole subtree, or delete a topic outright.
-- 🔐 **Every transport:** mqtt, mqtts with your own CA, websockets (ws and wss), MQTT 3.1.1 and 5, and passwords in the system keyring.
+- 🔐 **Every transport:** mqtt, mqtts with your own CA, websockets (ws and wss), MQTT 3.1.1 and 5, and passwords in the system keyring. MQTT 5 properties (content type, response topic, user properties …) show under the message header.
 - 🖱️ **Mouse and clipboard:** click to select, pin and expand, scroll with the wheel, and copy topics and payloads over OSC 52, even through SSH.
 - 📦 **Runs anywhere:** a static musl binary, an AppImage, an Arch package or a Debian package.
 
