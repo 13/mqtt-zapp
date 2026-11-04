@@ -85,11 +85,12 @@ fn start_with(
 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
+        let stderr = std::fs::File::create(dir.path().join("stderr.log")).unwrap();
         let mut child = Command::new("mosquitto")
             .arg("-c")
             .arg(&conf)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(stderr)
             .spawn()
             .unwrap();
         loop {
@@ -111,15 +112,25 @@ fn start_with(
             }
             if Instant::now() > deadline {
                 let _ = child.kill();
-                panic!("mosquitto did not start within 5s");
+                panic!("mosquitto did not start within 5s\n{}", said(dir.path()));
             }
             std::thread::sleep(Duration::from_millis(20));
         }
         if Instant::now() > deadline {
-            panic!("mosquitto could not bind its ports within 5s");
+            panic!("mosquitto could not bind its ports within 5s\n{}", said(dir.path()));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// What the broker wrote (its stderr and log file), for a failed start.
+fn said(dir: &Path) -> String {
+    let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+    format!(
+        "stderr:\n{}\nlog:\n{}",
+        read("stderr.log"),
+        read("mosquitto.log")
+    )
 }
 
 /// Three ports that were free a moment ago (nothing listens on them yet).
