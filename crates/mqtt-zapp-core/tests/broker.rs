@@ -395,8 +395,26 @@ async fn clear_while_broker_down_is_not_replayed_after_reconnect() {
         .await
         .unwrap();
     wait_for(&mut rx, |e| is_message(e, "x/keep"), 5).await;
-    // Let the broker save its retained messages before it is killed.
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    // Let the broker save its retained messages before it is killed: poll
+    // until mosquitto.db holds the topic (it is written on change, and
+    // rewritten whole, so a db without it predates the publish).
+    let db = data.path().join("mosquitto.db");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let persisted = loop {
+        if std::fs::read(&db).is_ok_and(|b| b.windows(6).any(|w| w == b"x/keep")) {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        persisted,
+        "broker did not persist x/keep within 5 s; db: {:?}; log:\n{}",
+        std::fs::metadata(&db).map(|m| m.len()),
+        b.log()
+    );
 
     // Freeze the broker: the client still looks connected, so the clear is
     // accepted and sent, but never acknowledged. Then the broker dies.

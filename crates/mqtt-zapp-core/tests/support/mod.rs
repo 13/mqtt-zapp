@@ -168,7 +168,7 @@ fn write_conf(
     );
     if let Some(data) = data {
         conf += &format!(
-            "persistence true\npersistence_location {}/\nautosave_interval 1\n",
+            "persistence true\npersistence_location {}/\nautosave_interval 1\nautosave_on_changes true\n",
             data.display()
         );
     }

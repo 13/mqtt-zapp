@@ -89,6 +89,26 @@ async fn wait_connected(rx: &mut Receiver<CoreEvent>) {
     .expect("side connection did not connect");
 }
 
+/// Wait for the broker to acknowledge `n` publishes (QoS 1), so they are
+/// stored before anything subscribes.
+async fn wait_acked(rx: &mut Receiver<CoreEvent>, n: usize) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut acked = 0;
+        while acked < n {
+            match rx.recv().await {
+                Some(CoreEvent::PublishAcked { failure: None, .. }) => acked += 1,
+                Some(CoreEvent::PublishAcked {
+                    failure: Some(why), ..
+                }) => panic!("publish refused: {why}"),
+                Some(_) => {}
+                None => panic!("side connection ended before the acks"),
+            }
+        }
+    })
+    .await
+    .expect("broker did not acknowledge the retained publishes");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn tui_against_mosquitto() {
     let Some(broker) = support::start(false) else {
@@ -107,6 +127,7 @@ async fn tui_against_mosquitto() {
     side.publish("zapp/e2e/other", b"x".to_vec(), 1, true, None)
         .await
         .unwrap();
+    wait_acked(&mut side_rx, 2).await;
 
     let mut app = App::new(
         Launch::Connect(profile(broker.port, &["zapp/#"])),
