@@ -97,10 +97,10 @@ async fn tui_against_mosquitto() {
     // Side connection seeds two retained topics.
     let (side, mut side_rx) = Connection::connect(&profile(broker.port, &[]), None).unwrap();
     wait_connected(&mut side_rx).await;
-    side.publish("zapp/e2e/temp", br#"{"t":21.5}"#.to_vec(), 1, true)
+    side.publish("zapp/e2e/temp", br#"{"t":21.5}"#.to_vec(), 1, true, None)
         .await
         .unwrap();
-    side.publish("zapp/e2e/other", b"x".to_vec(), 1, true)
+    side.publish("zapp/e2e/other", b"x".to_vec(), 1, true, None)
         .await
         .unwrap();
 

@@ -16,6 +16,7 @@ use mqtt_zapp_core::client::{ConnState, CoreEvent};
 use mqtt_zapp_core::config::{
     DEFAULT_TIMESTAMP_FORMAT, PasswordSource, Profile, ProfileStore, Settings, SortOrder, ThemeName,
 };
+use mqtt_zapp_core::payload::Props;
 use mqtt_zapp_core::search::Filter;
 use mqtt_zapp_core::secrets::load_password;
 use mqtt_zapp_core::state::AppState;
@@ -76,6 +77,8 @@ pub enum Effect {
         payload: Vec<u8>,
         qos: u8,
         retain: bool,
+        /// MQTT 5 properties (ignored on 3.1.1).
+        props: Option<Props>,
     },
     Connect(Profile, Option<String>),
     /// Open the publish payload in `$EDITOR`; the result comes back through
@@ -110,12 +113,14 @@ impl fmt::Debug for Effect {
                 payload,
                 qos,
                 retain,
+                props,
             } => f
                 .debug_struct("Publish")
                 .field("topic", topic)
                 .field("payload", &format_args!("<{} bytes>", payload.len()))
                 .field("qos", qos)
                 .field("retain", retain)
+                .field("props", props)
                 .finish(),
             Effect::EditPayload(t) => write!(f, "EditPayload(<{} bytes>)", t.len()),
             Effect::ClearRetained(t) => write!(f, "ClearRetained({} topics)", t.len()),
@@ -151,6 +156,9 @@ fn valid_time_format(fmt: &str) -> String {
 
 /// Payloads remembered per topic for ctrl-p/ctrl-n in the publish form.
 const SENT_PER_TOPIC: usize = 20;
+/// How long after sending with a response topic the first message on it
+/// is followed.
+const REPLY_WINDOW: Duration = Duration::from_secs(30);
 /// How long a footer note (publish result) stays visible.
 pub const NOTE_TTL: Duration = Duration::from_secs(5);
 
@@ -351,6 +359,9 @@ pub struct App {
     /// While walking `sent` in the form: the index shown and the draft to
     /// restore past the newest.
     sent_walk: Option<(usize, String)>,
+    /// The response topic of the last send and when it was sent: the first
+    /// message on it within `REPLY_WINDOW` is selected.
+    await_reply: Option<(String, Instant)>,
     /// Order of sibling topics; `s` cycles it.
     pub sort: SortOrder,
     /// Set while in `Mode::Confirm`.
@@ -467,6 +478,7 @@ impl App {
             theme: settings.theme,
             timestamp_format: valid_time_format(&settings.timestamp_format),
             sent_walk: None,
+            await_reply: None,
             created: Instant::now(),
             rows_cache: RefCell::new(None),
         })
@@ -558,6 +570,7 @@ impl App {
                         self.diff_base = None;
                     }
                 }
+                self.follow_reply(&topic);
                 self.msg_rate.record(Instant::now());
                 self.tree_changed = true;
             }

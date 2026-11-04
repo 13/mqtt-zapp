@@ -36,13 +36,19 @@ impl App {
                 payload,
                 qos,
                 retain,
+                props,
             } => {
                 self.remember_sent(&topic, &payload);
+                self.await_reply = props
+                    .as_ref()
+                    .and_then(|p| p.response_topic.clone())
+                    .map(|t| (t, Instant::now()));
                 Effect::Publish {
                     topic,
                     payload,
                     qos,
                     retain,
+                    props,
                 }
             }
         }
@@ -91,13 +97,36 @@ impl App {
         Effect::None
     }
 
+    /// The first message on the response topic of the last send, within
+    /// `REPLY_WINDOW`, is selected; later the wait is dropped silently.
+    pub(super) fn follow_reply(&mut self, topic: &str) {
+        let Some((want, sent)) = &self.await_reply else {
+            return;
+        };
+        if sent.elapsed() > REPLY_WINDOW {
+            self.await_reply = None;
+        } else if want == topic {
+            self.await_reply = None;
+            if let Some(id) = self.tree.find(topic) {
+                self.select(id);
+                self.reveal_selected();
+                let note = format!("reply on {}", mqtt_zapp_core::payload::sanitize(topic));
+                self.set_note(Note::info(note), Instant::now());
+            }
+        }
+    }
+
     pub(super) fn open_publish(&mut self) {
         let topic = self
             .selected
             .map(|id| self.tree.full_topic(id))
             .unwrap_or_default();
         let mut note = None;
-        let mut form = PublishForm::new(&topic);
+        let v5 = self
+            .session_profile
+            .as_ref()
+            .is_some_and(|p| p.mqtt_version == mqtt_zapp_core::config::MqttVersion::V5);
+        let mut form = PublishForm::new(&topic, v5);
         if self.focus == Focus::History
             && let (Some(id), Some(i)) = (self.selected, self.history_sel)
             && let Some(m) = self.tree.node(id).history.get(i)
@@ -105,7 +134,7 @@ impl App {
             if m.truncated_from.is_some() {
                 note = Some("can't re-send: payload was truncated");
             } else if let Ok(text) = std::str::from_utf8(&m.payload) {
-                form = PublishForm::prefilled(&topic, text, m.qos, m.retain);
+                form = PublishForm::prefilled(&topic, text, m.qos, m.retain, v5);
                 if m.sparkplug {
                     note = Some("re-sending Sparkplug as JSON");
                 }

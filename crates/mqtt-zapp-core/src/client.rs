@@ -76,7 +76,14 @@ enum Client {
 }
 
 impl Client {
-    async fn publish(&self, topic: &str, qos: u8, retain: bool, payload: Vec<u8>) -> Result<()> {
+    async fn publish(
+        &self,
+        topic: &str,
+        qos: u8,
+        retain: bool,
+        payload: Vec<u8>,
+        props: Option<&Props>,
+    ) -> Result<()> {
         match self {
             Client::V4(c) => {
                 let qos = rumqttc::qos(qos).map_err(|e| anyhow!("invalid qos {qos}: {e}"))?;
@@ -84,7 +91,22 @@ impl Client {
             }
             Client::V5(c) => {
                 let qos = v5::mqttbytes::qos(qos).ok_or_else(|| anyhow!("invalid qos {qos}"))?;
-                Ok(c.publish(topic, qos, retain, payload).await?)
+                match props {
+                    Some(p) => {
+                        let props = v5::mqttbytes::v5::PublishProperties {
+                            content_type: p.content_type.clone(),
+                            response_topic: p.response_topic.clone(),
+                            correlation_data: p.correlation_data.clone(),
+                            user_properties: p.user.clone(),
+                            ..Default::default()
+                        };
+                        Ok(
+                            c.publish_with_properties(topic, qos, retain, payload, props)
+                                .await?,
+                        )
+                    }
+                    None => Ok(c.publish(topic, qos, retain, payload).await?),
+                }
             }
         }
     }
@@ -296,18 +318,21 @@ impl Connection {
         ))
     }
 
+    /// `props` (content type, response topic, correlation data, user
+    /// properties) are sent on MQTT 5 and ignored on 3.1.1.
     pub async fn publish(
         &self,
         topic: &str,
         payload: Vec<u8>,
         qos: u8,
         retain: bool,
+        props: Option<&Props>,
     ) -> Result<()> {
         // The request queue only drains while connected; don't hang the caller
         // for a whole outage.
         tokio::time::timeout(
             PUBLISH_TIMEOUT,
-            self.client.publish(topic, qos, retain, payload),
+            self.client.publish(topic, qos, retain, payload, props),
         )
         .await
         .map_err(|_| anyhow!("publish timed out (not connected?)"))?
@@ -320,7 +345,7 @@ impl Connection {
     /// the first failure; returns how many were sent.
     pub async fn clear_retained(&self, topics: &[String]) -> Result<usize> {
         for (i, t) in topics.iter().enumerate() {
-            self.publish(t, Vec::new(), CLEAR_QOS, true)
+            self.publish(t, Vec::new(), CLEAR_QOS, true, None)
                 .await
                 .with_context(|| format!("clear failed on {t} ({i} of {} done)", topics.len()))?;
         }

@@ -76,10 +76,12 @@ fn p_opens_prefilled_form_and_ctrl_s_publishes_keeping_it_open() {
             payload,
             qos,
             retain,
+            props,
         } => {
             assert_eq!(topic, "dev/cmnd/POWER");
             assert_eq!(payload, b"q");
             assert_eq!((qos, retain), (0, false));
+            assert_eq!(props, None, "3.1.1 session: no props");
         }
         e => panic!("{e:?}"),
     }
@@ -172,4 +174,68 @@ fn resend_sparkplug_notes_json() {
     a.handle_action(Action::Publish);
     assert_eq!(payload_of(&a), "{\"metrics\":[]}");
     assert_eq!(note_text(&a), "re-sending Sparkplug as JSON");
+}
+
+fn v5_profile() -> Profile {
+    let mut p = profile("p", PasswordSource::None);
+    p.mqtt_version = mqtt_zapp_core::config::MqttVersion::V5;
+    p
+}
+
+/// A v5 session with a nested topic; the form is open on the payload.
+fn reply_app() -> App {
+    let mut a = browse(&["dev/cmnd/POWER", "other"]);
+    a.session_profile = Some(v5_profile());
+    a.selected = a.tree.find("other");
+    a.handle_action(Action::Publish);
+    for _ in 0..3 {
+        a.handle_key(key(KeyCode::Tab));
+    }
+    type_str(&mut a, "ack/lab");
+    a
+}
+
+#[test]
+fn reply_follow_selects_reply() {
+    let mut a = reply_app();
+    match a.handle_key(ctrl_key('s')) {
+        Effect::Publish { props, .. } => {
+            assert_eq!(props.unwrap().response_topic.as_deref(), Some("ack/lab"));
+        }
+        e => panic!("{e:?}"),
+    }
+    assert!(a.await_reply.is_some());
+    a.handle_key(key(KeyCode::Esc));
+    a.apply_core_event(msg("ack/other", "no"));
+    assert_eq!(sel(&a), "other", "other topics are ignored");
+    a.apply_core_event(msg("ack/lab", "yes"));
+    assert_eq!(sel(&a), "ack/lab");
+    assert!(a.expanded.contains(&a.tree.find("ack").unwrap()));
+    assert_eq!(
+        a.note_at(Instant::now()),
+        Some(&Note::info("reply on ack/lab"))
+    );
+    assert!(a.await_reply.is_none());
+}
+
+#[test]
+fn reply_follow_expires_and_fires_once() {
+    let mut a = reply_app();
+    a.handle_key(ctrl_key('s'));
+    a.handle_key(key(KeyCode::Esc));
+    let (t, _) = a.await_reply.take().unwrap();
+    a.await_reply = Some((t, Instant::now() - REPLY_WINDOW - Duration::from_secs(1)));
+    a.apply_core_event(msg("ack/lab", "late"));
+    assert_eq!(sel(&a), "other", "expired: no jump");
+    assert!(a.await_reply.is_none(), "cleared silently");
+    assert_eq!(a.note_at(Instant::now()), None);
+
+    // fires once
+    let mut a = reply_app();
+    a.handle_key(ctrl_key('s'));
+    a.handle_key(key(KeyCode::Esc));
+    a.apply_core_event(msg("ack/lab", "1"));
+    a.selected = a.tree.find("other");
+    a.apply_core_event(msg("ack/lab", "2"));
+    assert_eq!(sel(&a), "other");
 }

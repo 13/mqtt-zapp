@@ -180,6 +180,7 @@ impl Session {
                 payload,
                 qos,
                 retain,
+                props,
             } => {
                 // Never await on the UI loop: publish can wait up to 5 s.
                 match self.conn.clone() {
@@ -189,7 +190,10 @@ impl Session {
                     Some(conn) => {
                         let notes = self.notes_tx.clone();
                         tokio::spawn(async move {
-                            let note = match conn.publish(&topic, payload, qos, retain).await {
+                            let note = match conn
+                                .publish(&topic, payload, qos, retain, props.as_ref())
+                                .await
+                            {
                                 Ok(()) => Note::info(format!("published {topic}")),
                                 Err(e) => Note::error(format!("publish failed: {e:#}")),
                             };

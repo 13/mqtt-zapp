@@ -251,6 +251,13 @@ In the publish form, `ctrl-e` opens the payload in `$VISUAL`/`$EDITOR` (or
 `vi`), and `ctrl-p`/`ctrl-n` recall payloads sent to that topic in this
 session. In the history pane, `p` opens the form with that message filled in.
 
+On an MQTT 5 connection the form has three more fields after the payload:
+`content type`, `response topic` and `user props`, typed as `k=v, k2=v2`
+(an item without `=` is refused). They are sent as publish properties; the
+fields are hidden on 3.1.1. When you send with a response topic, the first
+message that arrives on exactly that topic within 30 seconds is selected
+(its parents expand) and the status line says `reply on <topic>`.
+
 ## ⚙️ Configuration
 
 `profiles.toml` and `settings.toml` live in `~/.config/mqtt-zapp/`, the XDG

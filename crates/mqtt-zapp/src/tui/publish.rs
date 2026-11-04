@@ -3,7 +3,7 @@
 
 use super::theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use mqtt_zapp_core::payload::sanitize;
+use mqtt_zapp_core::payload::{Props, sanitize};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -19,20 +19,44 @@ pub const HINT: &str =
 pub enum Field {
     Topic,
     Payload,
+    /// MQTT 5 only, like the next two.
+    ContentType,
+    ResponseTopic,
+    UserProps,
     Qos,
     Retain,
 }
 
 impl Field {
-    const ORDER: [Field; 4] = [Field::Topic, Field::Payload, Field::Qos, Field::Retain];
+    const ORDER: [Field; 7] = [
+        Field::Topic,
+        Field::Payload,
+        Field::ContentType,
+        Field::ResponseTopic,
+        Field::UserProps,
+        Field::Qos,
+        Field::Retain,
+    ];
 
-    fn step(self, delta: isize) -> Field {
-        let i = Self::ORDER.iter().position(|f| *f == self).unwrap_or(0) as isize;
-        Self::ORDER[(i + delta).rem_euclid(Self::ORDER.len() as isize) as usize]
+    fn is_v5_only(self) -> bool {
+        matches!(
+            self,
+            Field::ContentType | Field::ResponseTopic | Field::UserProps
+        )
+    }
+
+    /// The next field `delta` steps away among those shown.
+    fn step(self, delta: isize, v5: bool) -> Field {
+        let shown: Vec<Field> = Self::ORDER
+            .into_iter()
+            .filter(|f| v5 || !f.is_v5_only())
+            .collect();
+        let i = shown.iter().position(|f| *f == self).unwrap_or(0) as isize;
+        shown[(i + delta).rem_euclid(shown.len() as isize) as usize]
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FormOutcome {
     Continue,
     Cancel,
@@ -43,6 +67,8 @@ pub enum FormOutcome {
         payload: Vec<u8>,
         qos: u8,
         retain: bool,
+        /// MQTT 5 properties; `None` when none are set.
+        props: Option<Props>,
     },
 }
 
@@ -51,6 +77,12 @@ pub struct PublishForm {
     pub payload: TextArea<'static>,
     pub qos: u8,
     pub retain: bool,
+    /// MQTT 5 session: the property fields are shown.
+    pub v5: bool,
+    pub content_type: TextArea<'static>,
+    pub response_topic: TextArea<'static>,
+    /// `k=v, k2=v2`.
+    pub user_props: TextArea<'static>,
     pub field: Field,
     /// Shown in the form's title; cleared by the next key press.
     pub error: Option<String>,
@@ -60,7 +92,7 @@ impl PublishForm {
     /// `prefill_topic` is used verbatim so the form publishes to exactly the
     /// selected topic. Rendering goes through `topic_line`, which sanitizes
     /// per char, so control characters never reach the terminal.
-    pub fn new(prefill_topic: &str) -> PublishForm {
+    pub fn new(prefill_topic: &str, v5: bool) -> PublishForm {
         let mut topic = TextArea::new(vec![prefill_topic.to_owned()]);
         topic.move_cursor(tui_textarea::CursorMove::End);
         let mut form = PublishForm {
@@ -68,6 +100,10 @@ impl PublishForm {
             payload: TextArea::default(),
             qos: 0,
             retain: false,
+            v5,
+            content_type: TextArea::default(),
+            response_topic: TextArea::default(),
+            user_props: TextArea::default(),
             field: Field::Topic,
             error: None,
         };
@@ -76,8 +112,8 @@ impl PublishForm {
     }
 
     /// A form with the payload, QoS and retain of a message to re-send.
-    pub fn prefilled(topic: &str, payload: &str, qos: u8, retain: bool) -> PublishForm {
-        let mut form = PublishForm::new(topic);
+    pub fn prefilled(topic: &str, payload: &str, qos: u8, retain: bool, v5: bool) -> PublishForm {
+        let mut form = PublishForm::new(topic, v5);
         form.set_payload(payload);
         form.qos = qos.min(2);
         form.retain = retain;
@@ -112,6 +148,13 @@ impl PublishForm {
                 Field::Payload => {
                     self.payload.input(key);
                 }
+                Field::ContentType | Field::ResponseTopic | Field::UserProps => {
+                    if key.code == KeyCode::Enter {
+                        self.focus(1);
+                    } else if !(ctrl && key.code == KeyCode::Char('m')) {
+                        self.prop_area(self.field).input(key);
+                    }
+                }
                 Field::Qos => {
                     if let KeyCode::Char(c @ '0'..='2') = key.code {
                         self.qos = c as u8 - b'0';
@@ -141,8 +184,16 @@ impl PublishForm {
         self.sync_focus();
     }
 
+    fn prop_area(&mut self, field: Field) -> &mut TextArea<'static> {
+        match field {
+            Field::ContentType => &mut self.content_type,
+            Field::ResponseTopic => &mut self.response_topic,
+            _ => &mut self.user_props,
+        }
+    }
+
     fn focus(&mut self, delta: isize) {
-        self.field = self.field.step(delta);
+        self.field = self.field.step(delta, self.v5);
         self.sync_focus();
     }
 
@@ -161,6 +212,14 @@ impl PublishForm {
             } else {
                 hidden
             });
+        for (field, area) in [
+            (Field::ContentType, &mut self.content_type),
+            (Field::ResponseTopic, &mut self.response_topic),
+            (Field::UserProps, &mut self.user_props),
+        ] {
+            area.set_cursor_style(if self.field == field { shown } else { hidden });
+            area.set_cursor_line_style(Style::default());
+        }
         self.topic.set_cursor_line_style(Style::default());
         self.payload.set_cursor_line_style(Style::default());
     }
@@ -172,12 +231,50 @@ impl PublishForm {
             self.error = Some(INVALID_TOPIC.into());
             return FormOutcome::Continue;
         }
+        let props = match self.props() {
+            Ok(p) => p,
+            Err(e) => {
+                self.error = Some(e);
+                return FormOutcome::Continue;
+            }
+        };
         FormOutcome::Send {
             topic,
             payload: self.payload.lines().join("\n").into_bytes(),
             qos: self.qos,
             retain: self.retain,
+            props,
         }
+    }
+
+    /// The MQTT 5 properties typed in the form; `None` on 3.1.1 or when
+    /// every field is empty.
+    fn props(&self) -> Result<Option<Props>, String> {
+        if !self.v5 {
+            return Ok(None);
+        }
+        let text = |a: &TextArea| a.lines().join("").trim().to_owned();
+        let some = |s: String| (!s.is_empty()).then_some(s);
+        let mut user = Vec::new();
+        for item in text(&self.user_props).split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            match item.split_once('=') {
+                Some((k, v)) if !k.trim().is_empty() => {
+                    user.push((k.trim().to_owned(), v.trim().to_owned()))
+                }
+                _ => return Err("user props: expected k=v".into()),
+            }
+        }
+        let props = Props {
+            content_type: some(text(&self.content_type)),
+            response_topic: some(text(&self.response_topic)),
+            user,
+            ..Props::default()
+        };
+        Ok((props != Props::default()).then_some(props))
     }
 
     /// Pretty-print the payload as JSON. On a parse error the payload is left
@@ -196,7 +293,7 @@ impl PublishForm {
 /// The publish form: a card centred over the main area.
 pub fn render(f: &mut Frame, area: Rect, form: &PublishForm) {
     theme::dim_backdrop(f, area);
-    let area = theme::centered(area, 80, 18);
+    let area = theme::centered(area, 80, if form.v5 { 21 } else { 18 });
     f.render_widget(Clear, area);
     let block = match &form.error {
         Some(e) => Block::bordered()
@@ -210,13 +307,32 @@ pub fn render(f: &mut Frame, area: Rect, form: &PublishForm) {
     };
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let [topic, payload, opts, hint] = Layout::vertical([
+    let props_h = if form.v5 { 3 } else { 0 };
+    let [topic, payload, props, opts, hint] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(2),
+        Constraint::Length(props_h),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(inner);
+    if form.v5 {
+        let rows = Layout::vertical([Constraint::Length(1); 3]).split(props);
+        for (row, (label, field, area)) in rows.iter().zip([
+            ("content type: ", Field::ContentType, &form.content_type),
+            (
+                "response topic: ",
+                Field::ResponseTopic,
+                &form.response_topic,
+            ),
+            ("user props: ", Field::UserProps, &form.user_props),
+        ]) {
+            let [l, body] =
+                Layout::horizontal([Constraint::Length(16), Constraint::Min(1)]).areas(*row);
+            f.render_widget(Paragraph::new(label).style(label_style(form, field)), l);
+            f.render_widget(area, body);
+        }
+    }
     let [label, topic] =
         Layout::horizontal([Constraint::Length(7), Constraint::Min(1)]).areas(topic);
     f.render_widget(
@@ -337,7 +453,7 @@ mod tests {
 
     #[test]
     fn ctrl_e_returns_edit_outcome() {
-        let mut f = PublishForm::new("t");
+        let mut f = PublishForm::new("t", false);
         f.on_key(key(KeyCode::Tab));
         type_str(&mut f, "a");
         f.on_key(key(KeyCode::Enter));
@@ -353,14 +469,16 @@ mod tests {
     #[test]
     fn prefilled_topic() {
         assert_eq!(
-            PublishForm::new("tasmota/cmnd/x/POWER").topic.lines()[0],
+            PublishForm::new("tasmota/cmnd/x/POWER", false)
+                .topic
+                .lines()[0],
             "tasmota/cmnd/x/POWER"
         );
     }
 
     #[test]
     fn ctrl_s_sends_multiline_payload() {
-        let mut f = PublishForm::new("a/b");
+        let mut f = PublishForm::new("a/b", false);
         f.on_key(key(KeyCode::Tab));
         assert_eq!(f.field, Field::Payload);
         type_str(&mut f, "{\n\"a\":1}");
@@ -370,14 +488,15 @@ mod tests {
                 topic: "a/b".into(),
                 payload: b"{\n\"a\":1}".to_vec(),
                 qos: 0,
-                retain: false
+                retain: false,
+                props: None
             }
         );
     }
 
     #[test]
     fn enter_in_topic_moves_to_payload() {
-        let mut f = PublishForm::new("a/b");
+        let mut f = PublishForm::new("a/b", false);
         f.on_key(key(KeyCode::Enter));
         assert_eq!(f.field, Field::Payload);
         assert_eq!(f.topic.lines().len(), 1);
@@ -385,7 +504,7 @@ mod tests {
 
     #[test]
     fn qos_and_retain_fields() {
-        let mut f = PublishForm::new("a/b");
+        let mut f = PublishForm::new("a/b", false);
         f.on_key(key(KeyCode::Tab));
         f.on_key(key(KeyCode::Tab));
         assert_eq!(f.field, Field::Qos);
@@ -399,14 +518,15 @@ mod tests {
                 topic: "a/b".into(),
                 payload: vec![],
                 qos: 1,
-                retain: true
+                retain: true,
+                props: None
             }
         );
     }
 
     #[test]
     fn shift_tab_goes_back() {
-        let mut f = PublishForm::new("a");
+        let mut f = PublishForm::new("a", false);
         f.on_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
         assert_eq!(f.field, Field::Retain);
     }
@@ -414,11 +534,11 @@ mod tests {
     #[test]
     fn wildcard_or_empty_topic_rejected_and_error_clears() {
         for t in ["a/#", "a/+/b", ""] {
-            let mut f = PublishForm::new(t);
+            let mut f = PublishForm::new(t, false);
             assert_eq!(f.on_key(ctrl('s')), FormOutcome::Continue, "{t}");
             assert_eq!(f.error.as_deref(), Some("invalid topic"), "{t}");
         }
-        let mut f = PublishForm::new("a/#");
+        let mut f = PublishForm::new("a/#", false);
         f.on_key(ctrl('s'));
         f.on_key(key(KeyCode::Backspace));
         f.on_key(key(KeyCode::Backspace));
@@ -428,13 +548,13 @@ mod tests {
 
     #[test]
     fn format_json_pretty_prints_or_errors() {
-        let mut f = PublishForm::new("a");
+        let mut f = PublishForm::new("a", false);
         f.field = Field::Payload;
         type_str(&mut f, "{\"a\":1}");
         assert!(f.format_json().is_ok());
         assert_eq!(f.payload.lines(), ["{", "  \"a\": 1", "}"]);
 
-        let mut f = PublishForm::new("a");
+        let mut f = PublishForm::new("a", false);
         f.field = Field::Payload;
         type_str(&mut f, "{oops");
         assert!(f.format_json().is_err());
@@ -449,7 +569,7 @@ mod tests {
     #[test]
     fn control_char_topic_round_trips_exactly() {
         for t in ["a/\tb", "a/\x1b[31mb"] {
-            let mut f = PublishForm::new(t);
+            let mut f = PublishForm::new(t, false);
             match f.on_key(ctrl('s')) {
                 FormOutcome::Send { topic, .. } => assert_eq!(topic, t),
                 o => panic!("{o:?}"),
@@ -461,7 +581,7 @@ mod tests {
     fn control_char_topic_renders_without_escape() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        let f = PublishForm::new("a/\x1b[2Jb\tc\nd\re");
+        let f = PublishForm::new("a/\x1b[2Jb\tc\nd\re", false);
         let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
         t.draw(|fr| render(fr, fr.area(), &f)).unwrap();
         let b = t.backend().buffer().clone();
@@ -475,7 +595,7 @@ mod tests {
     #[test]
     fn long_topic_scrolls_to_keep_cursor_visible() {
         let long = format!("{}END", "x".repeat(100));
-        let f = PublishForm::new(&long);
+        let f = PublishForm::new(&long, false);
         let line = topic_line(&f, 20);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("END") && text.chars().count() <= 21, "{text}");
@@ -490,7 +610,7 @@ mod tests {
 
     #[test]
     fn multi_line_topic_is_invalid() {
-        let mut f = PublishForm::new("a");
+        let mut f = PublishForm::new("a", false);
         f.topic.insert_newline();
         f.topic.insert_str("b");
         assert_eq!(f.on_key(ctrl('s')), FormOutcome::Continue);
@@ -498,8 +618,62 @@ mod tests {
     }
 
     #[test]
+    fn form_v5_fields_build_props() {
+        let mut f = PublishForm::new("a/b", true);
+        f.on_key(key(KeyCode::Tab));
+        f.on_key(key(KeyCode::Tab));
+        assert_eq!(f.field, Field::ContentType);
+        type_str(&mut f, "text/plain");
+        f.on_key(key(KeyCode::Tab));
+        assert_eq!(f.field, Field::ResponseTopic);
+        type_str(&mut f, "r/t");
+        f.on_key(key(KeyCode::Enter));
+        assert_eq!(f.field, Field::UserProps);
+        type_str(&mut f, " k = v , k2=a=b");
+        match f.on_key(ctrl('s')) {
+            FormOutcome::Send { props, .. } => {
+                let p = props.expect("props");
+                assert_eq!(p.content_type.as_deref(), Some("text/plain"));
+                assert_eq!(p.response_topic.as_deref(), Some("r/t"));
+                assert_eq!(
+                    p.user,
+                    [("k".into(), "v".into()), ("k2".into(), "a=b".into())]
+                );
+            }
+            o => panic!("{o:?}"),
+        }
+        // every field empty: no props
+        let mut f = PublishForm::new("a/b", true);
+        assert!(matches!(
+            f.on_key(ctrl('s')),
+            FormOutcome::Send { props: None, .. }
+        ));
+    }
+
+    #[test]
+    fn form_user_props_parse_error() {
+        let mut f = PublishForm::new("a/b", true);
+        f.field = Field::UserProps;
+        type_str(&mut f, "k=v, oops");
+        assert_eq!(f.on_key(ctrl('s')), FormOutcome::Continue);
+        assert_eq!(f.error.as_deref(), Some("user props: expected k=v"));
+    }
+
+    #[test]
+    fn form_v311_has_no_prop_fields() {
+        let mut f = PublishForm::new("a/b", false);
+        f.on_key(key(KeyCode::Tab));
+        f.on_key(key(KeyCode::Tab));
+        assert_eq!(f.field, Field::Qos, "payload is followed by qos");
+        assert!(matches!(
+            f.on_key(ctrl('s')),
+            FormOutcome::Send { props: None, .. }
+        ));
+    }
+
+    #[test]
     fn esc_cancels() {
-        let mut f = PublishForm::new("a");
+        let mut f = PublishForm::new("a", false);
         assert_eq!(f.on_key(key(KeyCode::Esc)), FormOutcome::Cancel);
     }
 }

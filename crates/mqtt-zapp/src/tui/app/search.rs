@@ -52,7 +52,7 @@ impl App {
 
     /// Expand every ancestor of the selection, so it stays visible once a
     /// filter (which shows everything expanded) goes away.
-    fn reveal_selected(&mut self) {
+    pub(super) fn reveal_selected(&mut self) {
         let mut cur = self.selected.and_then(|s| self.tree.node(s).parent);
         while let Some(id) = cur.filter(|&id| id != TopicTree::ROOT) {
             self.expanded.insert(id);

@@ -4,6 +4,7 @@ mod support;
 
 use mqtt_zapp_core::client::{ConnState, Connection, CoreEvent};
 use mqtt_zapp_core::config::{MqttVersion, PasswordSource, Profile, Protocol, TlsConfig};
+use mqtt_zapp_core::{Bytes, payload::Props};
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 
@@ -59,7 +60,7 @@ fn is_message(ev: &CoreEvent, topic: &str) -> bool {
 /// same client, so no sleeps are needed.
 async fn ready(conn: &Connection, rx: &mut Receiver<CoreEvent>, marker: &str) {
     wait_for(rx, is_connected, 5).await;
-    conn.publish(marker, b"ready".to_vec(), 1, false)
+    conn.publish(marker, b"ready".to_vec(), 1, false, None)
         .await
         .unwrap();
     wait_for(rx, |e| is_message(e, marker), 5).await;
@@ -77,7 +78,7 @@ async fn receives_published_message_plain() {
     let (conn_a, mut rx_a) = Connection::connect(&p, None).unwrap();
     wait_for(&mut rx_a, is_connected, 5).await;
     conn_a
-        .publish("zapp/t", b"hi".to_vec(), 1, false)
+        .publish("zapp/t", b"hi".to_vec(), 1, false, None)
         .await
         .unwrap();
 
@@ -99,7 +100,7 @@ async fn retained_message_delivered_on_subscribe_with_retain_flag() {
     let (conn_a, mut rx_a) = Connection::connect(&p, None).unwrap();
     ready(&conn_a, &mut rx_a, "zapp/ready/a").await;
     conn_a
-        .publish("zapp/r", b"kept".to_vec(), 1, true)
+        .publish("zapp/r", b"kept".to_vec(), 1, true, None)
         .await
         .unwrap();
     // Seeing it come back means the broker has stored it.
@@ -174,7 +175,7 @@ async fn websocket() {
     let p = profile("127.0.0.1", b.ws_port, Protocol::Ws);
     let (conn, mut rx) = Connection::connect(&p, None).unwrap();
     ready(&conn, &mut rx, "zapp/ready/ws").await;
-    conn.publish("zapp/ws", b"over ws".to_vec(), 0, false)
+    conn.publish("zapp/ws", b"over ws".to_vec(), 0, false, None)
         .await
         .unwrap();
     let CoreEvent::Message { msg, .. } = wait_for(&mut rx, |e| is_message(e, "zapp/ws"), 5).await
@@ -213,7 +214,7 @@ async fn clear_while_broker_down_is_not_replayed_after_reconnect() {
     p.subscriptions = vec!["x/#".into()];
     let (conn, mut rx) = Connection::connect(&p, None).unwrap();
     wait_for(&mut rx, is_connected, 5).await;
-    conn.publish("x/keep", b"v".to_vec(), 1, true)
+    conn.publish("x/keep", b"v".to_vec(), 1, true, None)
         .await
         .unwrap();
     wait_for(&mut rx, |e| is_message(e, "x/keep"), 5).await;
@@ -257,7 +258,7 @@ async fn receives_published_message_v5() {
     let (conn_a, mut rx_a) = Connection::connect(&p4, None).unwrap();
     ready(&conn_a, &mut rx_a, "zapp/ready/a4").await;
     conn_a
-        .publish("zapp/t4", b"from v4".to_vec(), 1, false)
+        .publish("zapp/t4", b"from v4".to_vec(), 1, false, None)
         .await
         .unwrap();
     let CoreEvent::Message { msg, .. } = wait_for(&mut rx_b, |e| is_message(e, "zapp/t4"), 5).await
@@ -266,7 +267,7 @@ async fn receives_published_message_v5() {
     };
     assert_eq!(&msg.payload[..], b"from v4");
     conn_b
-        .publish("zapp/t5", b"from v5".to_vec(), 2, false)
+        .publish("zapp/t5", b"from v5".to_vec(), 2, false, None)
         .await
         .unwrap();
     let CoreEvent::Message { msg, .. } = wait_for(&mut rx_a, |e| is_message(e, "zapp/t5"), 5).await
@@ -319,7 +320,7 @@ async fn retained_flag_v5() {
     let (conn_a, mut rx_a) = Connection::connect(&p5, None).unwrap();
     ready(&conn_a, &mut rx_a, "zapp/ready/r5").await;
     conn_a
-        .publish("zapp/kept5", b"r".to_vec(), 1, true)
+        .publish("zapp/kept5", b"r".to_vec(), 1, true, None)
         .await
         .unwrap();
     wait_for(&mut rx_a, |e| is_message(e, "zapp/kept5"), 5).await;
@@ -345,7 +346,7 @@ async fn live_retained_publish_keeps_retain_flag_only_on_v5() {
     ready(&c4, &mut rx4, "zapp/ready/l4").await;
     let (c5, mut rx5) = Connection::connect(&p5, None).unwrap();
     ready(&c5, &mut rx5, "zapp/ready/l5").await;
-    c4.publish("zapp/live", b"r".to_vec(), 1, true)
+    c4.publish("zapp/live", b"r".to_vec(), 1, true, None)
         .await
         .unwrap();
     let retain_of = |ev| match ev {
@@ -411,7 +412,7 @@ async fn subscribes_even_when_request_queue_is_full_at_connack() {
     for i in 0..150 {
         let c = conn.clone();
         tokio::spawn(async move {
-            let _ = c.publish(&format!("q/{i}"), vec![], 0, false).await;
+            let _ = c.publish(&format!("q/{i}"), vec![], 0, false, None).await;
         });
     }
     tokio::task::yield_now().await;
@@ -424,7 +425,7 @@ async fn subscribes_even_when_request_queue_is_full_at_connack() {
     let (other, mut rx_other) = Connection::connect(&p, None).unwrap();
     ready(&other, &mut rx_other, "zapp/ready/other").await;
     other
-        .publish("zapp/kept", b"x".to_vec(), 1, true)
+        .publish("zapp/kept", b"x".to_vec(), 1, true, None)
         .await
         .unwrap();
     wait_for(&mut rx_other, |e| is_message(e, "zapp/kept"), 5).await;
@@ -442,7 +443,7 @@ async fn clear_retained_removes_each_topic_on_the_broker() {
     let (conn, mut rx) = Connection::connect(&p, None).unwrap();
     ready(&conn, &mut rx, "zapp/ready/c").await;
     for t in ["zapp/c/1", "zapp/c/2", "zapp/c/keep"] {
-        conn.publish(t, b"v".to_vec(), 1, true).await.unwrap();
+        conn.publish(t, b"v".to_vec(), 1, true, None).await.unwrap();
         wait_for(&mut rx, |e| is_message(e, t), 5).await;
     }
     let topics = vec!["zapp/c/1".to_string(), "zapp/c/2".to_string()];
@@ -459,7 +460,7 @@ async fn clear_retained_removes_each_topic_on_the_broker() {
     let (conn_b, mut rx_b) = Connection::connect(&p, None).unwrap();
     wait_for(&mut rx_b, is_connected, 5).await;
     conn_b
-        .publish("zapp/ready/d", b"x".to_vec(), 1, false)
+        .publish("zapp/ready/d", b"x".to_vec(), 1, false, None)
         .await
         .unwrap();
     let mut seen = vec![];
@@ -506,7 +507,7 @@ async fn slow_consumer_stays_connected() {
     // `rx` is not read while the flood is published and delivered.
     for i in 0..N {
         flood
-            .publish(&format!("x/flood/{i}"), vec![0], 0, false)
+            .publish(&format!("x/flood/{i}"), vec![0], 0, false, None)
             .await
             .unwrap();
     }
@@ -518,7 +519,7 @@ async fn slow_consumer_stays_connected() {
     // does not subscribe to, so only its own outgoing publish and PUBACK
     // wake the loop.
     slow_conn
-        .publish("y/nudge", vec![1], 1, false)
+        .publish("y/nudge", vec![1], 1, false, None)
         .await
         .unwrap();
     let count = |events: &[CoreEvent]| {
@@ -599,4 +600,36 @@ async fn close_waits_for_disconnect() {
         !log.contains("closed its connection"),
         "broker saw a dropped connection:\n{log}"
     );
+}
+
+#[tokio::test]
+async fn v5_publish_sends_properties() {
+    let Some(b) = support::start(false) else {
+        return;
+    };
+    let p5 = v5(profile("127.0.0.1", b.port, Protocol::Mqtt));
+    let (sub, mut rx) = Connection::connect(&p5, None).unwrap();
+    ready(&sub, &mut rx, "zapp/ready/pp-sub").await;
+    let (publ, mut rx_p) = Connection::connect(&p5, None).unwrap();
+    ready(&publ, &mut rx_p, "zapp/ready/pp-pub").await;
+
+    let props = Props {
+        content_type: Some("text/plain".into()),
+        response_topic: Some("zapp/reply".into()),
+        correlation_data: Some(Bytes::from_static(b"cid")),
+        user: vec![("k".into(), "v".into())],
+        ..Default::default()
+    };
+    publ.publish("zapp/pp", b"x".to_vec(), 1, false, Some(&props))
+        .await
+        .unwrap();
+    let CoreEvent::Message { msg, .. } = wait_for(&mut rx, |e| is_message(e, "zapp/pp"), 5).await
+    else {
+        unreachable!()
+    };
+    let got = msg.props.expect("properties should arrive");
+    assert_eq!(got.content_type.as_deref(), Some("text/plain"));
+    assert_eq!(got.response_topic.as_deref(), Some("zapp/reply"));
+    assert_eq!(got.correlation_data.as_deref(), Some(&b"cid"[..]));
+    assert_eq!(got.user, [("k".to_owned(), "v".to_owned())]);
 }
