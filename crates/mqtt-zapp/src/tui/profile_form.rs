@@ -249,6 +249,8 @@ pub struct ProfileForm {
     ca_file: LineInput,
     client_cert: LineInput,
     client_key: LineInput,
+    /// `snapshot()` as the form opened, for `is_modified`.
+    opened_with: String,
 }
 
 // Hand-written so the typed password can never reach a debug log.
@@ -355,7 +357,7 @@ impl ProfileForm {
             }
         };
         let opt = |s: &Option<String>| LineInput::new(s.as_deref().unwrap_or(""));
-        ProfileForm {
+        let mut form = ProfileForm {
             field: PField::Name,
             error: None,
             original: existing.map(|p| p.name.clone()),
@@ -389,7 +391,10 @@ impl ProfileForm {
             ca_file: path_text(&p.tls.ca_file),
             client_cert: path_text(&p.tls.client_cert),
             client_key: path_text(&p.tls.client_key),
-        }
+            opened_with: String::new(),
+        };
+        form.opened_with = form.snapshot();
+        form
     }
 
     /// The rows shown for the current protocol and password source.
@@ -482,6 +487,42 @@ impl ProfileForm {
     }
 
     /// A paste goes into the focused text field; toggles ignore it.
+    /// Whether any field differs from what the form opened with.
+    pub fn is_modified(&self) -> bool {
+        self.snapshot() != self.opened_with
+    }
+
+    /// Every value the user can change, as one comparable string.
+    fn snapshot(&self) -> String {
+        let texts = [
+            &self.name,
+            &self.host,
+            &self.port,
+            &self.ws_path,
+            &self.username,
+            &self.source_value,
+            &self.password,
+            &self.client_id,
+            &self.keepalive,
+            &self.session_expiry,
+            &self.subscriptions,
+            &self.ca_file,
+            &self.client_cert,
+            &self.client_key,
+        ]
+        .map(|i| i.text.as_str())
+        .join("\u{1f}");
+        format!(
+            "{:?}|{:?}|{:?}|{}|{}|{}|{texts}",
+            self.protocol,
+            self.version,
+            self.source,
+            self.insecure,
+            self.retained,
+            self.clean_session
+        )
+    }
+
     pub fn paste(&mut self, text: &str) {
         self.error = None;
         if let Some(input) = self.input_mut(self.field) {

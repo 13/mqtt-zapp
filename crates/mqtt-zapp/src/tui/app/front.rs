@@ -260,6 +260,9 @@ impl App {
         match form.on_key(key) {
             ProfileOutcome::Continue => Effect::None,
             ProfileOutcome::Cancel => {
+                if form.is_modified() && !self.take_armed(Armed::Discard) {
+                    return self.arm(Armed::Discard, "esc again to discard");
+                }
                 self.profile_form = None;
                 self.mode = Mode::Picker;
                 Effect::None

@@ -586,3 +586,18 @@ fn paste_fills_the_focused_text_field_only() {
     f.paste(" ");
     assert_eq!(f.clean_session, before, "a toggle ignores a paste");
 }
+
+#[test]
+fn is_modified_compares_with_what_the_form_opened_with() {
+    let p = sample("a", PasswordSource::None);
+    let mut f = ProfileForm::new(Some(&p), vec![]);
+    assert!(!f.is_modified());
+    goto(&mut f, PField::Host);
+    type_str(&mut f, "x");
+    assert!(f.is_modified());
+    f.on_key(key(KeyCode::Backspace));
+    assert!(!f.is_modified(), "back to the original value");
+    goto(&mut f, PField::CleanSession);
+    f.on_key(key(KeyCode::Char(' ')));
+    assert!(f.is_modified(), "a toggle counts");
+}

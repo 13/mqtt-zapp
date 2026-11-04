@@ -707,3 +707,21 @@ fn startup_lookup_survives_an_overlay() {
         assert!(matches!(e, Effect::Connect { .. }), "{mode:?}: {e:?}");
     }
 }
+
+#[test]
+fn esc_on_an_edited_profile_form_asks_first() {
+    let mut a = picker_app(vec![profile("a", PasswordSource::None)]);
+    press(&mut a, 'a');
+    assert_eq!(a.mode, Mode::ProfileForm);
+    // Untouched: esc closes at once.
+    a.handle_key(key(KeyCode::Esc));
+    assert_eq!(a.mode, Mode::Picker);
+    press(&mut a, 'a');
+    press(&mut a, 'n');
+    a.handle_key(key(KeyCode::Esc));
+    assert_eq!(a.mode, Mode::ProfileForm, "edited: asks first");
+    let note = &a.status_note.as_ref().unwrap().0.text;
+    assert_eq!(note, "esc again to discard");
+    a.handle_key(key(KeyCode::Esc));
+    assert_eq!(a.mode, Mode::Picker);
+}

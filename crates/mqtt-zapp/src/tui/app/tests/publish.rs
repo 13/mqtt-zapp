@@ -450,3 +450,28 @@ fn offline_send_stays_in_the_form() {
     assert_eq!(form.error.as_deref(), Some("not connected"));
     assert!(a.sent.is_empty(), "not recorded as sent");
 }
+
+#[test]
+fn ctrl_c_in_a_filled_form_asks_first() {
+    let mut a = browse(&["t"]);
+    a.selected = a.tree.find("t");
+    a.handle_action(Action::Publish);
+    // A blank form quits at once, as everywhere.
+    let mut blank = browse(&["t"]);
+    blank.handle_action(Action::Publish);
+    assert!(matches!(blank.handle_key(ctrl_key('c')), Effect::Quit));
+    a.handle_key(key(KeyCode::Tab));
+    type_str(&mut a, "x");
+    assert!(matches!(a.handle_key(ctrl_key('c')), Effect::None));
+    let note = &a.status_note.as_ref().unwrap().0.text;
+    assert_eq!(note, "ctrl-c again to quit");
+    assert!(matches!(a.handle_key(ctrl_key('c')), Effect::Quit));
+    // Any other key in between disarms it.
+    let mut b = browse(&["t"]);
+    b.handle_action(Action::Publish);
+    b.handle_key(key(KeyCode::Tab));
+    type_str(&mut b, "x");
+    b.handle_key(ctrl_key('c'));
+    type_str(&mut b, "y");
+    assert!(matches!(b.handle_key(ctrl_key('c')), Effect::None));
+}

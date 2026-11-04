@@ -185,6 +185,18 @@ const SENT_PER_TOPIC: usize = 20;
 /// How long after sending with a response topic the first message on it
 /// is followed.
 const REPLY_WINDOW: Duration = Duration::from_secs(30);
+/// A guarded ctrl-c or esc counts as the second press within this long.
+pub const ARM_WINDOW: Duration = Duration::from_secs(2);
+
+/// What a first guarded key press armed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Armed {
+    /// ctrl-c with a filled form: quit on the next ctrl-c.
+    Quit,
+    /// esc on an edited profile form: discard it on the next esc.
+    Discard,
+}
+
 /// How long a footer note (publish result) stays visible.
 pub const NOTE_TTL: Duration = Duration::from_secs(5);
 
@@ -406,6 +418,8 @@ pub struct App {
     /// A form closed with esc while it held a payload or properties; the
     /// next form opened on its topic starts from it.
     pub(super) publish_draft: Option<PublishForm>,
+    /// A first ctrl-c or esc that would throw work away, and when.
+    armed: Option<(Armed, Instant)>,
     /// A transient footer message (publish result) and when it was set.
     pub status_note: Option<(Note, Instant)>,
     /// The chart: `None` off, `Some(None)` the plain numeric payload,
@@ -571,6 +585,7 @@ impl App {
             timestamp_format: valid_time_format(&settings.timestamp_format),
             sent_walk: None,
             publish_draft: None,
+            armed: None,
             await_reply: None,
             created: Instant::now(),
             rows_cache: RefCell::new(None),

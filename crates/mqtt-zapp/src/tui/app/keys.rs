@@ -7,7 +7,16 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return Effect::None;
         }
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        let ctrl_c =
+            key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+        let guarded_esc = key.code == KeyCode::Esc && self.mode == Mode::ProfileForm;
+        if !ctrl_c && !guarded_esc {
+            self.armed = None;
+        }
+        if ctrl_c {
+            if self.holds_work() && !self.take_armed(Armed::Quit) {
+                return self.arm(Armed::Quit, "ctrl-c again to quit");
+            }
             return Effect::Quit;
         }
         match self.mode {
@@ -38,6 +47,30 @@ impl App {
             Mode::ProfileForm => self.on_profile_form_key(key),
             Mode::FieldPicker => self.on_field_picker_key(key),
         }
+    }
+
+    /// Whether quitting now would throw away typed work: a filled publish
+    /// form or an edited profile form.
+    fn holds_work(&self) -> bool {
+        match self.mode {
+            Mode::Publish => self.publish.as_ref().is_some_and(|f| !f.is_blank()),
+            Mode::ProfileForm => self.profile_form.as_ref().is_some_and(|f| f.is_modified()),
+            _ => false,
+        }
+    }
+
+    /// Arm `what` and say how to confirm it.
+    pub(super) fn arm(&mut self, what: Armed, note: &str) -> Effect {
+        self.dirty = true;
+        let now = Instant::now();
+        self.armed = Some((what, now));
+        self.set_note(Note::info(note), now);
+        Effect::None
+    }
+
+    /// Whether `what` was armed within `ARM_WINDOW`; disarms either way.
+    pub(super) fn take_armed(&mut self, what: Armed) -> bool {
+        matches!(self.armed.take(), Some((w, t)) if w == what && t.elapsed() < ARM_WINDOW)
     }
 
     /// A bracketed paste: text for the focused input, never keys. Single-line
