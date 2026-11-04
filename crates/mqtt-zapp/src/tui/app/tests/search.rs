@@ -423,3 +423,12 @@ fn perf_search_200k() {
     eprintln!("perf_search_200k: worst on_search_key {worst:?}");
     assert!(worst < Duration::from_millis(2), "worst {worst:?}");
 }
+
+#[test]
+fn paste_appends_first_line_to_search() {
+    let mut a = search_app();
+    a.handle_action(Action::Search);
+    a.handle_paste("ab?\ndef");
+    assert_eq!(a.search, "ab?");
+    assert_eq!(a.mode, Mode::SearchInput);
+}

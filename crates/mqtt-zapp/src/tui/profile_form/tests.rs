@@ -574,3 +574,15 @@ fn env_and_command_sources_take_a_value() {
     assert_eq!(again.password, p.password);
     assert_eq!(again.tls.alpn, vec!["mqtt".to_owned()]);
 }
+
+#[test]
+fn paste_fills_the_focused_text_field_only() {
+    let mut f = ProfileForm::new(None, vec![]);
+    goto(&mut f, PField::Name);
+    f.paste("my broker\x1b\nrest");
+    assert_eq!(f.name.text(), "my broker\u{fffd}");
+    goto(&mut f, PField::CleanSession);
+    let before = f.clean_session;
+    f.paste(" ");
+    assert_eq!(f.clean_session, before, "a toggle ignores a paste");
+}

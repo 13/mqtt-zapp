@@ -19,7 +19,10 @@ use crate::cli::Launch;
 use anyhow::{Context, Result};
 use app::{App, Effect, Note};
 use crossterm::cursor::Show;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -333,6 +336,12 @@ async fn event_loop(
                         return Ok(());
                     }
                 }
+                Some(Ok(Event::Paste(text))) => {
+                    let effect = app.handle_paste(&text);
+                    if session.apply(effect, app) {
+                        return Ok(());
+                    }
+                }
                 Some(Ok(Event::Resize(..))) => app.on_resize(),
                 Some(Ok(_)) => {}
                 Some(Err(e)) => return Err(e).context("reading terminal input"),
@@ -422,8 +431,13 @@ impl TerminalGuard {
         enable_raw_mode().context("enabling raw mode")?;
         // From here on a failure must still restore, so build the guard first.
         let guard = TerminalGuard;
-        execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)
-            .context("entering alternate screen")?;
+        execute!(
+            stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        )
+        .context("entering alternate screen")?;
         Ok(guard)
     }
 }
@@ -436,7 +450,13 @@ impl Drop for TerminalGuard {
 
 fn restore_terminal() {
     let _ = disable_raw_mode();
-    let _ = execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen, Show);
+    let _ = execute!(
+        stdout(),
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        Show
+    );
 }
 
 /// Restore the terminal before the panic message is printed, so it is readable.
@@ -463,8 +483,13 @@ fn run_editor(
     restore_terminal();
     let result = edit_text(text, &cmd);
     enable_raw_mode().context("enabling raw mode")?;
-    execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)
-        .context("entering alternate screen")?;
+    execute!(
+        stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )
+    .context("entering alternate screen")?;
     terminal.clear()?;
     match result {
         Ok(new) => app.set_publish_payload(&new),

@@ -40,6 +40,47 @@ impl App {
         }
     }
 
+    /// A bracketed paste: text for the focused input, never keys. Single-line
+    /// inputs take the first line; modes without an input drop it.
+    pub fn handle_paste(&mut self, text: &str) -> Effect {
+        use crate::tui::profile_form::first_line;
+        self.dirty = true;
+        match self.mode {
+            Mode::Publish => {
+                if let Some(form) = self.publish.as_mut() {
+                    form.paste(text);
+                }
+                self.sent_walk = None;
+            }
+            Mode::ProfileForm => {
+                if let Some(form) = self.profile_form.as_mut() {
+                    form.paste(text);
+                }
+            }
+            Mode::SearchInput => {
+                self.search.push_str(&first_line(text));
+                self.schedule_filter();
+            }
+            Mode::Password => {
+                if let Some(st) = self.password.as_mut() {
+                    st.input.push_str(&first_line(text));
+                }
+            }
+            Mode::FieldPicker => {
+                if let Some(p) = self.field_picker.as_mut() {
+                    p.query.push_str(&first_line(text));
+                    p.sel = 0;
+                }
+            }
+            Mode::Help => {
+                self.help_query.push_str(&first_line(text));
+                self.help_scroll = 0;
+            }
+            Mode::Browse | Mode::Picker | Mode::Stats | Mode::Confirm => {}
+        }
+        Effect::None
+    }
+
     /// The help overlay types into its own query and never reaches the
     /// keymap, so bound keys like `f` or `q` are just letters here.
     fn on_help_key(&mut self, key: KeyEvent) {

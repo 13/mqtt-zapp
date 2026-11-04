@@ -18,6 +18,21 @@ use std::fmt;
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 
+/// The first line of pasted `text` for a single-line input, with unsafe
+/// chars as U+FFFD.
+pub(crate) fn first_line(text: &str) -> String {
+    let line = text.split(['\r', '\n']).next().unwrap_or_default();
+    line.chars()
+        .map(|c| {
+            if mqtt_zapp_core::payload::is_unsafe_char(c) {
+                '\u{fffd}'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 /// A single-line text input with a cursor (a char index).
 #[derive(Clone, Default)]
 pub struct LineInput {
@@ -47,6 +62,16 @@ impl LineInput {
             .char_indices()
             .nth(char_idx)
             .map_or(self.text.len(), |(b, _)| b)
+    }
+
+    /// Insert pasted `text` at the cursor: its first line, with unsafe
+    /// chars as U+FFFD.
+    pub fn paste(&mut self, text: &str) {
+        for c in first_line(text).chars() {
+            let at = self.byte_at(self.cursor);
+            self.text.insert(at, c);
+            self.cursor += 1;
+        }
     }
 
     /// Edit with `key`; false if the key is not an editing key.
@@ -454,6 +479,14 @@ impl ProfileForm {
             self.port = LineInput::new(&p.default_port().to_string());
         }
         self.protocol = p;
+    }
+
+    /// A paste goes into the focused text field; toggles ignore it.
+    pub fn paste(&mut self, text: &str) {
+        self.error = None;
+        if let Some(input) = self.input_mut(self.field) {
+            input.paste(text);
+        }
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> ProfileOutcome {

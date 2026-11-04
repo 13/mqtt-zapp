@@ -361,6 +361,26 @@ impl PublishForm {
         Ok((props != Props::default()).then_some(props))
     }
 
+    /// A paste: the payload takes all of it, a single-line field its first
+    /// line, the option fields nothing. Unsafe chars become U+FFFD.
+    pub fn paste(&mut self, text: &str) {
+        self.error = None;
+        match self.field {
+            Field::Payload => {
+                self.payload.insert_str(input_safe(text));
+            }
+            Field::Topic => {
+                self.topic
+                    .insert_str(crate::tui::profile_form::first_line(text));
+            }
+            Field::ContentType | Field::ResponseTopic | Field::UserProps => {
+                let line = crate::tui::profile_form::first_line(text);
+                self.prop_area(self.field).insert_str(line);
+            }
+            Field::Qos | Field::Retain | Field::Format => {}
+        }
+    }
+
     /// Pretty-print the payload in its format. A raw payload that is JSON
     /// or XML switches to that format first. On an error the payload is
     /// left as typed.

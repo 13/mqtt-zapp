@@ -75,7 +75,7 @@ impl App {
 
     /// A search key was typed: rebuild now on a small tree, else once typing
     /// pauses for `SEARCH_DEBOUNCE` (the tick runs it).
-    fn schedule_filter(&mut self) {
+    pub(super) fn schedule_filter(&mut self) {
         if self.tree.len() < DEBOUNCE_MIN_NODES {
             self.rebuild_filter();
         } else {

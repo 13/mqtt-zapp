@@ -377,3 +377,26 @@ fn resend_refuses_control_characters() {
     let note = &a.status_note.as_ref().unwrap().0.text;
     assert_eq!(note, "can't re-send: control characters");
 }
+
+#[test]
+fn paste_in_browse_runs_no_actions() {
+    let mut a = browse(&["t"]);
+    a.selected = a.tree.find("t");
+    assert!(matches!(a.handle_paste("xyq"), Effect::None));
+    assert_eq!(a.mode, Mode::Browse);
+    assert!(a.confirm.is_none());
+}
+
+#[test]
+fn paste_goes_into_the_focused_field() {
+    let mut a = browse(&["t"]);
+    a.selected = a.tree.find("t");
+    a.handle_action(Action::Publish);
+    a.handle_key(key(KeyCode::Tab));
+    a.handle_paste("{\r\n\t\"a\": 1\x1b\r\n}");
+    assert_eq!(payload_of(&a), "{\n\t\"a\": 1\u{fffd}\n}");
+    assert_eq!(a.publish.as_ref().unwrap().field, Field::Payload);
+    a.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    a.handle_paste("/x\nignored");
+    assert_eq!(a.publish.as_ref().unwrap().topic_text(), "t/x");
+}
