@@ -344,6 +344,8 @@ pub struct App {
     cleared_echo: HashSet<String>,
     /// Why `profiles.toml` could not be loaded; shown in the empty picker.
     pub store_error: Option<String>,
+    /// `state.toml` could not be read or backed up: never save it.
+    state_read_only: bool,
     /// Open while in `Mode::Publish`.
     pub publish: Option<PublishForm>,
     /// A transient footer message (publish result) and when it was set.
@@ -479,6 +481,7 @@ impl App {
             session_profile: None,
             cleared_echo: HashSet::new(),
             store_error: None,
+            state_read_only: false,
             publish: None,
             status_note: None,
             hit: Cell::new(HitAreas::default()),
@@ -666,20 +669,17 @@ impl App {
         }
     }
 
-    /// Show what went wrong loading the state file (`backup`: where it was
-    /// copied to) and `settings.toml` (`settings_err`) as one error note.
+    /// Show what went wrong loading the state file (`state_note`, from
+    /// `AppState::problem_note`) and `settings.toml` as one error note.
     pub fn set_startup_errors(
         &mut self,
-        backup: Option<&std::path::Path>,
+        state_note: Option<String>,
         settings_err: Option<String>,
         now: Instant,
     ) {
         let mut parts = Vec::new();
-        if let Some(p) = backup {
-            parts.push(format!(
-                "state file unreadable, backed up to {}",
-                mqtt_zapp_core::payload::sanitize(&p.display().to_string())
-            ));
+        if let Some(n) = state_note {
+            parts.push(mqtt_zapp_core::payload::sanitize(&n));
         }
         if let Some(e) = settings_err {
             let e = e.split_whitespace().collect::<Vec<_>>().join(" ");

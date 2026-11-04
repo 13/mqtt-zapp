@@ -1,7 +1,8 @@
 //! Data mqtt-zapp keeps for itself between runs (picker sort, when each
 //! profile was last used). It lives in `state.toml` in the XDG state dir,
-//! never in the user's config files, and is best effort: a missing or broken
-//! file means defaults.
+//! never in the user's config files. A missing file means defaults. A file
+//! that does not parse is backed up and its good keys are kept; if it cannot
+//! be read or backed up, saving is disabled so it is never overwritten.
 
 use crate::config::{config_dir, create_private_dir, write_private};
 use anyhow::Result;
@@ -48,6 +49,10 @@ pub struct AppState {
     pub last_used: BTreeMap<String, i64>,
     /// Profile name → full topics starred in that profile's sessions.
     pub favorites: BTreeMap<String, BTreeSet<String>>,
+    /// Set by `load` when the file on disk could be neither read nor backed
+    /// up: `save` then does nothing, so the file is not overwritten.
+    #[serde(skip)]
+    pub read_only: bool,
 }
 
 /// `MQTT_ZAPP_STATE_DIR`, else `MQTT_ZAPP_CONFIG_DIR` (keeps a relocated
@@ -76,13 +81,28 @@ impl AppState {
     /// so one bad key keeps the others.
     pub fn load() -> (AppState, Option<String>) {
         let path = state_dir().join("state.toml");
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return (AppState::default(), None);
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return (AppState::default(), None);
+            }
+            Err(e) => {
+                let state = AppState {
+                    read_only: true,
+                    ..AppState::default()
+                };
+                return (state, Some(e.to_string()));
+            }
         };
+        let text = String::from_utf8(bytes);
         let mut state = AppState::default();
         let mut errors = Vec::new();
-        match text.parse::<toml::Table>() {
-            Err(e) => errors.push(e.to_string()),
+        let table = match &text {
+            Ok(t) => t.parse::<toml::Table>().map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        match table {
+            Err(e) => errors.push(e),
             Ok(table) => {
                 fn key<T: serde::de::DeserializeOwned>(
                     table: &toml::Table,
@@ -105,12 +125,31 @@ impl AppState {
         if errors.is_empty() {
             return (state, None);
         }
-        let _ = std::fs::copy(&path, backup_path());
-        (state, Some(errors.join("; ")))
+        let mut msg = errors.join("; ");
+        if let Err(e) = std::fs::copy(&path, backup_path()) {
+            state.read_only = true;
+            msg = format!("{msg}; backup failed: {e}");
+        }
+        (state, Some(msg))
+    }
+
+    /// The startup note for a load error `err` returned with `self`.
+    pub fn problem_note(&self, err: &str) -> String {
+        if self.read_only {
+            format!("state file unreadable ({err}), not saving this session")
+        } else {
+            format!(
+                "state file unreadable, backed up to {}",
+                backup_path().display()
+            )
+        }
     }
 
     /// Write atomically (temp file + rename), creating the directory.
     pub fn save(&self) -> Result<()> {
+        if self.read_only {
+            return Ok(());
+        }
         let dir = state_dir();
         create_private_dir(&dir)?;
         write_private(&dir.join("state.toml"), &toml::to_string_pretty(self)?)
@@ -229,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_state_is_backed_up() {
+    fn stale_backup_is_replaced() {
         let (_g, _d) = in_temp_dir();
         std::fs::create_dir_all(state_dir()).unwrap();
         std::fs::write(state_dir().join("state.toml.bak"), "old backup").unwrap();
@@ -240,6 +279,65 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(state_dir().join("state.toml.bak")).unwrap(),
             "not = [toml"
+        );
+    }
+
+    #[test]
+    fn non_utf8_state_is_backed_up() {
+        let (_g, _d) = in_temp_dir();
+        std::fs::create_dir_all(state_dir()).unwrap();
+        let bytes = b"picker_sort = \"name\"\n# \xff\xfe\n";
+        std::fs::write(state_dir().join("state.toml"), bytes).unwrap();
+        let (s, err) = AppState::load();
+        assert!(err.is_some());
+        assert!(!s.read_only);
+        assert_eq!(std::fs::read(backup_path()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn failed_backup_blocks_saving() {
+        let (_g, _d) = in_temp_dir();
+        std::fs::create_dir_all(state_dir()).unwrap();
+        std::fs::create_dir(backup_path()).unwrap();
+        let original = b"not = [toml";
+        std::fs::write(state_dir().join("state.toml"), original).unwrap();
+        let (mut s, err) = AppState::load();
+        let err = err.unwrap();
+        assert!(s.read_only);
+        let note = s.problem_note(&err);
+        assert!(
+            note.starts_with("state file unreadable (")
+                && note.ends_with("), not saving this session"),
+            "{note}"
+        );
+        s.touch("a", 1);
+        s.save().unwrap();
+        assert_eq!(
+            std::fs::read(state_dir().join("state.toml")).unwrap(),
+            original
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_state_blocks_saving() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_g, _d) = in_temp_dir();
+        std::fs::create_dir_all(state_dir()).unwrap();
+        let path = state_dir().join("state.toml");
+        std::fs::write(&path, "picker_sort = \"name\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(&path).is_ok() {
+            return; // root ignores the mode
+        }
+        let (s, err) = AppState::load();
+        assert!(err.is_some());
+        assert!(s.read_only);
+        s.save().unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "picker_sort = \"name\"\n"
         );
     }
 }

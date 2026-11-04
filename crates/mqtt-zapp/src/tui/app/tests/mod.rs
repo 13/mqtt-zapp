@@ -394,7 +394,7 @@ fn filter_on(a: &mut App, q: &str) {
 fn startup_notes_bad_settings() {
     let mut a = app();
     a.set_startup_errors(
-        Some(std::path::Path::new("/s/state.toml.bak")),
+        Some("state file unreadable, backed up to /s/state.toml.bak".into()),
         Some("expected a string\nline 2".into()),
         Instant::now(),
     );

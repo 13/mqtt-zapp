@@ -196,6 +196,7 @@ impl App {
     /// A profile save or delete failed: show why in the form, if open.
     /// Apply what `state.toml` remembered (picker sort, last-used times).
     pub fn set_app_state(&mut self, state: AppState) {
+        self.state_read_only = state.read_only;
         self.picker.sort = state.picker_sort;
         self.picker.last_used = state.last_used;
         self.picker.sel = 0;
@@ -209,6 +210,7 @@ impl App {
             picker_sort: self.picker.sort,
             last_used: self.picker.last_used.clone(),
             favorites: self.favorites.clone(),
+            read_only: self.state_read_only,
         }
     }
 
