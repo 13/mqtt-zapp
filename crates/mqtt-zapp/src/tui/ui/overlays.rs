@@ -23,7 +23,14 @@ pub(super) fn render_stats(f: &mut Frame, area: Rect, app: &App) {
         ]));
     }
     f.render_widget(
-        Paragraph::new(lines).block(theme::pane("broker stats · live", true)),
+        Paragraph::new(lines).block(theme::pane(
+            if app.conn_state.is_connected() {
+                "broker stats · live"
+            } else {
+                "broker stats · offline"
+            },
+            true,
+        )),
         card,
     );
 }

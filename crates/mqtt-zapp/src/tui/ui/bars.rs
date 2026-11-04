@@ -295,7 +295,9 @@ pub(super) fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16,
             .bg(theme::ACCENT)
             .add_modifier(Modifier::BOLD),
     );
-    // (prefix, reason, suffix): the reason is cut; a failure's retry hint
+    // (prefix, reason, suffix): a password source's own error (env var,
+    // command; all start with "password ") is not an authentication
+    // failure, so it is shown as is. The reason is cut; a failure's retry hint
     // goes first, before the reason or anything else.
     let (prefix, reason, mut suffix, color) = match &app.conn_state {
         ConnState::Connected => ("● connected", String::new(), String::new(), theme::OK),
@@ -313,12 +315,16 @@ pub(super) fn header_line(app: &App, width: u16) -> (Line<'static>, Option<(u16,
             },
             theme::ERR,
         ),
-        ConnState::Failed { reason } if reason == mqtt_zapp_core::client::TASK_ENDED => (
-            "✕ ",
-            single_line(reason),
-            " · pick the profile to retry".into(),
-            theme::ERR,
-        ),
+        ConnState::Failed { reason }
+            if reason == mqtt_zapp_core::client::TASK_ENDED || reason.starts_with("password ") =>
+        {
+            (
+                "✕ ",
+                single_line(reason),
+                " · pick the profile to retry".into(),
+                theme::ERR,
+            )
+        }
         ConnState::Failed { reason } => (
             "✕ authentication failed: ",
             single_line(reason),

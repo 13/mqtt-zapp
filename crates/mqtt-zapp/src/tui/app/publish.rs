@@ -128,6 +128,13 @@ impl App {
         };
         let topic = form.topic_text();
         let Some(list) = self.sent.get(&topic).filter(|l| !l.is_empty()) else {
+            if older {
+                let t = mqtt_zapp_core::payload::sanitize(&topic);
+                self.set_note(
+                    Note::info(format!("nothing sent to {t} yet")),
+                    Instant::now(),
+                );
+            }
             return Effect::None;
         };
         let next = match (self.sent_walk.take(), older) {
@@ -149,7 +156,7 @@ impl App {
     }
 
     /// The first message on the response topic of the last send, within
-    /// `REPLY_WINDOW`, is selected; later the wait is dropped silently.
+    /// `REPLY_WINDOW`, is selected; once the window passes, `tick` says so.
     pub(super) fn follow_reply(&mut self, topic: &str) {
         let Some((want, sent)) = &self.await_reply else {
             return;

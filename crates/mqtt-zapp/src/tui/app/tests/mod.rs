@@ -608,3 +608,28 @@ fn sent_payloads_do_not_cross_brokers() {
     ));
     assert!(a.sent.is_empty(), "another broker");
 }
+
+#[test]
+fn info_note_does_not_hide_a_fresh_error() {
+    let mut a = browse(&["t"]);
+    let now = Instant::now();
+    a.set_note(Note::error("publish failed: boom"), now);
+    a.set_note(Note::info("copied topic"), now + Duration::from_millis(500));
+    assert_eq!(note_text(&a), "publish failed: boom");
+    // Another error replaces it; so does anything once it has expired.
+    a.set_note(Note::error("second"), now + Duration::from_secs(1));
+    assert_eq!(note_text(&a), "second");
+    let later = now + Duration::from_secs(1) + NOTE_TTL;
+    a.set_note(Note::info("later"), later);
+    assert_eq!(a.note_at(later).map(|n| n.text.as_str()), Some("later"));
+}
+
+#[test]
+fn expand_all_in_the_starred_view_says_why_nothing_moves() {
+    let mut a = browse(&["a/b"]);
+    a.selected = a.tree.find("a");
+    a.handle_action(Action::ToggleStar);
+    a.handle_action(Action::StarredOnly);
+    a.handle_action(Action::ExpandAll);
+    assert_eq!(note_text(&a), "the starred view is always expanded");
+}

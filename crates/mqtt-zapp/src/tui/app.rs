@@ -455,6 +455,11 @@ pub struct App {
     /// The response topic of the last send and when it was sent: the first
     /// message on it within `REPLY_WINDOW` is selected.
     await_reply: Option<(String, Instant)>,
+    /// Topics of QoS 1/2 publishes not yet written out, in send order: each
+    /// `PublishSent` takes the front one and files it under its packet id.
+    ack_unsent: VecDeque<String>,
+    /// Packet id → topic of publishes written out and waiting for the ack.
+    ack_inflight: HashMap<u16, String>,
     /// Order of sibling topics; `s` cycles it.
     pub sort: SortOrder,
     /// Set while in `Mode::Confirm`.
@@ -605,6 +610,8 @@ impl App {
             help_return: Mode::Browse,
             wrap: false,
             await_reply: None,
+            ack_unsent: VecDeque::new(),
+            ack_inflight: HashMap::new(),
             created: Instant::now(),
             rows_cache: RefCell::new(None),
             favorites: BTreeMap::new(),
@@ -634,6 +641,8 @@ impl App {
         self.selected = None;
         self.history_sel = None;
         self.await_reply = None;
+        self.ack_unsent.clear();
+        self.ack_inflight.clear();
         self.diff_base = None;
         self.payload_scroll = 0;
         self.set_filter(None);
@@ -752,8 +761,28 @@ impl App {
                 self.msg_rate.record(Instant::now());
                 self.tree_changed = true;
             }
-            // For the headless `pub`; the TUI shows nothing for them.
-            CoreEvent::PublishSent { .. } | CoreEvent::PublishAcked { .. } => return,
+            // QoS 0 (pkid 0) is never acked; the send note says it all.
+            CoreEvent::PublishSent { pkid: 0 } => return,
+            CoreEvent::PublishSent { pkid } => {
+                if let Some(topic) = self.ack_unsent.pop_front() {
+                    self.ack_inflight.insert(pkid, topic);
+                }
+                return;
+            }
+            CoreEvent::PublishAcked { pkid, failure } => {
+                let Some(topic) = self.ack_inflight.remove(&pkid) else {
+                    return;
+                };
+                let topic = mqtt_zapp_core::payload::sanitize(&topic);
+                let note = match failure {
+                    None => Note::info(format!("published {topic} · acked")),
+                    Some(f) => Note::error(format!(
+                        "publish to {topic} refused: {}",
+                        mqtt_zapp_core::payload::sanitize(&f)
+                    )),
+                };
+                self.set_note(note, Instant::now());
+            }
         }
         self.dirty = true;
     }
@@ -775,6 +804,17 @@ impl App {
     }
 
     fn tick(&mut self, now: Instant) {
+        if let Some((topic, _)) = self
+            .await_reply
+            .take_if(|(_, sent)| now.saturating_duration_since(*sent) > REPLY_WINDOW)
+        {
+            let topic = mqtt_zapp_core::payload::sanitize(&topic);
+            let secs = REPLY_WINDOW.as_secs();
+            self.set_note(
+                Note::info(format!("no reply on {topic} within {secs}s")),
+                now,
+            );
+        }
         if self.filter_due.is_some_and(|due| now >= due) {
             self.rebuild_filter();
         }
@@ -893,9 +933,29 @@ impl App {
         }
     }
 
+    /// Show `note`. A fresh error stays until it expires or another error
+    /// replaces it: an info note right after it would hide it unread.
     pub fn set_note(&mut self, note: Note, now: Instant) {
+        if !note.error && self.note_at(now).is_some_and(|n| n.error) {
+            return;
+        }
         self.status_note = Some((note, now));
         self.dirty = true;
+    }
+
+    /// A publish has been handed to the client. QoS 1/2 waits for the
+    /// broker's ack, which `PublishAcked` reports; QoS 0 is reported by the
+    /// send itself.
+    pub fn publish_started(&mut self, topic: &str, qos: u8) {
+        if qos == 0 {
+            return;
+        }
+        self.ack_unsent.push_back(topic.to_owned());
+        let topic = mqtt_zapp_core::payload::sanitize(topic);
+        self.set_note(
+            Note::info(format!("sent {topic} · waiting for ack")),
+            Instant::now(),
+        );
     }
 
     /// The note, unless it is older than `NOTE_TTL` at `now`.
@@ -963,6 +1023,10 @@ impl App {
     fn expand_subtree(&mut self, expand: bool) {
         // Like a filter, the starred view forces its own expansion.
         if self.starred_only {
+            self.set_note(
+                Note::info("the starred view is always expanded"),
+                Instant::now(),
+            );
             return;
         }
         let Some(id) = self.selected else { return };

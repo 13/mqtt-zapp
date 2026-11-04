@@ -603,3 +603,18 @@ fn long_field_filter_keeps_the_cursor_in_view() {
     let s = text(&draw(&mut a, 100, 30));
     assert!(s.contains("q▏"), "{s}");
 }
+
+#[test]
+fn stats_title_says_offline() {
+    let mut a = app_with(&[("$SYS/broker/uptime", b"5 seconds")]);
+    a.apply_core_event(CoreEvent::State(
+        mqtt_zapp_core::client::ConnState::Disconnected {
+            reason: "gone".into(),
+            retry_in_ms: 0,
+        },
+    ));
+    a.handle_action(Action::Stats);
+    let s = text(&draw(&mut a, 100, 30));
+    assert!(s.contains("broker stats · offline"), "{s}");
+    assert!(!s.contains("· live"), "{s}");
+}

@@ -475,3 +475,57 @@ fn ctrl_c_in_a_filled_form_asks_first() {
     type_str(&mut b, "y");
     assert!(matches!(b.handle_key(ctrl_key('c')), Effect::None));
 }
+
+#[test]
+fn qos1_publish_note_waits_for_the_ack() {
+    let mut a = browse(&["t"]);
+    a.publish_started("t", 1);
+    assert_eq!(note_text(&a), "sent t · waiting for ack");
+    a.apply_core_event(CoreEvent::PublishSent { pkid: 7 });
+    a.apply_core_event(CoreEvent::PublishAcked {
+        pkid: 7,
+        failure: None,
+    });
+    assert_eq!(note_text(&a), "published t · acked");
+    // Refused (MQTT 5): an error that names the topic.
+    a.publish_started("t", 2);
+    a.apply_core_event(CoreEvent::PublishSent { pkid: 8 });
+    a.apply_core_event(CoreEvent::PublishAcked {
+        pkid: 8,
+        failure: Some("not authorized".into()),
+    });
+    let n = a.note_at(Instant::now()).unwrap();
+    assert!(
+        n.error && n.text == "publish to t refused: not authorized",
+        "{n:?}"
+    );
+}
+
+#[test]
+fn qos0_publish_note_is_left_to_the_send() {
+    let mut a = browse(&["t"]);
+    a.publish_started("t", 0);
+    assert_eq!(a.note_at(Instant::now()), None);
+}
+
+#[test]
+fn reply_timeout_is_announced() {
+    let mut a = reply_app();
+    a.handle_key(ctrl_key('s'));
+    a.handle_key(key(KeyCode::Esc));
+    let (t, _) = a.await_reply.take().unwrap();
+    a.await_reply = Some((t, Instant::now() - REPLY_WINDOW - Duration::from_secs(1)));
+    a.on_tick();
+    assert!(a.await_reply.is_none());
+    assert_eq!(note_text(&a), "no reply on ack/lab within 30s");
+}
+
+#[test]
+fn ctrl_p_with_nothing_sent_says_so() {
+    let mut a = browse(&["t"]);
+    a.selected = a.tree.find("t");
+    a.handle_action(Action::Publish);
+    a.handle_key(key(KeyCode::Tab));
+    a.handle_key(ctrl_key('p'));
+    assert_eq!(note_text(&a), "nothing sent to t yet");
+}

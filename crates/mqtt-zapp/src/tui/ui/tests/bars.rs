@@ -308,7 +308,11 @@ fn error_note_is_red() {
     let col = last.find("publish failed").unwrap();
     let col = last[..col].chars().count() as u16;
     assert_eq!(b[(col, 23)].fg, theme::ERR);
-    a.set_note(Note::info("published a"), Instant::now());
+    // Once the error has expired (a fresh one is not hidden by info).
+    a.set_note(
+        Note::info("published a"),
+        Instant::now() + crate::tui::app::NOTE_TTL,
+    );
     let b = draw(&mut a, 100, 24);
     let last = last_line(&b);
     let col = last[..last.find("published").unwrap()].chars().count() as u16;
@@ -561,4 +565,17 @@ fn auth_failure_keeps_the_reason_at_80_cols() {
     ));
     let top = first_line(&draw(&mut a, 80, 10));
     assert!(top.contains("Not authorized"), "{top}");
+}
+
+#[test]
+fn password_source_failure_is_not_called_auth() {
+    let mut a = app_with(&[("a", b"1")]);
+    a.apply_core_event(CoreEvent::State(
+        mqtt_zapp_core::client::ConnState::Failed {
+            reason: "password env var MQTT_PW not set".into(),
+        },
+    ));
+    let top = first_line(&draw(&mut a, 120, 10));
+    assert!(top.contains("✕ password env var MQTT_PW not set"), "{top}");
+    assert!(!top.contains("authentication failed"), "{top}");
 }

@@ -240,13 +240,17 @@ impl Session {
                         app.set_note(Note::error("publish failed: not connected"), Instant::now())
                     }
                     Some(conn) => {
+                        // QoS 1/2: the note waits for the broker's ack (set
+                        // here, before any ack can arrive); QoS 0 has none.
+                        app.publish_started(&topic, qos);
                         let notes = self.notes_tx.clone();
                         tokio::spawn(async move {
                             let note = match conn
                                 .publish(&topic, payload, qos, retain, props.as_ref())
                                 .await
                             {
-                                Ok(()) => Note::info(format!("published {topic}")),
+                                Ok(()) if qos == 0 => Note::info(format!("published {topic}")),
+                                Ok(()) => return,
                                 Err(e) => Note::error(format!("publish failed: {e:#}")),
                             };
                             let _ = notes.send(note);
