@@ -94,6 +94,15 @@ fn float(f: f64) -> Value {
     Number::from_f64(f).map_or(Value::Null, Value::Number)
 }
 
+/// An `f32` as its shortest round-trip decimal, so 21.3 stays 21.3 rather
+/// than widening to 21.299999237060547; non-finite values become null.
+fn float32(f: f32) -> Value {
+    if !f.is_finite() {
+        return Value::Null;
+    }
+    float(f.to_string().parse().unwrap_or(f64::from(f)))
+}
+
 /// Decode a Sparkplug B payload; `None` when it is not a well-formed one.
 pub fn decode(payload: &[u8]) -> Option<Value> {
     if payload.is_empty() {
@@ -101,21 +110,26 @@ pub fn decode(payload: &[u8]) -> Option<Value> {
     }
     let mut out = Map::new();
     let mut metrics = Map::new();
+    let mut known = false;
     let mut r = Reader::new(payload);
     while !r.done() {
         match r.field()? {
             (1, Wire::Varint(v)) => {
+                known = true;
                 out.insert("timestamp".into(), json!(v));
             }
             (2, Wire::Len(b)) => {
+                known = true;
                 if let Some((k, v)) = metric(b)? {
                     metrics.insert(k, v);
                 }
             }
             (3, Wire::Varint(v)) => {
+                known = true;
                 out.insert("seq".into(), json!(v));
             }
             (4, Wire::Len(b)) => {
+                known = true;
                 out.insert("uuid".into(), Value::String(string(b)?));
             }
             // 5 is the opaque body; known fields with another wire type
@@ -125,10 +139,20 @@ pub fn decode(payload: &[u8]) -> Option<Value> {
             _ => {}
         }
     }
-    if !metrics.is_empty() {
-        out.insert("metrics".into(), Value::Object(metrics));
+    if !known {
+        return None;
     }
-    Some(Value::Object(out))
+    // `metrics` first, so `c` charts a metric before the timestamp.
+    let mut ordered = Map::new();
+    if !metrics.is_empty() {
+        ordered.insert("metrics".into(), Value::Object(metrics));
+    }
+    for k in ["timestamp", "seq", "uuid"] {
+        if let Some(v) = out.remove(k) {
+            ordered.insert(k.into(), v);
+        }
+    }
+    Some(Value::Object(ordered))
 }
 
 /// One `Metric` as `(key, value)`; the outer `None` is malformed, the inner
@@ -170,7 +194,7 @@ fn metric(b: &[u8]) -> Option<Option<(String, Value)>> {
                     json!(v)
                 }
             }
-            Some((12, Wire::Fixed32(v))) => float(f64::from(f32::from_bits(v))),
+            Some((12, Wire::Fixed32(v))) => float32(f32::from_bits(v)),
             Some((13, Wire::Fixed64(v))) => float(f64::from_bits(v)),
             Some((14, Wire::Varint(v))) => Value::Bool(v != 0),
             Some((15, Wire::Len(s))) => Value::String(string(s)?),
@@ -238,8 +262,41 @@ mod tests {
         .concat();
         assert_eq!(
             decode(&p).unwrap(),
-            json!({"timestamp":1000,"seq":3,"metrics":{"Temperature":21.5,"On":true}})
+            json!({"metrics":{"Temperature":21.5,"On":true},"timestamp":1000,"seq":3})
         );
+    }
+
+    #[test]
+    fn float_metrics_keep_shortest_decimal() {
+        for (f, want) in [(21.3f32, 21.3f64), (0.1, 0.1)] {
+            let p = metric(&[lf(1, b"x"), vf(4, 9), field(12, 5, &f.to_le_bytes())]);
+            assert_eq!(decode(&p).unwrap(), json!({"metrics":{"x":want}}));
+        }
+        let p = metric(&[lf(1, b"x"), vf(4, 9), field(12, 5, &f32::NAN.to_le_bytes())]);
+        assert_eq!(decode(&p).unwrap(), json!({"metrics":{"x":null}}));
+    }
+
+    #[test]
+    fn only_unknown_fields_is_not_sparkplug() {
+        assert!(decode(b"hi").is_none());
+    }
+
+    #[test]
+    fn metrics_come_first() {
+        let p = [
+            vf(1, 1),
+            metric(&[lf(1, b"x"), vf(4, 3), vf(10, 1)]),
+            vf(3, 2),
+        ]
+        .concat();
+        let keys: Vec<_> = decode(&p)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(keys, ["metrics", "timestamp", "seq"]);
     }
 
     #[test]
@@ -298,7 +355,7 @@ mod tests {
         .concat();
         assert_eq!(
             decode(&p).unwrap(),
-            json!({"timestamp":5,"metrics":{"a":1}})
+            json!({"metrics":{"a":1},"timestamp":5})
         );
     }
 

@@ -111,40 +111,10 @@ pub fn persist_order(names: &[String]) -> Result<ProfileStore> {
 mod tests {
     use super::*;
     use crate::tui::profile_form::ProfileEdit;
+    use crate::tui::test_env::ConfigDir;
     use mqtt_zapp_core::config::{PasswordSource, Profile, ProfileStore, Protocol, TlsConfig};
     use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::path::PathBuf;
-    use std::sync::Mutex;
-
-    static LOCK: Mutex<()> = Mutex::new(());
-
-    /// A fresh config dir for one test; removed on drop.
-    struct ConfigDir(
-        PathBuf,
-        #[allow(dead_code)] std::sync::MutexGuard<'static, ()>,
-    );
-
-    impl ConfigDir {
-        fn new(tag: &str) -> ConfigDir {
-            let g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let d =
-                std::env::temp_dir().join(format!("mqtt-zapp-test-{}-{tag}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&d);
-            // SAFETY: env mutation is serialized by LOCK; only these tests
-            // touch this var in this binary.
-            unsafe { std::env::set_var("MQTT_ZAPP_CONFIG_DIR", &d) };
-            ConfigDir(d, g)
-        }
-    }
-
-    impl Drop for ConfigDir {
-        fn drop(&mut self) {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     #[derive(Default)]
     struct FakeSecrets {

@@ -165,7 +165,7 @@ pub(super) fn fmt_num(x: f64) -> String {
 pub(super) fn render_chart(f: &mut Frame, area: Rect, app: &App, s: &Shown, path: Option<&str>) {
     use ratatui::symbols::Marker;
     use ratatui::widgets::{Axis, Chart, Dataset, GraphType, LegendPosition};
-    let name = |p: Option<&str>| p.unwrap_or("value").to_owned();
+    let name = |p: Option<&str>| mqtt_zapp_core::payload::sanitize(p.unwrap_or("value"));
     // The current series first, then each pinned one that is not it.
     let paths: Vec<Option<&str>> = std::iter::once(path)
         .chain(

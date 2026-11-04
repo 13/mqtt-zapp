@@ -1458,7 +1458,7 @@ fn sparkplug_badge_and_chart_path() {
     a.apply_core_event(CoreEvent::Message {
         topic: T.into(),
         msg: Message {
-            payload: Bytes::from_static(br#"{"timestamp":1,"metrics":{"Temperature":21.5}}"#),
+            payload: Bytes::from_static(br#"{"metrics":{"Temperature":21.5},"timestamp":1}"#),
             qos: 0,
             retain: false,
             received_at: SystemTime::now(),
@@ -1474,5 +1474,9 @@ fn sparkplug_badge_and_chart_path() {
     assert!(
         a.chart_series()
             .contains(&Some("metrics.Temperature".into()))
+    );
+    assert_eq!(
+        a.chart_series().first(),
+        Some(&Some("metrics.Temperature".into()))
     );
 }

@@ -421,6 +421,8 @@ fn edit_text(initial: &str, cmd: &str) -> Result<String> {
 
 #[cfg(test)]
 mod e2e_tests;
+#[cfg(test)]
+mod test_env;
 
 #[cfg(all(test, unix))]
 mod tests {

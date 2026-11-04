@@ -7,6 +7,7 @@
 mod support;
 
 use super::*;
+use crate::tui::test_env::ConfigDir;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mqtt_zapp_core::config::{PasswordSource, Profile, Protocol, TlsConfig};
 use ratatui::backend::TestBackend;
@@ -89,6 +90,9 @@ async fn tui_against_mosquitto() {
     let Some(broker) = support::start(false) else {
         return;
     };
+    // Config and state go to a tempdir (and the env lock is held) for the
+    // whole run, so the developer's real files are never touched.
+    let dir = ConfigDir::new("e2e");
 
     // Side connection seeds two retained topics.
     let (side, mut side_rx) = Connection::connect(&profile(broker.port, &[]), None).unwrap();
@@ -160,21 +164,35 @@ async fn tui_against_mosquitto() {
     .await;
 
     // A fresh subscriber must see no retained message on the topic.
+    // `zapp/e2e/other` is the positive control: it must still arrive.
     let (fresh, mut fresh_rx) =
-        Connection::connect(&profile(broker.port, &["zapp/e2e/temp"]), None).unwrap();
+        Connection::connect(&profile(broker.port, &["zapp/e2e/#"]), None).unwrap();
     wait_connected(&mut fresh_rx).await;
-    let got = tokio::time::timeout(Duration::from_secs(2), async {
+    let mut seen = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
         while let Some(ev) = fresh_rx.recv().await {
             if let CoreEvent::Message { topic, .. } = ev {
-                return Some(topic);
+                seen.push(topic);
             }
         }
-        None
     })
     .await;
-    assert!(got.is_err(), "retained message survived: {got:?}");
+    assert!(
+        seen.iter().any(|t| t == "zapp/e2e/other"),
+        "positive control missing: {seen:?}"
+    );
+    assert!(
+        !seen.iter().any(|t| t == "zapp/e2e/temp"),
+        "retained message survived: {seen:?}"
+    );
 
     fresh.close(Duration::from_secs(1)).await;
     side.close(Duration::from_secs(1)).await;
     session.close().await;
+
+    // The redirect worked: the state file went to the tempdir.
+    assert!(
+        dir.0.join("state.toml").exists(),
+        "state.toml not redirected"
+    );
 }

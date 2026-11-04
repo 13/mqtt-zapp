@@ -147,6 +147,10 @@ enum Polled {
     Err(String),
 }
 
+/// Largest payload decoded as Sparkplug: the JSON form is many times larger
+/// than the protobuf, and decoding happens before the payload cap.
+const SPARKPLUG_MAX: usize = 1 << 20;
+
 /// A received publish as a `Message`, its payload copied once.
 ///
 /// rumqttc reads packets into a shared `BytesMut` (10 KiB or more) and hands
@@ -155,8 +159,9 @@ enum Polled {
 /// and `max_history_mb` would no longer bound real memory. The copy is the
 /// only one; `latest` and history share it.
 ///
-/// A Sparkplug B payload (by topic) is stored as its JSON form, so the cap
-/// in `tree.insert` applies to that; one that does not decode stays raw.
+/// A Sparkplug B payload (by topic) is stored as its JSON form, so the
+/// payload cap (applied in `App::apply_core_event_inner`) covers that; one
+/// that does not decode, or exceeds `SPARKPLUG_MAX`, stays raw.
 fn incoming(
     topic: &str,
     payload: &[u8],
@@ -164,7 +169,7 @@ fn incoming(
     retain: bool,
     props: Option<Box<Props>>,
 ) -> Message {
-    let decoded = sparkplug::is_sparkplug_topic(topic)
+    let decoded = (sparkplug::is_sparkplug_topic(topic) && payload.len() <= SPARKPLUG_MAX)
         .then(|| sparkplug::decode(payload))
         .flatten()
         .and_then(|v| serde_json::to_vec(&v).ok());
@@ -697,6 +702,16 @@ mod tests {
         let m = incoming("spBv1.0/g/NDATA/n", b"not protobuf {", 0, false, None);
         assert!(!m.sparkplug);
         assert_eq!(&m.payload[..], b"not protobuf {");
+    }
+
+    #[test]
+    fn oversize_sparkplug_payload_stays_raw() {
+        // A valid payload: field 5 (body) of 1 MiB + 1 bytes after a timestamp.
+        let mut p = vec![0x08, 0x01, 0x2a, 0xfb, 0xff, 0x3f];
+        p.resize((1 << 20) + 1, 0);
+        let m = incoming("spBv1.0/g/NDATA/n", &p, 0, false, None);
+        assert!(!m.sparkplug);
+        assert_eq!(m.payload.len(), (1 << 20) + 1);
     }
 
     #[test]

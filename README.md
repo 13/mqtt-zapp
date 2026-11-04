@@ -250,7 +250,10 @@ session.
 ## ⚙️ Configuration
 
 `profiles.toml` and `settings.toml` live in `~/.config/mqtt-zapp/`, the XDG
-config dir. Set `MQTT_ZAPP_CONFIG_DIR` to use another directory.
+config dir. Set `MQTT_ZAPP_CONFIG_DIR` to use another directory. The UI state file
+(`state.toml`) lives in the XDG state dir (`~/.local/state/mqtt-zapp/`); it
+follows `MQTT_ZAPP_CONFIG_DIR` when that is set, or set `MQTT_ZAPP_STATE_DIR`
+to place it separately.
 
 <details>
 <summary><b>settings.toml</b></summary>
