@@ -54,6 +54,14 @@ impl App {
             Note::info(format!("{verb} {}", sanitize(&topic))),
             Instant::now(),
         );
+        if self.starred_only {
+            if self.starred_count() == 0 {
+                // Nothing left to show: leave the view, selection stays.
+                self.starred_only = false;
+            } else {
+                self.keep_selection_visible();
+            }
+        }
         Effect::SaveState(self.app_state())
     }
 
@@ -64,10 +72,16 @@ impl App {
             return;
         }
         self.starred_only = !self.starred_only;
-        if self.starred_only
-            && !self
-                .selected
-                .is_some_and(|s| self.rows().iter().any(|r| r.id == s))
+        if self.starred_only {
+            self.keep_selection_visible();
+        }
+    }
+
+    /// If the selection is not among the rows, select the first row.
+    fn keep_selection_visible(&mut self) {
+        if !self
+            .selected
+            .is_some_and(|s| self.rows().iter().any(|r| r.id == s))
             && let Some(first) = self.rows().first().copied()
         {
             self.select(first.id);

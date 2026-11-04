@@ -89,3 +89,45 @@ fn favorites_are_per_profile() {
     assert!(st.favorites["p1"].contains("a/x"));
     assert!(!st.favorites.contains_key("p2"));
 }
+
+#[test]
+fn unstar_last_exits_starred_view() {
+    let _cfg = ConfigDir::new("star-unstar-last");
+    let mut a = star_app("p1");
+    select_topic(&mut a, "a/b/d");
+    star_press(&mut a, '*');
+    star_press(&mut a, '\'');
+    assert!(a.starred_only);
+    star_press(&mut a, '*');
+    assert!(!a.starred_only);
+    assert_eq!(a.selected, a.tree.find("a/b/d"));
+    assert!(row_names(&a).contains(&"a".to_string()));
+}
+
+#[test]
+fn unstar_selected_in_view_reselects() {
+    let _cfg = ConfigDir::new("star-unstar-sel");
+    let mut a = star_app("p1");
+    select_topic(&mut a, "a/b/d");
+    star_press(&mut a, '*');
+    select_topic(&mut a, "z/y");
+    star_press(&mut a, '*');
+    star_press(&mut a, '\'');
+    select_topic(&mut a, "z/y");
+    star_press(&mut a, '*');
+    assert!(a.starred_only);
+    let sel = a.selected.expect("a selection");
+    assert!(a.rows().iter().any(|r| r.id == sel));
+}
+
+#[test]
+fn starred_view_resets_on_connection_switch() {
+    let _cfg = ConfigDir::new("star-switch");
+    let mut a = star_app("p1");
+    select_topic(&mut a, "a/x");
+    star_press(&mut a, '*');
+    star_press(&mut a, '\'');
+    assert!(a.starred_only);
+    a.reset_tree();
+    assert!(!a.starred_only);
+}

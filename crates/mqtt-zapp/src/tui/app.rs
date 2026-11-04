@@ -519,6 +519,7 @@ impl App {
         self.diff_base = None;
         self.payload_scroll = 0;
         self.set_filter(None);
+        self.starred_only = false;
         // The new tree starts its `shape_gen` over: never reuse old rows.
         self.rows_cache.take();
         // Picker frames don't draw the tree: a click before the next tree
@@ -728,6 +729,10 @@ impl App {
 
     /// Expand (or collapse) the selected node and every node below it.
     fn expand_subtree(&mut self, expand: bool) {
+        // Like a filter, the starred view forces its own expansion.
+        if self.starred_only {
+            return;
+        }
         let Some(id) = self.selected else { return };
         let mut stack = vec![id];
         while let Some(n) = stack.pop() {
@@ -897,7 +902,7 @@ impl App {
         let Some(row) = self.selected_row() else {
             return;
         };
-        if row.expanded && row.has_children && self.filter.is_none() {
+        if row.expanded && row.has_children && self.filter.is_none() && !self.starred_only {
             self.expanded.remove(&row.id);
         } else if let Some(parent) = self.tree.node(row.id).parent
             && parent != TopicTree::ROOT
