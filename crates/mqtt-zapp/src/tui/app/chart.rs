@@ -4,7 +4,7 @@ use super::*;
 
 impl App {
     /// off → plain number (if the shown payload is one) → each numeric JSON
-    /// field → off.
+    /// field → off. `esc` closes it at any point (`close_chart`).
     pub(super) fn cycle_chart(&mut self) {
         if super::super::message_view::shown_message(self).is_none() {
             self.set_note(Note::info("nothing to chart"), Instant::now());
@@ -31,6 +31,20 @@ impl App {
         };
         self.set_note(Note::info(note), Instant::now());
         self.scroll_to_chart_line(usize::from(view.height));
+    }
+
+    /// `esc`: close the chart and drop its pins, so the next `c` starts a
+    /// fresh single chart. False (and nothing changes) when no chart is
+    /// shown: pins kept after `c` cycled off are invisible, so `esc` goes to
+    /// the search instead, as the footer hint says.
+    pub(super) fn close_chart(&mut self) -> bool {
+        if self.chart.is_none() {
+            return false;
+        }
+        self.chart = None;
+        self.chart_pinned.clear();
+        self.set_note(Note::info("chart off"), Instant::now());
+        true
     }
 
     /// `C`: pin the current series (or unpin it if pinned already).

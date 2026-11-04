@@ -2132,3 +2132,70 @@ fn chart_cycle_when_all_pinned_shows_first() {
     a.handle_action(Action::Chart);
     assert_eq!(a.chart, Some(Some("a".into())));
 }
+
+fn fifty_fields() -> String {
+    let fields: Vec<String> = (0..50).map(|i| format!("\"f{i}\":{i}")).collect();
+    format!("{{{}}}", fields.join(","))
+}
+
+fn filter_on(a: &mut App, q: &str) {
+    let f = mqtt_zapp_core::search::filter(&a.tree, q, mqtt_zapp_core::search::QueryMode::Plain)
+        .unwrap();
+    a.set_filter(f);
+}
+
+#[test]
+fn esc_closes_chart() {
+    let mut a = chart_app(&fifty_fields(), 2);
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::Chart);
+    assert_eq!(a.chart, Some(Some("f1".into())));
+    a.handle_action(Action::Cancel);
+    assert_eq!(a.chart, None);
+    assert_eq!(note_text(&a), "chart off");
+}
+
+#[test]
+fn esc_closes_chart_before_clearing_search() {
+    let mut a = chart_app(r#"{"a":1}"#, 2);
+    filter_on(&mut a, "t");
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::Cancel);
+    assert_eq!(a.chart, None);
+    assert!(a.filter.is_some(), "first esc keeps the filter");
+    a.handle_action(Action::Cancel);
+    assert!(a.filter.is_none(), "second esc clears it");
+}
+
+#[test]
+fn esc_clears_chart_pins() {
+    let mut a = chart_app(r#"{"a":1,"b":2}"#, 3);
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::ChartPin);
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::Cancel);
+    assert_eq!(a.chart, None);
+    assert!(a.chart_pinned.is_empty());
+}
+
+#[test]
+fn esc_without_chart_still_clears_search() {
+    let mut a = chart_app(r#"{"a":1}"#, 1);
+    filter_on(&mut a, "t");
+    a.handle_action(Action::Cancel);
+    assert!(a.filter.is_none());
+}
+
+#[test]
+fn esc_with_chart_cycled_off_clears_search_not_pins() {
+    let mut a = chart_app(r#"{"a":1,"b":2}"#, 3);
+    filter_on(&mut a, "t");
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::ChartPin);
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::Chart);
+    assert_eq!(a.chart, None);
+    a.handle_action(Action::Cancel);
+    assert!(a.filter.is_none(), "esc goes to the search");
+    assert_eq!(a.chart_pinned, vec![Some("a".to_owned())]);
+}

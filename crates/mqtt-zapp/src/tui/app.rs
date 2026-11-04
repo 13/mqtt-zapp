@@ -790,7 +790,11 @@ impl App {
             }
             Action::Collapse => self.collapse(),
             Action::Search => self.mode = Mode::SearchInput,
-            Action::Cancel => self.clear_search(),
+            Action::Cancel => {
+                if !self.close_chart() {
+                    self.clear_search();
+                }
+            }
             Action::Publish => self.open_publish(),
             Action::Help => {
                 self.help_query.clear();

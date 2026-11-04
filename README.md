@@ -156,6 +156,8 @@ search it; matching rows are highlighted (`esc` clears the search). The publish
 form and the search input take typed text and do not use the keymap; the help
 lists their keys too.
 
+`c` cycles the chart through the numeric fields; `esc` closes it at any point.
+
 Destructive actions (`x`, `X`, `delete`, `D`) ask first: only `y` confirms, and
 any other key, `enter` included, cancels.
 
@@ -178,7 +180,7 @@ any other key, `enter` included, cancels.
 | `m` | `mark_diff_base` | Mark the shown history entry as the diff base (again: unmark) |
 | `?` | `help` | Show the key help; type to search it, matches are highlighted |
 | `q` | `quit` | Quit |
-| `esc` | `cancel` | Clear the search / close |
+| `esc` | `cancel` | Close the chart, else clear the search / close |
 | `g` | `top` | Jump to the top |
 | `G` | `bottom` | Jump to the bottom |
 | `ctrl-d` | `scroll_down` | Scroll the payload half a page down |

@@ -149,11 +149,14 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
             Style::new().fg(Color::Black).bg(theme::WARN),
         ));
         spans.push(Span::raw(" "));
-        push_hints(
-            &mut spans,
-            &[(key_for(app, Action::Cancel), "clear")],
-            width,
-        );
+        // With the chart open, `cancel` closes the chart, not the filter.
+        if app.chart.is_none() {
+            push_hints(
+                &mut spans,
+                &[(key_for(app, Action::Cancel), "clear")],
+                width,
+            );
+        }
     }
     if let Some(note) = app.note_at(Instant::now()) {
         let room = width

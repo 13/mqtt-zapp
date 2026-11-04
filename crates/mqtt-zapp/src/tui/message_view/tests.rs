@@ -1480,3 +1480,34 @@ fn sparkplug_badge_and_chart_path() {
         Some(&Some("metrics.Temperature".into()))
     );
 }
+
+/// The chart's top border row: the first row containing `chart ·`.
+fn chart_border(b: &Buffer) -> String {
+    lines(b)
+        .into_iter()
+        .find(|l| l.contains("chart ·"))
+        .unwrap_or_default()
+}
+
+#[test]
+fn chart_title_shows_close_hint() {
+    let mut a = app_with(&[br#"{"a":1}"#, br#"{"a":2}"#]);
+    a.handle_action(Action::Chart);
+    let row = chart_border(&draw(&a));
+    assert!(row.contains("esc close"), "{row}");
+}
+
+#[test]
+fn chart_hint_uses_cancel_key() {
+    let mut s = Settings::default();
+    s.keys.insert("cancel".into(), "ctrl-q".into());
+    let mut a = App::new(Launch::Picker, ProfileStore::default(), s).unwrap();
+    a.mode = Mode::Browse;
+    send(&mut a, T, br#"{"a":1}"#, false);
+    send(&mut a, T, br#"{"a":2}"#, false);
+    a.selected = a.tree.find(T);
+    a.handle_action(Action::Chart);
+    let row = chart_border(&draw(&a));
+    assert!(row.contains("ctrl-q close"), "{row}");
+    assert!(!row.contains("esc close"), "{row}");
+}

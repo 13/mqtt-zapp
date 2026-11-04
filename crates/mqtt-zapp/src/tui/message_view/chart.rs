@@ -185,7 +185,13 @@ pub(super) fn render_chart(f: &mut Frame, area: Rect, app: &App, s: &Shown, path
             None => format!("chart · {}", name(path)),
         }
     };
-    let block = theme::pane(&title, false);
+    // The way out, whatever `cancel` is bound to.
+    let close = format!(
+        " {} close ",
+        crate::tui::ui::key_for(app, crate::tui::keymap::Action::Cancel)
+    );
+    let block = theme::pane(&title, false)
+        .title(Line::styled(close, Style::new().fg(theme::MUTED)).right_aligned());
     let all: Vec<Points> = paths.iter().map(|p| chart_points(app, s, *p)).collect();
     if all.iter().all(|p| p.len() < 2) {
         let inner = block.inner(area);

@@ -1803,3 +1803,21 @@ fn chart_click_with_active_filter_hits_same_line() {
     click_payload_row(&mut a, &b, "\"h\": 41");
     assert_eq!(a.chart, Some(Some("h".into())));
 }
+
+#[test]
+fn filter_hint_hidden_while_chart_open() {
+    let mut a = app_with(&[("a/wzr", br#"{"v":1}"#), ("a/wzr", br#"{"v":2}"#)]);
+    a.filter =
+        mqtt_zapp_core::search::filter(&a.tree, "wzr", mqtt_zapp_core::search::QueryMode::Plain)
+            .unwrap();
+    a.selected = a.tree.find("a/wzr");
+    a.handle_action(Action::Chart);
+    a.status_note = None;
+    let last = last_line(&draw(&mut a, 100, 24));
+    assert!(last.contains("filter: wzr"), "{last}");
+    assert!(!last.contains("esc clear"), "chart open: {last}");
+    a.handle_action(Action::Chart);
+    a.status_note = None;
+    let last = last_line(&draw(&mut a, 100, 24));
+    assert!(last.contains("esc clear"), "chart off: {last}");
+}
