@@ -64,7 +64,10 @@ async fn password(p: &Profile) -> Result<Option<String>> {
     match &p.password {
         PasswordSource::None => Ok(None),
         PasswordSource::Prompt => {
-            bail!("password prompt is not available in sub/pub; use keyring, env or command")
+            bail!(
+                "password prompt is not available in sub/pub; pass --password-env or \
+                 --password-command, or give the profile a keyring, env or command password"
+            )
         }
         source => {
             let keyring = *source == PasswordSource::Keyring;

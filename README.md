@@ -207,7 +207,9 @@ the same connection flags and `--profile`/`--host` as the TUI, and `sub` takes
 means success, 2 a connect, auth or publish failure (the reason is on stderr).
 They can read the password from the keyring, an environment variable or a
 command: a prompt is refused, so save the profile with `--password-mode keyring`
-or use `--password-env` / `--password-command`.
+or pass `--password-env` / `--password-command`. With `--profile`, those two
+flags and `--user` replace the profile's password source and username for this
+run only; nothing is saved.
 
 ```sh
 # watch a topic; text lines are `<topic> <payload>`, newlines escaped as \n,

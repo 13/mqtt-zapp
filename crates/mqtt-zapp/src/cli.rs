@@ -137,6 +137,12 @@ impl ConnArgs {
             p.clean_session = Some(false);
         }
         p.session_expiry_s = self.session_expiry.or(p.session_expiry_s);
+        if let Some(source) = self.password_flag() {
+            p.password = source;
+        }
+        if self.user.is_some() {
+            p.username.clone_from(&self.user);
+        }
         p
     }
 }
@@ -471,6 +477,41 @@ mod tests {
 
     fn launch(a: &[&str]) -> Result<Launch> {
         resolve_launch(&Args::parse_from(a), &store())
+    }
+
+    #[test]
+    fn profile_with_password_env_flag_overrides_source() {
+        let Launch::Connect(p) = launch(&[
+            "mqtt-zapp",
+            "--profile",
+            "home",
+            "--password-env",
+            "PW",
+            "--user",
+            "bob",
+        ])
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(p.password, PasswordSource::Env("PW".into()));
+        assert_eq!(p.username.as_deref(), Some("bob"));
+        let Launch::Connect(p) = launch(&[
+            "mqtt-zapp",
+            "--profile",
+            "home",
+            "--password-command",
+            "pass x",
+        ])
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(p.password, PasswordSource::Command("pass x".into()));
+        // Not given: the profile's own source stays.
+        let Launch::Connect(p) = launch(&["mqtt-zapp", "--profile", "home"]).unwrap() else {
+            panic!()
+        };
+        assert_eq!(p.password, PasswordSource::None);
+        assert_eq!(p.username, None);
     }
 
     #[test]

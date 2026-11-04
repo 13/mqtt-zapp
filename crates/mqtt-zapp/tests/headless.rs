@@ -414,7 +414,7 @@ fn password_prompt_is_refused_headless() {
     assert_eq!(o.code, Some(2));
     assert!(
         o.stderr
-            .contains("password prompt is not available in sub/pub; use keyring"),
+            .contains("password prompt is not available in sub/pub; pass --password-env"),
         "{}",
         o.stderr
     );
