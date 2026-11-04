@@ -581,6 +581,7 @@ impl App {
         self.chart_pinned.clear();
         self.selected = None;
         self.history_sel = None;
+        self.await_reply = None;
         self.diff_base = None;
         self.payload_scroll = 0;
         self.set_filter(None);

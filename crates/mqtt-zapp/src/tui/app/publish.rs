@@ -108,8 +108,15 @@ impl App {
         } else if want == topic {
             self.await_reply = None;
             if let Some(id) = self.tree.find(topic) {
-                self.select(id);
-                self.reveal_selected();
+                // The starred view or the filter may hide it: note, no jump.
+                // (Both force their own expansion, so absence means hidden;
+                // otherwise `reveal_selected` unfolds the ancestors.)
+                let hidden = (self.starred_only || self.filter.is_some())
+                    && !self.rows().iter().any(|r| r.id == id);
+                if !hidden {
+                    self.select(id);
+                    self.reveal_selected();
+                }
                 let note = format!("reply on {}", mqtt_zapp_core::payload::sanitize(topic));
                 self.set_note(Note::info(note), Instant::now());
             }
@@ -128,8 +135,8 @@ impl App {
             .is_some_and(|p| p.mqtt_version == mqtt_zapp_core::config::MqttVersion::V5);
         let mut form = PublishForm::new(&topic, v5);
         if self.focus == Focus::History
-            && let (Some(id), Some(i)) = (self.selected, self.history_sel)
-            && let Some(m) = self.tree.node(id).history.get(i)
+            && self.history_sel.is_some()
+            && let Some(m) = crate::tui::message_view::shown_message(self)
         {
             if m.truncated_from.is_some() {
                 note = Some("can't re-send: payload was truncated");

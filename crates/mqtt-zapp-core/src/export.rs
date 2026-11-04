@@ -31,6 +31,14 @@ pub fn file_stem(topic: &str, now: DateTime<Local>) -> String {
     format!("{s}-{}", now.format("%Y%m%d-%H%M%S"))
 }
 
+/// Write `bytes` into the just-created file at `path`; on failure remove
+/// it, so no partial file is left, and return the original error.
+fn fill<W: Write>(w: &mut W, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    w.write_all(bytes).inspect_err(|_| {
+        let _ = std::fs::remove_file(path);
+    })
+}
+
 /// Create `dir/stem.ext` without overwriting: on a clash try `stem-1.ext`
 /// up to `stem-99.ext`. Files are mode 0600, like the config files.
 pub fn write_new(dir: &Path, stem: &str, ext: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
@@ -50,8 +58,10 @@ pub fn write_new(dir: &Path, stem: &str, ext: &str, bytes: &[u8]) -> std::io::Re
         }
         match opts.open(&path) {
             Ok(mut f) => {
-                f.write_all(bytes)?;
-                f.sync_all()?;
+                fill(&mut f, &path, bytes)?;
+                f.sync_all().inspect_err(|_| {
+                    let _ = std::fs::remove_file(&path);
+                })?;
                 return Ok(path);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -205,6 +215,26 @@ mod tests {
             let mode = std::fs::metadata(&first).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn failed_write_leaves_no_file() {
+        struct Failing;
+        impl Write for Failing {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("disk full"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.bin");
+        let f = std::fs::File::create(&path).unwrap();
+        drop(f);
+        let err = fill(&mut Failing, &path, b"x").unwrap_err();
+        assert_eq!(err.to_string(), "disk full");
+        assert!(!path.exists());
     }
 
     #[test]

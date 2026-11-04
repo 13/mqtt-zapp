@@ -239,3 +239,39 @@ fn reply_follow_expires_and_fires_once() {
     a.apply_core_event(msg("ack/lab", "2"));
     assert_eq!(sel(&a), "other");
 }
+
+#[test]
+fn reconnect_clears_await_reply() {
+    let mut a = reply_app();
+    a.handle_key(ctrl_key('s'));
+    assert!(a.await_reply.is_some());
+    a.reset_tree();
+    assert!(a.await_reply.is_none());
+}
+
+#[test]
+fn stale_history_sel_is_clamped() {
+    let mut a = resend_app(|_| {});
+    a.history_sel = Some(99);
+    a.handle_action(Action::Publish);
+    assert_eq!(
+        a.publish.as_ref().unwrap().payload_text(),
+        "new",
+        "past the end means the newest entry, as the viewer shows"
+    );
+}
+
+#[test]
+fn reply_follow_respects_hidden_rows() {
+    let mut a = reply_app();
+    a.handle_key(ctrl_key('s'));
+    a.handle_key(key(KeyCode::Esc));
+    a.starred_only = true;
+    a.apply_core_event(msg("ack/lab", "yes"));
+    assert_eq!(sel(&a), "other", "hidden target: no jump");
+    assert_eq!(
+        a.note_at(Instant::now()),
+        Some(&Note::info("reply on ack/lab"))
+    );
+    assert!(a.await_reply.is_none());
+}
