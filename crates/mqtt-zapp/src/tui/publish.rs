@@ -253,7 +253,18 @@ impl PublishForm {
         if !self.v5 {
             return Ok(None);
         }
+        for (name, area) in [
+            ("content type", &self.content_type),
+            ("response topic", &self.response_topic),
+        ] {
+            if area.lines().len() > 1 {
+                return Err(format!("{name}: one line only"));
+            }
+        }
         let text = |a: &TextArea| a.lines().join("").trim().to_owned();
+        if text(&self.response_topic).contains(['+', '#']) {
+            return Err("response topic: no wildcards".into());
+        }
         let some = |s: String| (!s.is_empty()).then_some(s);
         let mut user = Vec::new();
         for item in text(&self.user_props).split(',') {
@@ -657,6 +668,24 @@ mod tests {
         type_str(&mut f, "k=v, oops");
         assert_eq!(f.on_key(ctrl('s')), FormOutcome::Continue);
         assert_eq!(f.error.as_deref(), Some("user props: expected k=v"));
+    }
+
+    #[test]
+    fn form_response_topic_rejects_wildcards() {
+        for t in ["a/+", "a/#", "+"] {
+            let mut f = PublishForm::new("a/b", true);
+            f.field = Field::ResponseTopic;
+            type_str(&mut f, t);
+            assert_eq!(f.on_key(ctrl('s')), FormOutcome::Continue, "{t}");
+            assert_eq!(f.error.as_deref(), Some("response topic: no wildcards"));
+        }
+        for which in [Field::ContentType, Field::ResponseTopic] {
+            let mut f = PublishForm::new("a/b", true);
+            f.prop_area(which).insert_newline();
+            f.prop_area(which).insert_str("x");
+            assert_eq!(f.on_key(ctrl('s')), FormOutcome::Continue, "{which:?}");
+            assert!(f.error.as_deref().unwrap().ends_with("one line only"));
+        }
     }
 
     #[test]
