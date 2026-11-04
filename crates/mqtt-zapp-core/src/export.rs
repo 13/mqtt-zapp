@@ -108,7 +108,9 @@ fn compact_json(text: &str) -> String {
 }
 
 #[derive(serde::Serialize)]
-struct Line {
+struct Line<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    topic: Option<&'a str>,
     time: String,
     qos: u8,
     retain: bool,
@@ -119,38 +121,50 @@ struct Line {
     sparkplug: bool,
 }
 
+/// The JSON line for one message, with a leading `topic` field if given.
+fn push_line(out: &mut Vec<u8>, topic: Option<&str>, m: &Message) {
+    let time = DateTime::<Local>::from(m.received_at).to_rfc3339_opts(SecondsFormat::Millis, false);
+    let raw = match payload::detect(&m.payload) {
+        PayloadKind::Json(v) => {
+            // `detect` parsed this trimmed UTF-8 text, so it is valid.
+            let text = std::str::from_utf8(&m.payload).unwrap_or_default();
+            RawValue::from_string(compact_json(text.trim()))
+                .or_else(|_| serde_json::value::to_raw_value(&v))
+        }
+        PayloadKind::Text(t) => serde_json::value::to_raw_value(&t),
+        PayloadKind::Binary => {
+            serde_json::value::to_raw_value(&json!({ "base64": payload::base64(&m.payload) }))
+        }
+    };
+    let line = Line {
+        topic,
+        time,
+        qos: m.qos,
+        retain: m.retain,
+        payload: raw.expect("a JSON value serializes"),
+        truncated_from: m.truncated_from,
+        sparkplug: m.sparkplug,
+    };
+    if serde_json::to_writer(&mut *out, &line).is_ok() {
+        out.push(b'\n');
+    }
+}
+
 /// One JSON object per line, in the order given. A JSON payload is embedded
 /// as it arrived (big numbers and digits intact), minus insignificant
 /// whitespace.
 pub fn history_jsonl(msgs: &[&Message]) -> Vec<u8> {
     let mut out = Vec::new();
     for m in msgs {
-        let time =
-            DateTime::<Local>::from(m.received_at).to_rfc3339_opts(SecondsFormat::Millis, false);
-        let raw = match payload::detect(&m.payload) {
-            PayloadKind::Json(v) => {
-                // `detect` parsed this trimmed UTF-8 text, so it is valid.
-                let text = std::str::from_utf8(&m.payload).unwrap_or_default();
-                RawValue::from_string(compact_json(text.trim()))
-                    .or_else(|_| serde_json::value::to_raw_value(&v))
-            }
-            PayloadKind::Text(t) => serde_json::value::to_raw_value(&t),
-            PayloadKind::Binary => {
-                serde_json::value::to_raw_value(&json!({ "base64": payload::base64(&m.payload) }))
-            }
-        };
-        let line = Line {
-            time,
-            qos: m.qos,
-            retain: m.retain,
-            payload: raw.expect("a JSON value serializes"),
-            truncated_from: m.truncated_from,
-            sparkplug: m.sparkplug,
-        };
-        if serde_json::to_writer(&mut out, &line).is_ok() {
-            out.push(b'\n');
-        }
+        push_line(&mut out, None, m);
     }
+    out
+}
+
+/// The `history_jsonl` line for one message, with a leading `"topic"` field.
+pub fn message_jsonl(topic: &str, msg: &Message) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_line(&mut out, Some(topic), msg);
     out
 }
 
@@ -173,6 +187,16 @@ mod tests {
             sparkplug: false,
             wire_len: None,
         }
+    }
+
+    #[test]
+    fn message_jsonl_leads_with_topic() {
+        let m = msg(b"{\"a\": 1}");
+        let line = String::from_utf8(message_jsonl("a/b", &m)).unwrap();
+        assert!(line.starts_with(r#"{"topic":"a/b","time":"#), "{line}");
+        assert!(line.ends_with("\"payload\":{\"a\":1}}\n"), "{line}");
+        let plain = String::from_utf8(history_jsonl(&[&m])).unwrap();
+        assert_eq!(line.replacen(r#""topic":"a/b","#, "", 1), plain);
     }
 
     #[test]

@@ -99,6 +99,16 @@ pub enum CoreEvent {
         filter: String,
         reason: String,
     },
+    /// A PUBLISH of ours has been written to the socket. `pkid` is 0 at
+    /// QoS 0. Best effort: never held back for a full channel.
+    PublishSent {
+        pkid: u16,
+    },
+    /// The broker acknowledged our PUBLISH (PUBACK at QoS 1, PUBCOMP at
+    /// QoS 2). Best effort, like `PublishSent`.
+    PublishAcked {
+        pkid: u16,
+    },
 }
 
 #[derive(Clone)]
@@ -259,6 +269,8 @@ enum Polled {
         msg: Message,
     },
     OutgoingDisconnect,
+    PublishSent(u16),
+    PublishAcked(u16),
     Other,
     Err(String),
     /// The broker refused our credentials: retrying cannot help.
@@ -458,6 +470,9 @@ impl Loop {
                     topic: p.topic,
                 },
                 Ok(Event::Outgoing(Outgoing::Disconnect)) => Polled::OutgoingDisconnect,
+                Ok(Event::Outgoing(Outgoing::Publish(pkid))) => Polled::PublishSent(pkid),
+                Ok(Event::Incoming(Packet::PubAck(a))) => Polled::PublishAcked(a.pkid),
+                Ok(Event::Incoming(Packet::PubComp(a))) => Polled::PublishAcked(a.pkid),
                 Ok(_) => Polled::Other,
                 Err(e) => classify_v4(e),
             },
@@ -505,6 +520,9 @@ impl Loop {
                     }
                 }
                 Ok(v5::Event::Outgoing(Outgoing::Disconnect)) => Polled::OutgoingDisconnect,
+                Ok(v5::Event::Outgoing(Outgoing::Publish(pkid))) => Polled::PublishSent(pkid),
+                Ok(v5::Event::Incoming(v5::Incoming::PubAck(a))) => Polled::PublishAcked(a.pkid),
+                Ok(v5::Event::Incoming(v5::Incoming::PubComp(a))) => Polled::PublishAcked(a.pkid),
                 Ok(_) => Polled::Other,
                 Err(e) => classify_v5(e),
             },
@@ -689,6 +707,14 @@ async fn run(
             // Pings and acks: a quiet broker still gets the count out.
             Polled::Other => flush_dropped(&tx, &mut dropped),
             Polled::OutgoingDisconnect => {}
+            Polled::PublishSent(pkid) => {
+                flush_dropped(&tx, &mut dropped);
+                let _ = tx.try_send(CoreEvent::PublishSent { pkid });
+            }
+            Polled::PublishAcked(pkid) => {
+                flush_dropped(&tx, &mut dropped);
+                let _ = tx.try_send(CoreEvent::PublishAcked { pkid });
+            }
             Polled::AuthRefused(reason) => {
                 eventloop.drop_pending();
                 emit!(CoreEvent::State(ConnState::Failed { reason }));

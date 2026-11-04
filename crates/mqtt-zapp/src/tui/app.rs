@@ -696,6 +696,8 @@ impl App {
                 self.msg_rate.record(Instant::now());
                 self.tree_changed = true;
             }
+            // For the headless `pub`; the TUI shows nothing for them.
+            CoreEvent::PublishSent { .. } | CoreEvent::PublishAcked { .. } => return,
         }
         self.dirty = true;
     }

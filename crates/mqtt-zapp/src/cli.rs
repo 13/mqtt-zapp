@@ -164,6 +164,68 @@ pub enum Cmd {
     /// Manage saved profiles
     #[command(subcommand)]
     Profile(ProfileCmd),
+    /// Print messages to stdout, without the TUI
+    Sub(SubCmd),
+    /// Publish one message and exit
+    Pub(PubCmd),
+}
+
+/// Where a headless command connects: the same flags as the TUI.
+#[derive(clap::Args, Clone)]
+pub struct Target {
+    /// Connect to a saved profile (ignored if --host is given)
+    #[arg(long, value_name = "NAME")]
+    pub profile: Option<String>,
+    #[command(flatten)]
+    pub conn: ConnArgs,
+}
+
+#[derive(Clone, Copy, ValueEnum, PartialEq, Eq, Debug)]
+pub enum Format {
+    Text,
+    Jsonl,
+}
+
+#[derive(clap::Args)]
+pub struct SubCmd {
+    #[command(flatten)]
+    pub target: Target,
+    #[command(flatten)]
+    pub subs: SubArgs,
+    /// Output format: `<topic> <payload>` lines, or one JSON object per line
+    #[arg(long, value_enum, default_value = "text")]
+    pub format: Format,
+    /// Exit after COUNT messages
+    #[arg(short = 'n', long = "count", value_name = "COUNT")]
+    pub count: Option<usize>,
+    /// Exit at the first live (non-retained) message, or after 2 s of silence
+    #[arg(long)]
+    pub retained_only: bool,
+}
+
+#[derive(clap::Args)]
+#[command(group(clap::ArgGroup::new("payload").required(true).args(["message", "file", "stdin"])))]
+pub struct PubCmd {
+    #[command(flatten)]
+    pub target: Target,
+    /// Topic to publish to
+    #[arg(short = 't', long)]
+    pub topic: String,
+    /// Payload text
+    #[arg(short = 'm', long)]
+    pub message: Option<String>,
+    /// Read the payload from a file
+    #[arg(short = 'f', long, value_name = "FILE")]
+    pub file: Option<PathBuf>,
+    /// Read the payload from stdin until EOF
+    #[arg(long)]
+    pub stdin: bool,
+    /// QoS: 0, 1 or 2
+    #[arg(short = 'q', long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=2))]
+    pub qos: u8,
+    /// Retain the message
+    #[arg(short = 'r', long)]
+    pub retain: bool,
 }
 
 #[derive(Subcommand)]
@@ -251,6 +313,29 @@ pub fn resolve_launch(args: &Args, store: &ProfileStore) -> Result<Launch> {
             None => bail!("unknown profile '{name}'"),
         },
         None => Ok(Launch::Picker),
+    }
+}
+
+/// The profile a headless command connects with: the TUI's resolution
+/// (`--host` or `--profile`, plus the session and `--sub` overrides). With
+/// `--host` and no `--sub` it listens to `#` only, not `$SYS/#` as well.
+pub fn resolve_headless(target: &Target, subs: &SubArgs) -> Result<Profile> {
+    let args = Args {
+        cmd: None,
+        profile: target.profile.clone(),
+        conn: target.conn.clone(),
+        subs: subs.clone(),
+    };
+    let loaded = ProfileStore::load();
+    let (store, _) = store_or_empty(&args, loaded)?;
+    match resolve_launch(&args, &store)? {
+        Launch::Connect(mut p) => {
+            if args.conn.host.is_some() && subs.sub.is_empty() {
+                p.subscriptions = vec!["#".into()];
+            }
+            Ok(p)
+        }
+        Launch::Picker => bail!("give --host or --profile"),
     }
 }
 

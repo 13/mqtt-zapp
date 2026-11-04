@@ -1,4 +1,5 @@
 mod cli;
+mod headless;
 mod tui;
 
 use clap::Parser;
@@ -9,6 +10,8 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     match &args.cmd {
         Some(Cmd::Profile(cmd)) => cli::run_profile(cmd),
+        Some(Cmd::Sub(cmd)) => std::process::exit(headless::sub(cmd).await),
+        Some(Cmd::Pub(cmd)) => std::process::exit(headless::publish(cmd).await),
         Some(Cmd::Tui) | None => {
             let (store, store_error) =
                 cli::store_or_empty(&args, mqtt_zapp_core::config::ProfileStore::load())?;

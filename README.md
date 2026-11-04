@@ -176,6 +176,32 @@ a stable client id, `--client-id` or the form's "client id" row, and is refused
 without one) and
 `--session-expiry SECS` (MQTT 5 only; the form notes that it is ignored on 3.1.1).
 
+## 📜 Scripting
+
+`sub` and `pub` run without the TUI: no raw mode, no alternate screen. They take
+the same connection flags and `--profile`/`--host` as the TUI, and `sub` takes
+`--sub` too (default: the profile's list, or `#` with `--host`). Exit code 0
+means success, 2 a connect, auth or publish failure (the reason is on stderr).
+The keyring is the only password source they can use: `--user` with a prompt
+password is refused, so save the profile with `--password-mode keyring`.
+
+```sh
+# watch a topic; text lines are `<topic> <payload>`, newlines escaped as \n,
+# binary payloads as <base64:...>
+mqtt-zapp sub --profile home --sub 'sensors/#' | grep temperature
+
+# one JSON object per line (the history export shape, plus "topic"), first 100 only
+mqtt-zapp sub --host broker.lan --sub 'sensors/#' --format jsonl -n 100 \
+    | jq -r 'select(.payload.temp > 30) | .topic'
+
+# publish once and wait for the broker's PUBACK; the payload from a pipe
+echo '{"on":true}' | mqtt-zapp pub --profile home -t lights/porch/set --stdin -q 1 -r
+```
+
+`sub --retained-only` prints what the broker has stored and exits at the first
+live message or after 2 s of silence. `pub` takes `-m TEXT`, `-f FILE` or
+`--stdin`. Ctrl-c, `-n` and a closed pipe (`| head`) all end `sub` with exit 0.
+
 ## ⌨️ Keys
 
 `?` shows the keys in effect, including your remaps. Type while it is open to
