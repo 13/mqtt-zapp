@@ -190,8 +190,14 @@ pub(super) fn render_chart(f: &mut Frame, area: Rect, app: &App, s: &Shown, path
         " {} close ",
         crate::tui::ui::key_for(app, crate::tui::keymap::Action::Cancel)
     );
-    let block = theme::pane(&title, false)
-        .title(Line::styled(close, Style::new().fg(theme::MUTED)).right_aligned());
+    // Only when it fits beside the whole title (corners, one `─` between):
+    // the left title is drawn last and would overwrite part of it.
+    let fits =
+        theme::pane_title_width(&title, false) + 1 + close.width() + 2 <= usize::from(area.width);
+    let mut block = theme::pane(&title, false);
+    if fits {
+        block = block.title(Line::styled(close, Style::new().fg(theme::MUTED)).right_aligned());
+    }
     let all: Vec<Points> = paths.iter().map(|p| chart_points(app, s, *p)).collect();
     if all.iter().all(|p| p.len() < 2) {
         let inner = block.inner(area);

@@ -1511,3 +1511,32 @@ fn chart_hint_uses_cancel_key() {
     assert!(row.contains("ctrl-q close"), "{row}");
     assert!(!row.contains("esc close"), "{row}");
 }
+
+#[test]
+fn close_hint_never_garbles_a_long_title() {
+    let p: &[u8] = br#"{"temperature_outdoor":1,"humidity_outdoor":2,"pressure_sea":3}"#;
+    let q: &[u8] = br#"{"temperature_outdoor":4,"humidity_outdoor":5,"pressure_sea":6}"#;
+    let mut a = app_with(&[p, q]);
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::ChartPin);
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::ChartPin);
+    a.handle_action(Action::Chart);
+    for w in 40..=100 {
+        let ls = draw_sized(&a, w, 30, false);
+        let row = ls.iter().find(|l| l.contains("chart ·")).unwrap();
+        // Either the whole hint, or none of it: what is left of the title
+        // is a clean prefix of it, never followed by a cut-off fragment.
+        let full = "chart · pressure_sea + temperature_outdoor + humidity_outdoor";
+        let inner = row
+            .trim_start_matches(['╭', ' '])
+            .trim_end_matches(['╮', ' ', '─']);
+        assert!(
+            inner.contains("esc close") || full.starts_with(inner),
+            "w={w}: {row}"
+        );
+        if w == 100 {
+            assert!(row.contains("esc close"), "room enough at 100: {row}");
+        }
+    }
+}
