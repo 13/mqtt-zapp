@@ -549,3 +549,60 @@ fn broker_strings_in_notes_are_capped_and_flat() {
         "{t}"
     );
 }
+
+#[test]
+fn broker_switch_starts_live_and_clean() {
+    let mut a = browse(&["t"]);
+    a.selected = a.tree.find("t");
+    a.handle_action(Action::Freeze);
+    assert!(a.frozen && a.freeze_pin.is_some());
+    a.chart = Some(None);
+    a.chart_pinned.push(None);
+    a.show_diff = true;
+    a.search_regex = true;
+    a.focus = Focus::Payload;
+    a.reset_tree();
+    assert!(!a.frozen);
+    assert_eq!(a.freeze_pin, None);
+    assert_eq!(a.chart, None);
+    assert!(a.chart_pinned.is_empty());
+    assert!(!a.show_diff && !a.search_regex);
+    assert_eq!(a.focus, Focus::Tree);
+}
+
+#[test]
+fn deleting_a_profile_drops_its_stars() {
+    let mut a = browse(&["t"]);
+    a.favorites
+        .entry("P".into())
+        .or_default()
+        .insert("t".into());
+    let gen_before = a.star_gen;
+    a.profile_deleted("P");
+    assert!(!a.favorites.contains_key("P"));
+    assert_ne!(a.star_gen, gen_before);
+}
+
+#[test]
+fn sent_payloads_do_not_cross_brokers() {
+    let mut a = picker_app(vec![
+        profile("a", PasswordSource::None),
+        profile("b", PasswordSource::None),
+    ]);
+    assert!(matches!(
+        a.handle_key(key(KeyCode::Enter)),
+        Effect::Connect(..)
+    ));
+    a.sent.entry("t".into()).or_default().push_front("x".into());
+    // Back to the same profile keeps them.
+    a.handle_action(Action::Brokers);
+    a.handle_key(key(KeyCode::Enter));
+    assert!(!a.sent.is_empty(), "same broker");
+    a.handle_action(Action::Brokers);
+    a.handle_key(key(KeyCode::Char('j')));
+    assert!(matches!(
+        a.handle_key(key(KeyCode::Enter)),
+        Effect::Connect(..)
+    ));
+    assert!(a.sent.is_empty(), "another broker");
+}

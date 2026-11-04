@@ -610,6 +610,13 @@ impl App {
         self.dropped = 0;
         self.body_cache.clear();
         self.cleared_echo.clear();
+        // A new session starts live, with nothing charted or diffed.
+        self.frozen = false;
+        self.freeze_pin = None;
+        self.chart = None;
+        self.show_diff = false;
+        self.search_regex = false;
+        self.focus = Focus::Tree;
         self.dirty = true;
     }
 

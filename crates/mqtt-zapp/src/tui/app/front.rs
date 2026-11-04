@@ -138,6 +138,15 @@ impl App {
             self.picker.last_used.insert(p.name.clone(), now);
         }
         self.connected = self.picker.profiles.contains(&p).then(|| p.name.clone());
+        // Payloads sent on another broker are not this one's history.
+        if self
+            .session_profile
+            .as_ref()
+            .is_some_and(|s| s.name != p.name)
+        {
+            self.sent.clear();
+            self.sent_walk = None;
+        }
         self.session_profile = Some(p.clone());
         // A form left open was for the old broker.
         self.publish = None;
@@ -335,6 +344,9 @@ impl App {
 
     pub fn profile_deleted(&mut self, name: &str) {
         self.picker.last_used.remove(name);
+        if self.favorites.remove(name).is_some() {
+            self.star_gen += 1;
+        }
         if self.connected.as_deref() == Some(name) {
             self.connected = None;
         }
