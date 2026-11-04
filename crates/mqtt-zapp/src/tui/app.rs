@@ -194,6 +194,9 @@ pub struct ServerInfo {
     pub warning: Option<&'static str>,
 }
 
+/// Most series that can stay pinned beside the current chart series.
+pub const MAX_PINNED: usize = 3;
+
 /// A transient footer message, e.g. a publish result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
@@ -327,6 +330,10 @@ pub struct App {
     /// The chart: `None` off, `Some(None)` the plain numeric payload,
     /// `Some(Some(path))` a JSON field. Reset when another topic is selected.
     pub chart: Option<Option<String>>,
+    /// Series pinned with `C` to stay charted beside the current one, oldest
+    /// first. Cleared with `chart` on selecting another topic, not by
+    /// turning the chart off.
+    pub chart_pinned: Vec<Option<String>>,
     /// Colour theme; `tui::run` applies `NO_COLOR`.
     pub theme: ThemeName,
     /// Validated strftime format for message times.
@@ -442,6 +449,7 @@ impl App {
             profile_form: None,
             sort: settings.sort,
             chart: None,
+            chart_pinned: Vec::new(),
             sent: HashMap::new(),
             theme: settings.theme,
             timestamp_format: valid_time_format(&settings.timestamp_format),
@@ -465,6 +473,7 @@ impl App {
             TopicTree::with_limits(self.history_depth, self.max_history_bytes, self.max_topics);
         self.expanded.clear();
         self.chart_cache.clear();
+        self.chart_pinned.clear();
         self.selected = None;
         self.history_sel = None;
         self.diff_base = None;
@@ -795,6 +804,7 @@ impl App {
                 );
             }
             Action::Chart => self.cycle_chart(),
+            Action::ChartPin => self.pin_chart(),
             Action::Stats => self.mode = Mode::Stats,
             Action::Freeze => {
                 self.toggle_freeze();
@@ -979,6 +989,7 @@ impl App {
         if self.selected != Some(id) {
             self.freeze_pin = None;
             self.chart = None;
+            self.chart_pinned.clear();
             self.diff_base = None;
             self.history_sel = None;
             self.payload_scroll = 0;

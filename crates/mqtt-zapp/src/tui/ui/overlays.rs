@@ -153,7 +153,7 @@ pub(super) const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
             Action::ToggleDiff,
             Action::MarkDiffBase,
             Action::Chart,
-            Action::Stats,
+            Action::ChartPin,
         ],
     ),
     (
@@ -169,18 +169,13 @@ pub(super) const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
             Action::Help,
             Action::Cancel,
             Action::Quit,
-        ],
-    ),
-    (
-        "topics",
-        1,
-        &[
             Action::DeleteRetained,
             Action::ClearRetained,
             Action::DeleteTopic,
             Action::CycleSort,
             Action::ExpandAll,
             Action::CollapseAll,
+            Action::Stats,
         ],
     ),
     (

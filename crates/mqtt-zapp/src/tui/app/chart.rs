@@ -11,12 +11,14 @@ impl App {
             return;
         }
         let series = self.chart_series();
+        // Pinned series are already charted: `c` steps over them.
+        let free = |s: &&Option<String>| !self.chart_pinned.contains(s);
         let next = match &self.chart {
-            None => series.first().cloned(),
+            None => series.iter().find(free).cloned(),
             Some(cur) => series
                 .iter()
                 .position(|s| s == cur)
-                .and_then(|i| series.get(i + 1).cloned()),
+                .and_then(|i| series[i + 1..].iter().find(free).cloned()),
         };
         let view = self.charted_body();
         self.chart = next;
@@ -27,6 +29,27 @@ impl App {
         };
         self.set_note(Note::info(note), Instant::now());
         self.scroll_to_chart_line(usize::from(view.height));
+    }
+
+    /// `C`: pin the current series (or unpin it if pinned already).
+    pub(super) fn pin_chart(&mut self) {
+        let name = |s: &Option<String>| s.as_deref().unwrap_or("value").to_owned();
+        let Some(cur) = self.chart.clone() else {
+            self.set_note(Note::info("nothing to pin"), Instant::now());
+            return;
+        };
+        let note = if let Some(i) = self.chart_pinned.iter().position(|p| *p == cur) {
+            self.chart_pinned.remove(i);
+            format!("unpinned: {}", name(&cur))
+        } else if self.chart_pinned.len() >= MAX_PINNED {
+            let old = self.chart_pinned.remove(0);
+            self.chart_pinned.push(cur.clone());
+            format!("pinned: {} (dropped {})", name(&cur), name(&old))
+        } else {
+            self.chart_pinned.push(cur.clone());
+            format!("pinned: {}", name(&cur))
+        };
+        self.set_note(Note::info(note), Instant::now());
     }
 
     /// What `c` cycles through for the shown payload, in order: the plain
@@ -40,6 +63,23 @@ impl App {
     pub fn chart_line(&self) -> Option<usize> {
         let cur = self.chart.as_ref().filter(|_| !self.show_diff)?;
         super::super::message_view::chart_meta(self)?.line_of(cur)
+    }
+
+    /// The payload lines of the current series and each pinned one, for the
+    /// highlight; series missing from the shown message have none.
+    pub fn chart_lines(&self) -> Vec<usize> {
+        let Some(cur) = self.chart.as_ref().filter(|_| !self.show_diff) else {
+            return Vec::new();
+        };
+        let Some(meta) = super::super::message_view::chart_meta(self) else {
+            return Vec::new();
+        };
+        let mut out: Vec<usize> = std::iter::once(cur)
+            .chain(&self.chart_pinned)
+            .filter_map(|p| meta.line_of(p))
+            .collect();
+        out.dedup();
+        out
     }
 
     /// A click on payload line `line`: chart the value there, or turn the

@@ -86,6 +86,7 @@ impl App {
             None => {
                 self.selected = None;
                 self.chart = None;
+                self.chart_pinned.clear();
                 self.diff_base = None;
                 self.history_sel = None;
                 self.payload_scroll = 0;

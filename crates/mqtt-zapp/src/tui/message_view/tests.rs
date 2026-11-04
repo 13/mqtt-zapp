@@ -1385,3 +1385,62 @@ fn payload_highlight_off_in_diff_view() {
         }
     }
 }
+
+fn has_fg(b: &Buffer, c: Color) -> bool {
+    b.content.iter().any(|x| {
+        x.fg == c
+            && x.symbol()
+                .chars()
+                .any(|ch| ('\u{2801}'..='\u{28ff}').contains(&ch))
+    })
+}
+
+#[test]
+fn overlay_draws_legend_and_colours() {
+    let mut a = app_with(&[
+        br#"{"a":1,"b":9}"#,
+        br#"{"a":5,"b":2}"#,
+        br#"{"a":2,"b":7}"#,
+    ]);
+    a.chart = Some(Some("a".into()));
+    a.chart_pinned = vec![Some("a".into())];
+    a.handle_action(Action::Chart);
+    assert_eq!(a.chart, Some(Some("b".into())));
+    let b = draw(&a);
+    let s = text(&b);
+    assert!(s.contains("chart · b + a"), "{s}");
+    assert!(
+        s.contains("b") && lines(&b).iter().any(|l| l.contains(" a")),
+        "{s}"
+    );
+    assert!(has_fg(&b, SERIES_COLORS[0]), "current colour");
+    assert!(has_fg(&b, SERIES_COLORS[1]), "pinned colour");
+}
+
+#[test]
+fn overlay_missing_points_are_skipped() {
+    let mut a = app_with(&[
+        br#"{"b":1,"a":1}"#,
+        br#"{"b":2}"#,
+        br#"{"b":3,"a":2}"#,
+        br#"{"b":4}"#,
+        br#"{"b":5,"a":3}"#,
+    ]);
+    a.chart = Some(Some("b".into()));
+    a.chart_pinned = vec![Some("a".into())];
+    let _ = draw(&a);
+    let s = shown(&a).unwrap();
+    assert_eq!(chart_points(&a, &s, Some("a")).len(), 3);
+    assert_eq!(chart_points(&a, &s, Some("b")).len(), 5);
+}
+
+#[test]
+fn overlay_highlights_all_charted_lines() {
+    let mut a = app_with(&[br#"{"a":1,"b":2,"c":3}"#, br#"{"a":2,"b":3,"c":4}"#]);
+    a.chart = Some(Some("b".into()));
+    a.chart_pinned = vec![Some("a".into())];
+    let b = draw(&a);
+    assert!(highlighted(&b, row_with(&b, "\"a\": 2")));
+    assert!(highlighted(&b, row_with(&b, "\"b\": 3")));
+    assert!(!highlighted(&b, row_with(&b, "\"c\": 4")));
+}

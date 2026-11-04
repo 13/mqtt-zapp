@@ -1,6 +1,12 @@
 //! The chart pane: per-message chart facts, their cache, and the plot.
 
 use super::*;
+use crate::tui::app::MAX_PINNED;
+
+/// Line colour of each overlaid series: the current one, then each pinned
+/// one in pin order.
+pub(in crate::tui) const SERIES_COLORS: [Color; 4] =
+    [theme::ACCENT, Color::Magenta, Color::Yellow, Color::Green];
 
 /// How an open chart splits the payload area: the chart on top, the
 /// payload pane below.
@@ -16,6 +22,9 @@ pub(super) type ChartKey = (HistoryKey, Stamp);
 
 /// Chart points, shared between the cache and the frame being drawn.
 pub(super) type Points = Rc<Vec<(f64, f64)>>;
+
+/// Points of each cached series path.
+type SeriesPoints = Vec<(Option<String>, Points)>;
 
 /// Per-message chart facts, shared between the cache and its readers.
 pub struct ChartMeta {
@@ -37,8 +46,9 @@ impl ChartMeta {
 /// each frame is costly for big JSON payloads.
 #[derive(Default)]
 pub struct ChartCache {
-    /// Points per series path, under the history key.
-    slot: RefCell<Option<(HistoryKey, Option<String>, Points)>>,
+    /// Points per series path, under the history key; at most one entry
+    /// per charted series, so overlays don't evict each other.
+    slot: RefCell<Option<(HistoryKey, SeriesPoints)>>,
     /// Series and highlight lines of the shown message.
     meta: RefCell<Option<(ChartKey, Rc<ChartMeta>)>>,
     /// Rebuilds of the shown message's series and lines.
@@ -114,9 +124,9 @@ pub(super) fn chart_points(app: &App, s: &Shown, path: Option<&str>) -> Points {
     use mqtt_zapp_core::payload::numeric_at;
     let h = &s.node.history;
     let key = history_key(app, s);
-    if let Some((k, p, pts)) = &*app.chart_cache.slot.borrow()
+    if let Some((k, v)) = &*app.chart_cache.slot.borrow()
         && *k == key
-        && p.as_deref() == path
+        && let Some((_, pts)) = v.iter().find(|(p, _)| p.as_deref() == path)
     {
         return Rc::clone(pts);
     }
@@ -131,7 +141,16 @@ pub(super) fn chart_points(app: &App, s: &Shown, path: Option<&str>) -> Points {
             .filter_map(|(i, m)| numeric_at(&m.payload, path).map(|y| (i as f64, y)))
             .collect(),
     );
-    *app.chart_cache.slot.borrow_mut() = Some((key, path.map(str::to_owned), Rc::clone(&points)));
+    let mut slot = app.chart_cache.slot.borrow_mut();
+    match &mut *slot {
+        Some((k, v)) if *k == key => {
+            if v.len() > MAX_PINNED {
+                v.remove(0);
+            }
+            v.push((path.map(str::to_owned), Rc::clone(&points)));
+        }
+        _ => *slot = Some((key, vec![(path.map(str::to_owned), Rc::clone(&points))])),
+    }
     points
 }
 
@@ -141,21 +160,34 @@ pub(super) fn fmt_num(x: f64) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-/// A braille line chart of the series over the topic's history (oldest
-/// left); entries without a number are skipped.
+/// A braille line chart of the current series and any pinned ones over the
+/// topic's history (oldest left); entries without a number are skipped.
 pub(super) fn render_chart(f: &mut Frame, area: Rect, app: &App, s: &Shown, path: Option<&str>) {
     use ratatui::symbols::Marker;
-    use ratatui::widgets::{Axis, Chart, Dataset, GraphType};
-    let name = path.unwrap_or("value");
-    let series = app.chart_series();
-    let title = match series.iter().position(|s| s.as_deref() == path) {
-        Some(i) => format!("chart · {name} · {}/{}", i + 1, series.len()),
-        None => format!("chart · {name}"),
+    use ratatui::widgets::{Axis, Chart, Dataset, GraphType, LegendPosition};
+    let name = |p: Option<&str>| p.unwrap_or("value").to_owned();
+    // The current series first, then each pinned one that is not it.
+    let paths: Vec<Option<&str>> = std::iter::once(path)
+        .chain(
+            app.chart_pinned
+                .iter()
+                .map(Option::as_deref)
+                .filter(|p| *p != path),
+        )
+        .collect();
+    let title = if paths.len() > 1 {
+        let names: Vec<String> = paths.iter().map(|p| name(*p)).collect();
+        format!("chart · {}", names.join(" + "))
+    } else {
+        let series = app.chart_series();
+        match series.iter().position(|s| s.as_deref() == path) {
+            Some(i) => format!("chart · {} · {}/{}", name(path), i + 1, series.len()),
+            None => format!("chart · {}", name(path)),
+        }
     };
     let block = theme::pane(&title, false);
-    let points = chart_points(app, s, path);
-    let points = &*points;
-    if points.len() < 2 {
+    let all: Vec<Points> = paths.iter().map(|p| chart_points(app, s, *p)).collect();
+    if all.iter().all(|p| p.len() < 2) {
         let inner = block.inner(area);
         f.render_widget(block, area);
         f.render_widget(
@@ -164,21 +196,34 @@ pub(super) fn render_chart(f: &mut Frame, area: Rect, app: &App, s: &Shown, path
         );
         return;
     }
-    let (lo, hi) = points
+    let (lo, hi) = all
         .iter()
+        .flat_map(|p| p.iter())
         .fold((f64::MAX, f64::MIN), |(lo, hi), &(_, y)| {
             (lo.min(y), hi.max(y))
         });
     let pad = if hi > lo { (hi - lo) * 0.05 } else { 1.0 };
-    let x_max = points.last().map_or(1.0, |p| p.0).max(1.0);
-    let data = [Dataset::default()
-        .marker(Marker::Braille)
-        .graph_type(GraphType::Line)
-        .style(Style::new().fg(theme::ACCENT))
-        .data(points)];
+    let x_max = all
+        .iter()
+        .filter_map(|p| p.last())
+        .fold(1.0, |m: f64, p| m.max(p.0));
+    let data: Vec<Dataset> = paths
+        .iter()
+        .zip(&all)
+        .enumerate()
+        .map(|(i, (p, pts))| {
+            Dataset::default()
+                .name(name(*p))
+                .marker(Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::new().fg(SERIES_COLORS[i % SERIES_COLORS.len()]))
+                .data(pts)
+        })
+        .collect();
     let muted = Style::new().fg(theme::MUTED);
-    let chart = Chart::new(data.to_vec())
+    let chart = Chart::new(data)
         .block(block)
+        .legend_position((paths.len() > 1).then_some(LegendPosition::TopLeft))
         .x_axis(Axis::default().bounds([0.0, x_max]))
         .y_axis(Axis::default().bounds([lo - pad, hi + pad]).labels([
             Span::styled(fmt_num(lo), muted),

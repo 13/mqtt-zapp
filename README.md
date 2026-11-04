@@ -191,6 +191,7 @@ any other key, `enter` included, cancels.
 | `L` | `expand_all` | Expand the selected node and everything below it |
 | `H` | `collapse_all` | Collapse the selected node and everything below it |
 | `c` | `chart` | Chart the payload, or cycle through its numeric JSON fields (the charted line is highlighted) |
+| `C` | `chart_pin` | Pin the charted series so the next `c` overlays another (again: unpin) |
 | `S` | `stats` | Show broker statistics from `$SYS` |
 | `a` | `add_profile` | In the picker: add a profile |
 | `e` | `edit_profile` | In the picker: edit the selected profile |

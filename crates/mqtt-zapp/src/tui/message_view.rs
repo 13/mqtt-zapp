@@ -759,10 +759,10 @@ fn render_payload(f: &mut Frame, area: Rect, app: &App) {
         payload_skip: skip,
         ..app.hit.get()
     });
-    // The charted value's line, highlighted.
-    let hl = app.chart_line();
+    // The charted values' lines, highlighted.
+    let hl = app.chart_lines();
     let mark = |i: usize, line: Line<'static>| {
-        if hl == Some(skip + i) {
+        if hl.contains(&(skip + i)) {
             theme::select(line, false)
         } else {
             line
