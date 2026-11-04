@@ -2,7 +2,7 @@
 # Built in CI from `git archive --prefix=mqtt-zapp-$pkgver/` of the tagged
 # commit, placed next to this file as mqtt-zapp-$pkgver.tar.gz.
 pkgname=mqtt-zapp
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='Terminal MQTT explorer: browse topics, watch, diff, chart and publish'
 arch=(x86_64)

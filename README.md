@@ -52,7 +52,7 @@ these files, plus a `SHA256SUMS` list.
 ### Arch Linux
 
 ```sh
-sudo pacman -U ./mqtt-zapp-0.1.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./mqtt-zapp-0.1.1-1-x86_64.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
@@ -60,7 +60,7 @@ sudo pacman -U ./mqtt-zapp-0.1.0-1-x86_64.pkg.tar.zst
 For Debian 12+ and Ubuntu 22.04+:
 
 ```sh
-sudo apt install ./mqtt-zapp_0.1.0-1_amd64.deb
+sudo apt install ./mqtt-zapp_0.1.1-1_amd64.deb
 ```
 
 ### AppImage
@@ -68,8 +68,8 @@ sudo apt install ./mqtt-zapp_0.1.0-1_amd64.deb
 For any x86_64 distro:
 
 ```sh
-chmod +x mqtt-zapp-0.1.0-x86_64.AppImage
-./mqtt-zapp-0.1.0-x86_64.AppImage
+chmod +x mqtt-zapp-0.1.1-x86_64.AppImage
+./mqtt-zapp-0.1.1-x86_64.AppImage
 ```
 
 Without FUSE (some containers and minimal hosts), add
@@ -80,7 +80,7 @@ Without FUSE (some containers and minimal hosts), add
 A single file you can copy to a headless host:
 
 ```sh
-scp mqtt-zapp-v0.1.0-x86_64-linux-musl user@host:mqtt-zapp
+scp mqtt-zapp-v0.1.1-x86_64-linux-musl user@host:mqtt-zapp
 ssh user@host chmod +x mqtt-zapp
 ```
 
