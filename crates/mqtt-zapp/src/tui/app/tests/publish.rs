@@ -567,3 +567,19 @@ fn quitting_beside_a_filled_docked_form_asks_first() {
         Effect::Quit
     ));
 }
+
+#[test]
+fn paste_after_walking_sent_payloads_drops_the_position() {
+    let mut a = browse(&["t"]);
+    publish_one(&mut a, "t", "one");
+    a.handle_action(Action::Publish);
+    a.handle_key(key(KeyCode::Tab));
+    a.handle_key(ctrl_key('p'));
+    assert!(a.publish.as_ref().unwrap().sent_pos.is_some());
+    a.handle_paste("x");
+    assert_eq!(
+        a.publish.as_ref().unwrap().sent_pos,
+        None,
+        "no longer a sent payload"
+    );
+}

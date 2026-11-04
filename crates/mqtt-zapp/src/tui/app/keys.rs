@@ -99,6 +99,8 @@ impl App {
             Mode::Publish => {
                 if let Some(form) = self.publish.as_mut() {
                     form.paste(text);
+                    // Edited: no longer one of the sent payloads.
+                    form.sent_pos = None;
                 }
                 self.sent_walk = None;
             }
