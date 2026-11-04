@@ -36,6 +36,7 @@ impl App {
             }
             Mode::Confirm => self.on_confirm_key(key),
             Mode::ProfileForm => self.on_profile_form_key(key),
+            Mode::FieldPicker => self.on_field_picker_key(key),
         }
     }
 

@@ -155,3 +155,79 @@ fn esc_note_says_pins_cleared() {
     a.handle_action(Action::Cancel);
     assert_eq!(note_text(&a), "chart off, pins cleared");
 }
+
+fn press(a: &mut App, code: KeyCode, mods: KeyModifiers) {
+    a.handle_key(KeyEvent::new(code, mods));
+}
+
+fn chart_of(a: &App) -> Option<Option<&str>> {
+    a.chart.as_ref().map(|s| s.as_deref())
+}
+
+#[test]
+fn chart_prev_steps_back() {
+    let mut a = chart_app(r#"{"a":1,"b":2,"c":3}"#, 3);
+    let alt_c = |a: &mut App| press(a, KeyCode::Char('c'), KeyModifiers::ALT);
+    alt_c(&mut a);
+    assert_eq!(chart_of(&a), Some(Some("c")));
+    alt_c(&mut a);
+    assert_eq!(chart_of(&a), Some(Some("b")));
+    alt_c(&mut a);
+    assert_eq!(chart_of(&a), Some(Some("a")));
+    alt_c(&mut a);
+    assert_eq!(chart_of(&a), None);
+}
+
+#[test]
+fn chart_prev_skips_pinned() {
+    let mut a = chart_app(r#"{"a":1,"b":2,"c":3}"#, 3);
+    // Pin b, then go back from off: c, then a (over b), then off.
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::Chart);
+    a.handle_action(Action::ChartPin);
+    a.chart = None;
+    a.handle_action(Action::ChartPrev);
+    assert_eq!(chart_of(&a), Some(Some("c")));
+    a.handle_action(Action::ChartPrev);
+    assert_eq!(chart_of(&a), Some(Some("a")));
+    a.handle_action(Action::ChartPrev);
+    assert_eq!(chart_of(&a), None);
+}
+
+fn fifty() -> App {
+    let fields: Vec<String> = (0..50).map(|i| format!("\"f{i}\":{i}")).collect();
+    chart_app(&format!("{{{}}}", fields.join(",")), 2)
+}
+
+#[test]
+fn picker_filters_and_charts() {
+    let mut a = fifty();
+    press(&mut a, KeyCode::Char('v'), KeyModifiers::NONE);
+    assert_eq!(a.mode, Mode::FieldPicker);
+    press(&mut a, KeyCode::Char('f'), KeyModifiers::NONE);
+    press(&mut a, KeyCode::Char('4'), KeyModifiers::NONE);
+    press(&mut a, KeyCode::Down, KeyModifiers::NONE);
+    press(&mut a, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(a.mode, Mode::Browse);
+    assert_eq!(a.chart, Some(Some("f40".to_owned())));
+}
+
+#[test]
+fn picker_esc_changes_nothing() {
+    let mut a = fifty();
+    a.handle_action(Action::Chart);
+    let before = a.chart.clone();
+    press(&mut a, KeyCode::Char('v'), KeyModifiers::NONE);
+    press(&mut a, KeyCode::Char('9'), KeyModifiers::NONE);
+    press(&mut a, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(a.mode, Mode::Browse);
+    assert_eq!(a.chart, before);
+}
+
+#[test]
+fn picker_empty_payload_notes() {
+    let mut a = chart_app("hello", 1);
+    press(&mut a, KeyCode::Char('v'), KeyModifiers::NONE);
+    assert_eq!(a.mode, Mode::Browse);
+    assert_eq!(note_text(&a), "no numeric values to chart");
+}

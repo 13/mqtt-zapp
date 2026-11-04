@@ -4,6 +4,7 @@
 
 mod app;
 mod expanded;
+mod field_picker;
 mod keymap;
 mod message_view;
 mod picker;

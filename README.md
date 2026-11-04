@@ -156,7 +156,7 @@ search it; matching rows are highlighted (`esc` clears the search). The publish
 form and the search input take typed text and do not use the keymap; the help
 lists their keys too.
 
-`c` cycles the chart through the numeric fields; `esc` closes it (in the search input, `esc` clears the search first).
+`c`/`alt-c` step the chart through the numeric fields, `v` picks one by name; `esc` closes it (in the search input, `esc` clears the search first).
 
 Destructive actions (`x`, `X`, `delete`, `D`) ask first: only `y` confirms, and
 any other key, `enter` included, cancels.
@@ -195,6 +195,8 @@ any other key, `enter` included, cancels.
 | `H` | `collapse_all` | Collapse the selected node and everything below it |
 | `c` | `chart` | Chart the payload, or cycle through its numeric JSON fields (the charted line is highlighted) |
 | `C` | `chart_pin` | Pin the charted series so the next `c` overlays another (again: unpin) |
+| `alt-c` | `chart_prev` | Step the chart backwards through the numeric fields (skips pinned series) |
+| `v` | `chart_pick` | Pick a chart field by name: type to filter, `enter` charts it |
 | `S` | `stats` | Show broker statistics from `$SYS` |
 | `a` | `add_profile` | In the picker: add a profile |
 | `e` | `edit_profile` | In the picker: edit the selected profile |

@@ -401,3 +401,26 @@ fn wrap_words_fits_width_and_keeps_text() {
         }
     }
 }
+
+#[test]
+fn picker_renders_values_and_underlines() {
+    let fields: Vec<String> = (0..50).map(|i| format!("\"f{i}\":{i}")).collect();
+    let p = format!("{{{}}}", fields.join(","));
+    let mut a = app_with(&[("dev/x", p.as_bytes())]);
+    a.selected = a.tree.find("dev/x");
+    a.handle_action(Action::ChartPick);
+    for c in "f4".chars() {
+        a.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let b = draw(&mut a, 100, 30);
+    let t = text(&b);
+    let row = t.lines().find(|l| l.contains("f40")).expect(&t);
+    assert!(row.contains("40"), "{row}");
+    let m = style_on_row(&b, "f40", "f4");
+    assert!(m.add_modifier.contains(MATCH_MODIFIER), "{m:?}");
+    let rest = style_on_row(&b, "f40", "0 ");
+    assert!(
+        !rest.add_modifier.contains(Modifier::UNDERLINED),
+        "{rest:?}"
+    );
+}

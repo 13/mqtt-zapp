@@ -142,6 +142,9 @@ fn render_browse(f: &mut Frame, app: &mut App, area: Rect) {
     if app.mode == Mode::Stats {
         render_stats(f, main, app);
     }
+    if let (Mode::FieldPicker, Some(p)) = (app.mode, &app.field_picker) {
+        super::field_picker::render(f, main, app, p);
+    }
     if let (Mode::Confirm, Some(c)) = (app.mode, &app.confirm) {
         render_confirm(f, main, c);
     }
@@ -317,6 +320,7 @@ mod bars;
 mod overlays;
 pub(super) use bars::*;
 use overlays::*;
+pub(super) use overlays::{highlight_ranges, match_in};
 
 #[cfg(test)]
 mod tests;

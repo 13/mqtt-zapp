@@ -71,6 +71,11 @@ pub(super) fn hints(app: &App) -> Vec<(String, &'static str)> {
             ("space".into(), "change"),
             ("esc".into(), "cancel"),
         ],
+        (Mode::FieldPicker, _) => vec![
+            ("enter".into(), "chart"),
+            ("up/down".into(), "move"),
+            ("esc".into(), "close"),
+        ],
         (Mode::Confirm, _) => vec![("y".into(), "confirm"), ("esc".into(), "cancel")],
         (Mode::Publish, _) => vec![
             ("ctrl-s".into(), "send"),

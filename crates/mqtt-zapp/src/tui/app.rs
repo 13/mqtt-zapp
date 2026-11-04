@@ -55,6 +55,8 @@ pub enum Mode {
     Confirm,
     /// The add/edit profile form over the picker.
     ProfileForm,
+    /// The chart field picker; see `App::field_picker`.
+    FieldPicker,
 }
 
 /// Which pane the j/k keys drive.
@@ -355,6 +357,8 @@ pub struct App {
     pub confirm: Option<Confirm>,
     /// Open while in `Mode::ProfileForm`.
     pub profile_form: Option<ProfileForm>,
+    /// Open while in `Mode::FieldPicker`.
+    pub field_picker: Option<super::field_picker::FieldPicker>,
     /// Pane rectangles of the last frame, for mouse hit-testing.
     pub hit: Cell<HitAreas>,
     /// Whether the last frame had room for the history box without forcing
@@ -454,6 +458,7 @@ impl App {
             history_shown: Cell::new(false),
             drawn_rows: RefCell::new(None),
             confirm: None,
+            field_picker: None,
             profile_form: None,
             sort: settings.sort,
             chart: None,

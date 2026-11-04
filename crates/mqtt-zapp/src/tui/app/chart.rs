@@ -33,6 +33,96 @@ impl App {
         self.scroll_to_chart_line(usize::from(view.height));
     }
 
+    /// `alt-c`: the reverse of `c`. From off it goes to the last free
+    /// series; past the first it goes off. Pinned series are skipped.
+    pub(super) fn cycle_chart_back(&mut self) {
+        if super::super::message_view::shown_message(self).is_none() {
+            self.set_note(Note::info("nothing to chart"), Instant::now());
+            return;
+        }
+        let series = self.chart_series();
+        let free = |s: &&Option<String>| !self.chart_pinned.contains(s);
+        let prev = match &self.chart {
+            None => series
+                .iter()
+                .rev()
+                .find(free)
+                .or_else(|| series.last())
+                .cloned(),
+            Some(cur) => series
+                .iter()
+                .position(|s| s == cur)
+                .and_then(|i| series[..i].iter().rev().find(free).cloned()),
+        };
+        let view = self.charted_body();
+        self.chart = prev;
+        let note = match (&self.chart, series.is_empty()) {
+            (_, true) => "no numeric values to chart".to_owned(),
+            (None, _) => "chart off".to_owned(),
+            (Some(s), _) => format!("chart: {}", s.as_deref().unwrap_or("value")),
+        };
+        self.set_note(Note::info(note), Instant::now());
+        self.scroll_to_chart_line(usize::from(view.height));
+    }
+
+    /// `v`: open the field picker over the shown payload's numeric fields.
+    pub(super) fn open_field_picker(&mut self) {
+        if self.chart_series().is_empty() {
+            self.set_note(Note::info("no numeric values to chart"), Instant::now());
+            return;
+        }
+        self.field_picker = Some(super::super::field_picker::FieldPicker::default());
+        self.mode = Mode::FieldPicker;
+    }
+
+    /// Keys in the picker are fixed, like the search input's: typing filters.
+    pub(super) fn on_field_picker_key(&mut self, key: KeyEvent) -> Effect {
+        self.dirty = true;
+        let Some(mut p) = self.field_picker.take() else {
+            self.mode = Mode::Browse;
+            return Effect::None;
+        };
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let found = p.matches(&self.chart_series());
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Browse;
+                return Effect::None;
+            }
+            KeyCode::Enter => {
+                self.mode = Mode::Browse;
+                let pick = found.get(p.sel.min(found.len().saturating_sub(1))).cloned();
+                if let Some(s) = pick {
+                    let view = self.charted_body();
+                    self.chart = Some(s.clone());
+                    let n = s.as_deref().unwrap_or("value");
+                    self.set_note(Note::info(format!("chart: {n}")), Instant::now());
+                    self.scroll_to_chart_line(usize::from(view.height));
+                }
+                return Effect::None;
+            }
+            KeyCode::Up => p.step(-1, found.len()),
+            KeyCode::Down => p.step(1, found.len()),
+            KeyCode::Char('p') if ctrl => p.step(-1, found.len()),
+            KeyCode::Char('n') if ctrl => p.step(1, found.len()),
+            KeyCode::Backspace => {
+                p.query.pop();
+                p.sel = 0;
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                p.query.push(c);
+                p.sel = 0;
+            }
+            _ => {}
+        }
+        self.field_picker = Some(p);
+        Effect::None
+    }
+
     /// `esc`: close the chart and drop its pins, so the next `c` starts a
     /// fresh single chart. False (and nothing changes) when no chart is
     /// shown: pins kept after `c` cycled off are invisible, so `esc` goes to

@@ -72,6 +72,8 @@ impl App {
             }
             Action::Chart => self.cycle_chart(),
             Action::ChartPin => self.pin_chart(),
+            Action::ChartPrev => self.cycle_chart_back(),
+            Action::ChartPick => self.open_field_picker(),
             Action::Stats => self.mode = Mode::Stats,
             Action::Freeze => {
                 self.toggle_freeze();

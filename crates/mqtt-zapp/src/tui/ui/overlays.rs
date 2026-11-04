@@ -154,6 +154,8 @@ pub(super) const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
             Action::MarkDiffBase,
             Action::Chart,
             Action::ChartPin,
+            Action::ChartPrev,
+            Action::ChartPick,
         ],
     ),
     (
@@ -348,7 +350,7 @@ pub(super) fn render_help(f: &mut Frame, area: Rect, app: &App) {
 /// Non-overlapping byte ranges where `query` occurs in `text`, ignoring
 /// ASCII case. One literal substring: spaces are part of the query, unlike
 /// the multi-term tree search.
-pub(super) fn match_in(query: &str, text: &str) -> Vec<std::ops::Range<usize>> {
+pub(in crate::tui) fn match_in(query: &str, text: &str) -> Vec<std::ops::Range<usize>> {
     if query.is_empty() {
         return Vec::new();
     }
@@ -364,7 +366,7 @@ pub(super) fn help_matches(query: &str, name: &str, keys: &str) -> Vec<std::ops:
 }
 
 /// Push `text` as spans, marking `ranges` with the search-match modifier.
-pub(super) fn highlight_ranges<'a>(
+pub(in crate::tui) fn highlight_ranges<'a>(
     out: &mut Vec<Span<'a>>,
     text: &str,
     ranges: &[std::ops::Range<usize>],
