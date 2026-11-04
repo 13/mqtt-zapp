@@ -309,6 +309,8 @@ async fn event_loop(
     let mut sigquit = signal(SignalKind::quit()).context("installing SIGQUIT handler")?;
     let mut sigterm = signal(SignalKind::terminate()).context("installing SIGTERM handler")?;
     let mut sighup = signal(SignalKind::hangup()).context("installing SIGHUP handler")?;
+    // The first frame now, not at the first tick (a whole IDLE_TICK in the picker).
+    draw_if_dirty(terminal, app)?;
     loop {
         let wake = tokio::time::Instant::from_std(next_deadline(
             last_tick,
