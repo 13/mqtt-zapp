@@ -131,6 +131,7 @@ fn help_rows_keep_name_and_key_apart() {
 #[test]
 fn confirm_overlay_renders_at_40x10() {
     let mut a = app_with(&[]);
+    a.conn_state = mqtt_zapp_core::client::ConnState::Connected;
     retained(&mut a, "a/b", b"1");
     a.selected = a.tree.find("a");
     a.handle_action(Action::ClearRetained);

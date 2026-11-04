@@ -241,11 +241,20 @@ fn delete_topic_updates_an_active_filter() {
 }
 
 #[test]
-fn retained_arriving_during_the_confirm_is_cleared_too() {
+fn retained_arriving_during_the_confirm_is_cleared_after_asking_again() {
     let mut a = browse(&["a/b"]);
     a.selected = a.tree.find("a/b");
     del_key(&mut a);
     a.apply_core_event(msg("a/b/new", "v"));
+    // The prompt said 1; now there are 2, so it asks again first.
+    assert!(matches!(
+        a.handle_key(key(KeyCode::Char('y'))),
+        Effect::None
+    ));
+    assert_eq!(
+        a.confirm.as_ref().unwrap().prompt,
+        "delete a/b and clear 2 retained on the broker?"
+    );
     match a.handle_key(key(KeyCode::Char('y'))) {
         Effect::ClearRetained(mut t) => {
             t.sort();
