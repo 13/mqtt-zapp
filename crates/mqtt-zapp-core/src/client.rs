@@ -4,7 +4,7 @@
 //! or end the task; it stops only on `disconnect()` or when the receiver drops.
 
 use crate::config::{MqttVersion, Profile, Protocol, TlsConfig};
-use crate::payload::{Message, Props};
+use crate::payload::{Message, Props, sanitize};
 use crate::sparkplug;
 use anyhow::{Context, Result, anyhow, bail};
 use rumqttc::tokio_rustls::rustls;
@@ -87,6 +87,22 @@ pub enum CoreEvent {
     /// Messages dropped because the UI channel was full, since the last
     /// `Dropped` event.
     Dropped(u64),
+    /// The broker's CONNACK details: whether it kept our session (both
+    /// versions), and what a v5 broker added.
+    ConnAckInfo {
+        session_present: bool,
+        assigned_client_id: Option<String>,
+        reason: Option<String>,
+    },
+    /// The broker refused one filter of our SUBSCRIBE.
+    SubRefused {
+        filter: String,
+        reason: String,
+    },
+    /// A v5 broker sent DISCONNECT before closing: why.
+    ServerDisconnect {
+        reason: String,
+    },
 }
 
 #[derive(Clone)]
@@ -235,7 +251,15 @@ enum Loop {
 
 /// What `run` needs from one poll, version-independent.
 enum Polled {
-    ConnAck,
+    ConnAck {
+        session_present: bool,
+        assigned_client_id: Option<String>,
+        reason: Option<String>,
+    },
+    /// Filters a SUBACK refused, with reasons.
+    SubRefused(Vec<(String, String)>),
+    /// A v5 broker's DISCONNECT, as text.
+    ServerDisconnect(String),
     Publish {
         topic: String,
         msg: Message,
@@ -324,6 +348,81 @@ fn classify_v5(e: v5::ConnectionError) -> Polled {
     }
 }
 
+const REFUSED: &str = "refused by the broker";
+
+/// The filters a v3.1.1 SUBACK refused, with a reason. Codes come in the
+/// order of the SUBSCRIBE's filters; extra codes are ignored.
+fn suback_refusals_v4(
+    subs: &[String],
+    codes: &[rumqttc::SubscribeReasonCode],
+) -> Vec<(String, String)> {
+    subs.iter()
+        .zip(codes)
+        .filter(|(_, c)| matches!(c, rumqttc::SubscribeReasonCode::Failure))
+        .map(|(f, _)| (split_sub(f).0, REFUSED.to_owned()))
+        .collect()
+}
+
+/// As `suback_refusals_v4`, with the v5 reason code (and the broker's reason
+/// string, sanitized) as the reason.
+fn suback_refusals_v5(
+    subs: &[String],
+    codes: &[v5::mqttbytes::v5::SubscribeReasonCode],
+    reason_string: Option<&str>,
+) -> Vec<(String, String)> {
+    use v5::mqttbytes::v5::SubscribeReasonCode as C;
+    subs.iter()
+        .zip(codes)
+        .filter(|(_, c)| !matches!(c, C::Success(_)))
+        .map(|(f, c)| {
+            let reason = match reason_string.filter(|r| !r.is_empty()) {
+                Some(r) => format!("{c:?}: {}", sanitize(r)),
+                None => format!("{c:?}"),
+            };
+            (split_sub(f).0, reason)
+        })
+        .collect()
+}
+
+/// A v5 DISCONNECT as text: its reason code, then the broker's reason string.
+fn v5_disconnect_reason(d: &v5::mqttbytes::v5::Disconnect) -> String {
+    let code = format!("{:?}", d.reason_code);
+    match d
+        .properties
+        .as_ref()
+        .and_then(|p| p.reason_string.as_deref())
+        .filter(|r| !r.is_empty())
+    {
+        Some(r) => format!("{code}: {}", sanitize(r)),
+        None => code,
+    }
+}
+
+/// Which filters each outgoing SUBSCRIBE carried, so a SUBACK's codes can be
+/// named. The request channel is FIFO and the loop reports each SUBSCRIBE as
+/// `Outgoing::Subscribe(pkid)` in that order, so batches queued by `run` are
+/// matched to pkids as they go out, and a SUBACK finds its filters by pkid.
+#[derive(Default)]
+struct SubTracker {
+    queued: std::collections::VecDeque<Vec<String>>,
+    sent: std::collections::HashMap<u16, Vec<String>>,
+}
+
+impl SubTracker {
+    fn reset(&mut self) {
+        self.queued.clear();
+        self.sent.clear();
+    }
+    fn sent(&mut self, pkid: u16) {
+        if let Some(batch) = self.queued.pop_front() {
+            self.sent.insert(pkid, batch);
+        }
+    }
+    fn filters(&mut self, pkid: u16) -> Vec<String> {
+        self.sent.remove(&pkid).unwrap_or_default()
+    }
+}
+
 impl Loop {
     /// Forget the requests rumqttc kept across a failed connection (in flight
     /// or queued), so a clear or publish made while disconnected is never
@@ -335,10 +434,21 @@ impl Loop {
         }
     }
 
-    async fn poll(&mut self, aliases: &mut sparkplug::Aliases) -> Polled {
+    async fn poll(&mut self, aliases: &mut sparkplug::Aliases, subs: &mut SubTracker) -> Polled {
         match self {
             Loop::V4(l) => match l.poll().await {
-                Ok(Event::Incoming(Packet::ConnAck(_))) => Polled::ConnAck,
+                Ok(Event::Incoming(Packet::ConnAck(a))) => Polled::ConnAck {
+                    session_present: a.session_present,
+                    assigned_client_id: None,
+                    reason: None,
+                },
+                Ok(Event::Incoming(Packet::SubAck(a))) => {
+                    Polled::SubRefused(suback_refusals_v4(&subs.filters(a.pkid), &a.return_codes))
+                }
+                Ok(Event::Outgoing(Outgoing::Subscribe(pkid))) => {
+                    subs.sent(pkid);
+                    Polled::Other
+                }
                 Ok(Event::Incoming(Packet::Publish(p))) => Polled::Publish {
                     msg: incoming(&p.topic, &p.payload, p.qos as u8, p.retain, None, aliases),
                     topic: p.topic,
@@ -348,7 +458,34 @@ impl Loop {
                 Err(e) => classify_v4(e),
             },
             Loop::V5(l) => match l.poll().await {
-                Ok(v5::Event::Incoming(v5::Incoming::ConnAck(_))) => Polled::ConnAck,
+                Ok(v5::Event::Incoming(v5::Incoming::ConnAck(a))) => {
+                    let (assigned, reason) = a.properties.map_or((None, None), |p| {
+                        (p.assigned_client_identifier, p.reason_string)
+                    });
+                    Polled::ConnAck {
+                        session_present: a.session_present,
+                        assigned_client_id: assigned
+                            .filter(|i| !i.is_empty())
+                            .map(|i| sanitize(&i)),
+                        reason: reason.filter(|r| !r.is_empty()).map(|r| sanitize(&r)),
+                    }
+                }
+                Ok(v5::Event::Incoming(v5::Incoming::SubAck(a))) => {
+                    Polled::SubRefused(suback_refusals_v5(
+                        &subs.filters(a.pkid),
+                        &a.return_codes,
+                        a.properties
+                            .as_ref()
+                            .and_then(|p| p.reason_string.as_deref()),
+                    ))
+                }
+                Ok(v5::Event::Incoming(v5::Incoming::Disconnect(d))) => {
+                    Polled::ServerDisconnect(v5_disconnect_reason(&d))
+                }
+                Ok(v5::Event::Outgoing(Outgoing::Subscribe(pkid))) => {
+                    subs.sent(pkid);
+                    Polled::Other
+                }
                 Ok(v5::Event::Incoming(v5::Incoming::Publish(p))) => {
                     let topic = String::from_utf8_lossy(&p.topic).into_owned();
                     Polled::Publish {
@@ -504,21 +641,41 @@ async fn run(
     let mut dropped: u64 = 0;
     // Kept across reconnects; the broker's retained BIRTHs come again anyway.
     let mut aliases = sparkplug::Aliases::default();
+    let mut subs = SubTracker::default();
     emit!(CoreEvent::State(ConnState::Connecting));
     loop {
         let polled = tokio::select! {
             biased;
             _ = cancel.cancelled() => break,
             _ = tx.closed() => return,
-            r = eventloop.poll(&mut aliases) => r,
+            r = eventloop.poll(&mut aliases, &mut subs) => r,
         };
         match polled {
-            Polled::ConnAck => {
+            Polled::ConnAck {
+                session_present,
+                assigned_client_id,
+                reason,
+            } => {
                 connected = true;
                 up_since = Some(std::time::Instant::now());
+                subs.reset();
+                if !subscriptions.is_empty() {
+                    subs.queued.push_back(subscriptions.clone());
+                }
                 subscribe(&client, &subscriptions, retained, &tx, &cancel);
                 emit!(CoreEvent::State(ConnState::Connected));
+                emit!(CoreEvent::ConnAckInfo {
+                    session_present,
+                    assigned_client_id,
+                    reason,
+                });
             }
+            Polled::SubRefused(refused) => {
+                for (filter, reason) in refused {
+                    emit!(CoreEvent::SubRefused { filter, reason });
+                }
+            }
+            Polled::ServerDisconnect(reason) => emit!(CoreEvent::ServerDisconnect { reason }),
             Polled::Publish { topic, msg } => {
                 // Never wait on a full UI channel: the loop must keep polling
                 // (keepalive pings, acks). Count what does not fit instead.
@@ -539,6 +696,7 @@ async fn run(
             }
             Polled::Err(reason) => {
                 connected = false;
+                subs.reset();
                 backoff = next_backoff(backoff, up_since.take().map(|t| t.elapsed()));
                 let unsent = eventloop.drop_pending();
                 let reason = if unsent > 0 {
@@ -565,7 +723,7 @@ async fn run(
     if connected {
         let _ = tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                match eventloop.poll(&mut aliases).await {
+                match eventloop.poll(&mut aliases, &mut subs).await {
                     Polled::OutgoingDisconnect | Polled::Err(_) | Polled::AuthRefused(_) => break,
                     _ => {}
                 }
@@ -821,6 +979,63 @@ mod insecure {
 mod tests {
     use super::*;
     use crate::config::PasswordSource;
+
+    #[test]
+    fn suback_failure_becomes_sub_refused() {
+        use rumqttc::SubscribeReasonCode as C4;
+        let subs = ["a/#@1".to_string(), "b/+".to_string(), "c".to_string()];
+        let v4 = suback_refusals_v4(
+            &subs,
+            &[C4::Success(QoS::AtLeastOnce), C4::Failure, C4::Failure],
+        );
+        assert_eq!(
+            v4,
+            vec![
+                ("b/+".to_string(), "refused by the broker".to_string()),
+                ("c".to_string(), "refused by the broker".to_string()),
+            ]
+        );
+        use v5::mqttbytes::v5::SubscribeReasonCode as C5;
+        let v5r = suback_refusals_v5(
+            &subs,
+            &[
+                C5::Success(v5::mqttbytes::QoS::AtMostOnce),
+                C5::NotAuthorized,
+                C5::Success(v5::mqttbytes::QoS::AtMostOnce),
+            ],
+            Some("nope\u{7}"),
+        );
+        assert_eq!(v5r.len(), 1);
+        assert_eq!(v5r[0].0, "b/+");
+        assert!(v5r[0].1.contains("NotAuthorized"), "{}", v5r[0].1);
+        assert!(v5r[0].1.contains("nope"), "{}", v5r[0].1);
+        assert!(!v5r[0].1.contains('\u{7}'), "sanitized");
+        // More codes than filters never panics.
+        assert_eq!(suback_refusals_v4(&[], &[C4::Failure]).len(), 0);
+    }
+
+    #[test]
+    fn v5_disconnect_reason_shown() {
+        use v5::mqttbytes::v5::{Disconnect, DisconnectProperties, DisconnectReasonCode as D};
+        let d = Disconnect {
+            reason_code: D::SessionTakenOver,
+            properties: Some(DisconnectProperties {
+                session_expiry_interval: None,
+                reason_string: Some("other client\u{1b}[31m".into()),
+                user_properties: vec![],
+                server_reference: None,
+            }),
+        };
+        let r = v5_disconnect_reason(&d);
+        assert!(r.contains("SessionTakenOver"), "{r}");
+        assert!(r.contains("other client"), "{r}");
+        assert!(!r.contains('\u{1b}'), "sanitized");
+        let bare = Disconnect {
+            reason_code: D::ServerShuttingDown,
+            properties: None,
+        };
+        assert_eq!(v5_disconnect_reason(&bare), "ServerShuttingDown");
+    }
 
     #[test]
     fn parse_sub_cases() {

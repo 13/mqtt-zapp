@@ -479,3 +479,61 @@ fn closed_channel_keeps_an_earlier_failure_reason() {
     a.on_connection_ended();
     assert!(matches!(&a.conn_state, ConnState::Failed { reason } if reason == "refused"));
 }
+
+#[test]
+fn sub_refused_note() {
+    let mut a = app();
+    a.apply_core_event(CoreEvent::SubRefused {
+        filter: "secret/#".into(),
+        reason: "NotAuthorized".into(),
+    });
+    let n = a.note_at(Instant::now()).unwrap().clone();
+    assert!(n.error);
+    assert_eq!(n.text, "subscription refused: secret/# (NotAuthorized)");
+    // Several refusals from one SUBACK are all named, not overwritten.
+    a.apply_core_event(CoreEvent::SubRefused {
+        filter: "b".into(),
+        reason: "refused by the broker".into(),
+    });
+    let n = a.note_at(Instant::now()).unwrap();
+    assert!(n.text.contains("secret/#") && n.text.contains("; b (refused by the broker)"));
+}
+
+#[test]
+fn connack_info_notes_are_joined() {
+    let mut a = app();
+    a.apply_core_event(CoreEvent::ConnAckInfo {
+        session_present: true,
+        assigned_client_id: Some("auto-1\u{7}".into()),
+        reason: None,
+    });
+    let n = a.note_at(Instant::now()).unwrap();
+    assert!(!n.error);
+    assert!(n.text.contains("session resumed"), "{}", n.text);
+    assert!(n.text.contains("client id assigned: auto-1"), "{}", n.text);
+    assert!(!n.text.contains('\u{7}'));
+    let mut b = app();
+    b.apply_core_event(CoreEvent::ConnAckInfo {
+        session_present: false,
+        assigned_client_id: None,
+        reason: None,
+    });
+    assert!(b.note_at(Instant::now()).is_none());
+}
+
+#[test]
+fn server_disconnect_reason_is_in_the_state() {
+    let mut a = app();
+    a.apply_core_event(CoreEvent::State(ConnState::Connected));
+    a.apply_core_event(CoreEvent::ServerDisconnect {
+        reason: "SessionTakenOver".into(),
+    });
+    a.apply_core_event(CoreEvent::State(ConnState::Disconnected {
+        reason: "connection closed".into(),
+        retry_in_ms: 1000,
+    }));
+    let ConnState::Disconnected { reason, .. } = &a.conn_state else {
+        panic!("{:?}", a.conn_state);
+    };
+    assert!(reason.contains("SessionTakenOver"), "{reason}");
+}

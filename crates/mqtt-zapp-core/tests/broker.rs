@@ -185,6 +185,89 @@ async fn auth_refused_stops_retrying() {
     assert_eq!(connecting, 1, "no second connection attempt");
 }
 
+/// A plain mosquitto whose dynamic-security plugin lets anonymous clients
+/// subscribe to `zapp/open/#` only. (The `acl_file` option does not do: this
+/// mosquitto grants a denied SUBSCRIBE and merely never delivers, so no
+/// SUBACK failure is sent. The plugin answers 0x80 / 0x87.)
+fn start_acl_broker() -> Option<(std::process::Child, u16, tempfile::TempDir)> {
+    use std::process::{Command, Stdio};
+    const PLUGIN: &str = "/usr/lib/mosquitto_dynamic_security.so";
+    if Command::new("mosquitto")
+        .arg("-h")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_err()
+        || !std::path::Path::new(PLUGIN).exists()
+    {
+        eprintln!("SKIP: mosquitto or its dynamic-security plugin not found");
+        return None;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let dynsec = dir.path().join("dynsec.json");
+    std::fs::write(
+        &dynsec,
+        r#"{"defaultACLAccess":{"publishClientToBroker":false,"publishBrokerToClient":false,
+"subscribe":false,"unsubscribe":true},"clients":[],
+"groups":[{"groupname":"anon","roles":[{"rolename":"r"}]}],"anonymousGroup":"anon",
+"roles":[{"rolename":"r","acls":[{"acltype":"subscribePattern","topic":"zapp/open/#",
+"priority":0,"allow":true}]}]}"#,
+    )
+    .unwrap();
+    let port = support::free_ports().0;
+    let conf = dir.path().join("mosquitto.conf");
+    std::fs::write(
+        &conf,
+        format!(
+            "allow_anonymous true\nplugin {PLUGIN}\nplugin_opt_config_file {}\n\
+             listener {port} 127.0.0.1\n",
+            dynsec.display()
+        ),
+    )
+    .unwrap();
+    let child = Command::new("mosquitto")
+        .arg("-c")
+        .arg(&conf)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "mosquitto did not start"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Some((child, port, dir))
+}
+
+#[tokio::test]
+async fn refused_subscription_is_reported() {
+    for version in [MqttVersion::V311, MqttVersion::V5] {
+        let Some((mut child, port, _dir)) = start_acl_broker() else {
+            return;
+        };
+        let mut p = profile("127.0.0.1", port, Protocol::Mqtt);
+        p.mqtt_version = version;
+        p.subscriptions = vec!["zapp/open/#".into(), "zapp/secret/#".into()];
+        let (conn, mut rx) = Connection::connect(&p, None).unwrap();
+        let ev = wait_for(&mut rx, |e| matches!(e, CoreEvent::SubRefused { .. }), 5).await;
+        let CoreEvent::SubRefused { filter, reason } = ev else {
+            unreachable!()
+        };
+        assert_eq!(filter, "zapp/secret/#", "{version:?}");
+        assert!(!reason.is_empty());
+        if version == MqttVersion::V5 {
+            assert!(reason.contains("NotAuthorized"), "{reason}");
+        }
+        conn.disconnect();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
 #[tokio::test]
 async fn tls_with_ca_file() {
     let Some(b) = support::start(false) else {
