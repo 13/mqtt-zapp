@@ -522,18 +522,30 @@ fn connack_info_notes_are_joined() {
 }
 
 #[test]
-fn server_disconnect_reason_is_in_the_state() {
+fn connack_info_keeps_a_live_error_note() {
     let mut a = app();
-    a.apply_core_event(CoreEvent::State(ConnState::Connected));
-    a.apply_core_event(CoreEvent::ServerDisconnect {
-        reason: "SessionTakenOver".into(),
+    a.apply_core_event(CoreEvent::SubRefused {
+        filter: "x".into(),
+        reason: "NotAuthorized".into(),
     });
-    a.apply_core_event(CoreEvent::State(ConnState::Disconnected {
-        reason: "connection closed".into(),
-        retry_in_ms: 1000,
-    }));
-    let ConnState::Disconnected { reason, .. } = &a.conn_state else {
-        panic!("{:?}", a.conn_state);
-    };
-    assert!(reason.contains("SessionTakenOver"), "{reason}");
+    a.apply_core_event(CoreEvent::ConnAckInfo {
+        session_present: true,
+        assigned_client_id: None,
+        reason: None,
+    });
+    assert!(a.note_at(Instant::now()).unwrap().error);
+}
+
+#[test]
+fn broker_strings_in_notes_are_capped_and_flat() {
+    let mut a = app();
+    a.apply_core_event(CoreEvent::SubRefused {
+        filter: "f".into(),
+        reason: format!("a\nb{}", "z".repeat(500)),
+    });
+    let t = a.note_at(Instant::now()).unwrap().text.clone();
+    assert!(
+        !t.contains('\n') && t.contains('…') && t.chars().count() < 300,
+        "{t}"
+    );
 }

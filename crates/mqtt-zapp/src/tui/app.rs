@@ -12,12 +12,12 @@ use crate::cli::Launch;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use mouse::inner;
+use mqtt_zapp_core::client::clip_text;
 use mqtt_zapp_core::client::{ConnState, CoreEvent};
 use mqtt_zapp_core::config::{
     DEFAULT_TIMESTAMP_FORMAT, PasswordSource, Profile, ProfileStore, Settings, SortOrder, ThemeName,
 };
 use mqtt_zapp_core::payload::Props;
-use mqtt_zapp_core::payload::sanitize;
 use mqtt_zapp_core::search::Filter;
 use mqtt_zapp_core::secrets::load_password;
 use mqtt_zapp_core::state::AppState;
@@ -347,9 +347,6 @@ pub struct App {
     pub msg_rate: MsgRate,
     /// Messages the core dropped because this UI fell behind.
     pub dropped: u64,
-    /// A v5 broker's DISCONNECT reason, shown by the `Disconnected` state
-    /// that follows it.
-    server_disconnect: Option<String>,
     /// First visible row of the tree pane; maintained by the renderer.
     pub tree_offset: usize,
     pub focus: Focus,
@@ -513,7 +510,6 @@ impl App {
             tree_changed: false,
             msg_rate: MsgRate::default(),
             dropped: 0,
-            server_disconnect: None,
             tree_offset: 0,
             focus: Focus::Tree,
             history_sel: None,
@@ -619,17 +615,7 @@ impl App {
 
     fn apply_core_event_inner(&mut self, ev: CoreEvent) {
         match ev {
-            CoreEvent::State(mut s) => {
-                match &mut s {
-                    ConnState::Disconnected { reason, .. } => {
-                        if let Some(why) = self.server_disconnect.take() {
-                            *reason = format!("server disconnected: {why} ({reason})");
-                        }
-                    }
-                    _ => self.server_disconnect = None,
-                }
-                self.conn_state = s;
-            }
+            CoreEvent::State(s) => self.conn_state = s,
             CoreEvent::Dropped(n) => self.dropped += n,
             CoreEvent::ConnAckInfo {
                 session_present,
@@ -644,18 +630,21 @@ impl App {
                     parts.push("session resumed".to_owned());
                 }
                 if let Some(id) = assigned_client_id {
-                    parts.push(format!("client id assigned: {}", sanitize(&id)));
+                    parts.push(format!("client id assigned: {}", clip_text(&id)));
                 }
                 if let Some(r) = reason {
-                    parts.push(format!("broker: {}", sanitize(&r)));
+                    parts.push(format!("broker: {}", clip_text(&r)));
                 }
-                if !parts.is_empty() {
+                // Never hide a live error (a refused subscription).
+                let now = Instant::now();
+                let busy = self.note_at(now).is_some_and(|n| n.error);
+                if !parts.is_empty() && !busy {
                     self.set_note(Note::info(parts.join(" · ")), Instant::now());
                 }
             }
             CoreEvent::SubRefused { filter, reason } => {
                 let now = Instant::now();
-                let line = format!("{} ({})", sanitize(&filter), sanitize(&reason));
+                let line = format!("{} ({})", clip_text(&filter), clip_text(&reason));
                 // Refusals from one SUBACK arrive back to back: list them all.
                 let text = match self.note_at(now) {
                     Some(n) if n.error && n.text.starts_with(SUB_REFUSED) => {
@@ -664,9 +653,6 @@ impl App {
                     _ => format!("{SUB_REFUSED} {line}"),
                 };
                 self.set_note(Note::error(text), now);
-            }
-            CoreEvent::ServerDisconnect { reason } => {
-                self.server_disconnect = Some(sanitize(&reason));
             }
             CoreEvent::Message { topic, mut msg } => {
                 msg.truncate_to(self.max_payload_bytes);

@@ -185,24 +185,45 @@ async fn auth_refused_stops_retrying() {
     assert_eq!(connecting, 1, "no second connection attempt");
 }
 
+/// Kills the child on drop, so a failed assertion cannot leak a broker.
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// A plain mosquitto whose dynamic-security plugin lets anonymous clients
 /// subscribe to `zapp/open/#` only. (The `acl_file` option does not do: this
 /// mosquitto grants a denied SUBSCRIBE and merely never delivers, so no
 /// SUBACK failure is sent. The plugin answers 0x80 / 0x87.)
-fn start_acl_broker() -> Option<(std::process::Child, u16, tempfile::TempDir)> {
+fn start_acl_broker() -> Option<(KillOnDrop, u16, tempfile::TempDir)> {
     use std::process::{Command, Stdio};
-    const PLUGIN: &str = "/usr/lib/mosquitto_dynamic_security.so";
+    let plugin = [
+        "/usr/lib/mosquitto_dynamic_security.so",
+        "/usr/lib/x86_64-linux-gnu/mosquitto_dynamic_security.so",
+        "/usr/lib64/mosquitto_dynamic_security.so",
+        "/usr/local/lib/mosquitto_dynamic_security.so",
+    ]
+    .into_iter()
+    .map(String::from)
+    .chain(std::env::var("MOSQUITTO_DYNSEC_PLUGIN"))
+    .rev() // the env override wins
+    .find(|p| std::path::Path::new(p).exists());
     if Command::new("mosquitto")
         .arg("-h")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_err()
-        || !std::path::Path::new(PLUGIN).exists()
+        || plugin.is_none()
     {
         eprintln!("SKIP: mosquitto or its dynamic-security plugin not found");
         return None;
     }
+    let plugin = plugin.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let dynsec = dir.path().join("dynsec.json");
     std::fs::write(
@@ -219,7 +240,7 @@ fn start_acl_broker() -> Option<(std::process::Child, u16, tempfile::TempDir)> {
     std::fs::write(
         &conf,
         format!(
-            "allow_anonymous true\nplugin {PLUGIN}\nplugin_opt_config_file {}\n\
+            "allow_anonymous true\nplugin {plugin}\nplugin_opt_config_file {}\n\
              listener {port} 127.0.0.1\n",
             dynsec.display()
         ),
@@ -240,13 +261,13 @@ fn start_acl_broker() -> Option<(std::process::Child, u16, tempfile::TempDir)> {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    Some((child, port, dir))
+    Some((KillOnDrop(child), port, dir))
 }
 
 #[tokio::test]
 async fn refused_subscription_is_reported() {
     for version in [MqttVersion::V311, MqttVersion::V5] {
-        let Some((mut child, port, _dir)) = start_acl_broker() else {
+        let Some((_broker, port, _dir)) = start_acl_broker() else {
             return;
         };
         let mut p = profile("127.0.0.1", port, Protocol::Mqtt);
@@ -263,9 +284,42 @@ async fn refused_subscription_is_reported() {
             assert!(reason.contains("NotAuthorized"), "{reason}");
         }
         conn.disconnect();
-        let _ = child.kill();
-        let _ = child.wait();
     }
+}
+
+/// A scripted "broker" (no mosquitto): CONNACK, then a v5 DISCONNECT with
+/// reason 0x8E (session taken over) and a reason string. mosquitto's own
+/// takeover DISCONNECT omits the property length, which rumqttc 0.25 cannot
+/// parse (it reports "closed by peer"), so the wire bytes are sent by hand.
+#[tokio::test]
+async fn server_disconnect_reason_reaches_state() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 512];
+        let _ = sock.read(&mut buf).await.unwrap(); // CONNECT
+        sock.write_all(&[0x20, 0x03, 0x00, 0x00, 0x00])
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut d = vec![0xE0, 0x0F, 0x8E, 0x0D, 0x1F, 0x00, 0x0A];
+        d.extend_from_slice(b"taken over");
+        sock.write_all(&d).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    });
+    let mut p = profile("127.0.0.1", port, Protocol::Mqtt);
+    p.mqtt_version = MqttVersion::V5;
+    let (conn, mut rx) = Connection::connect(&p, None).unwrap();
+    wait_for(&mut rx, is_connected, 5).await;
+    let ev = wait_for(&mut rx, is_disconnected, 5).await;
+    let CoreEvent::State(ConnState::Disconnected { reason, .. }) = ev else {
+        unreachable!()
+    };
+    assert_eq!(reason, "server disconnected: SessionTakenOver (taken over)");
+    conn.disconnect();
+    server.abort();
 }
 
 #[tokio::test]

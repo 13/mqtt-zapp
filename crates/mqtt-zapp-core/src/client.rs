@@ -99,10 +99,6 @@ pub enum CoreEvent {
         filter: String,
         reason: String,
     },
-    /// A v5 broker sent DISCONNECT before closing: why.
-    ServerDisconnect {
-        reason: String,
-    },
 }
 
 #[derive(Clone)]
@@ -258,8 +254,6 @@ enum Polled {
     },
     /// Filters a SUBACK refused, with reasons.
     SubRefused(Vec<(String, String)>),
-    /// A v5 broker's DISCONNECT, as text.
-    ServerDisconnect(String),
     Publish {
         topic: String,
         msg: Message,
@@ -344,8 +338,32 @@ fn classify_v5(e: v5::ConnectionError) -> Polled {
         v5::ConnectionError::ConnectionRefused(
             C::BadUserNamePassword | C::NotAuthorized | C::Banned,
         ) => Polled::AuthRefused(e.to_string()),
+        // rumqttc returns this error from `poll` before the DISCONNECT
+        // event it queued would surface, so the reason is taken from here.
+        v5::ConnectionError::MqttState(v5::StateError::ServerDisconnect {
+            reason_code,
+            reason_string,
+        }) => Polled::Err(match reason_string.filter(|r| !r.is_empty()) {
+            Some(r) => format!("server disconnected: {reason_code:?} ({})", clip_text(&r)),
+            None => format!("server disconnected: {reason_code:?}"),
+        }),
         e => Polled::Err(e.to_string()),
     }
+}
+
+/// Longest broker-supplied string shown anywhere, in characters.
+const CLIP: usize = 200;
+
+/// A broker-supplied string made safe to show: control characters replaced,
+/// newlines turned into spaces, cut at `CLIP` characters with `…`.
+pub fn clip_text(s: &str) -> String {
+    let s = sanitize(s).replace('\n', " ");
+    if s.chars().count() <= CLIP {
+        return s;
+    }
+    let mut out: String = s.chars().take(CLIP).collect();
+    out.push('…');
+    out
 }
 
 const REFUSED: &str = "refused by the broker";
@@ -376,26 +394,12 @@ fn suback_refusals_v5(
         .filter(|(_, c)| !matches!(c, C::Success(_)))
         .map(|(f, c)| {
             let reason = match reason_string.filter(|r| !r.is_empty()) {
-                Some(r) => format!("{c:?}: {}", sanitize(r)),
+                Some(r) => format!("{c:?}: {}", clip_text(r)),
                 None => format!("{c:?}"),
             };
             (split_sub(f).0, reason)
         })
         .collect()
-}
-
-/// A v5 DISCONNECT as text: its reason code, then the broker's reason string.
-fn v5_disconnect_reason(d: &v5::mqttbytes::v5::Disconnect) -> String {
-    let code = format!("{:?}", d.reason_code);
-    match d
-        .properties
-        .as_ref()
-        .and_then(|p| p.reason_string.as_deref())
-        .filter(|r| !r.is_empty())
-    {
-        Some(r) => format!("{code}: {}", sanitize(r)),
-        None => code,
-    }
 }
 
 /// Which filters each outgoing SUBSCRIBE carried, so a SUBACK's codes can be
@@ -466,8 +470,8 @@ impl Loop {
                         session_present: a.session_present,
                         assigned_client_id: assigned
                             .filter(|i| !i.is_empty())
-                            .map(|i| sanitize(&i)),
-                        reason: reason.filter(|r| !r.is_empty()).map(|r| sanitize(&r)),
+                            .map(|i| clip_text(&i)),
+                        reason: reason.filter(|r| !r.is_empty()).map(|r| clip_text(&r)),
                     }
                 }
                 Ok(v5::Event::Incoming(v5::Incoming::SubAck(a))) => {
@@ -478,9 +482,6 @@ impl Loop {
                             .as_ref()
                             .and_then(|p| p.reason_string.as_deref()),
                     ))
-                }
-                Ok(v5::Event::Incoming(v5::Incoming::Disconnect(d))) => {
-                    Polled::ServerDisconnect(v5_disconnect_reason(&d))
                 }
                 Ok(v5::Event::Outgoing(Outgoing::Subscribe(pkid))) => {
                     subs.sent(pkid);
@@ -675,7 +676,6 @@ async fn run(
                     emit!(CoreEvent::SubRefused { filter, reason });
                 }
             }
-            Polled::ServerDisconnect(reason) => emit!(CoreEvent::ServerDisconnect { reason }),
             Polled::Publish { topic, msg } => {
                 // Never wait on a full UI channel: the loop must keep polling
                 // (keepalive pings, acks). Count what does not fit instead.
@@ -1016,25 +1016,44 @@ mod tests {
 
     #[test]
     fn v5_disconnect_reason_shown() {
-        use v5::mqttbytes::v5::{Disconnect, DisconnectProperties, DisconnectReasonCode as D};
-        let d = Disconnect {
+        use v5::mqttbytes::v5::DisconnectReasonCode as D;
+        let e = v5::ConnectionError::MqttState(v5::StateError::ServerDisconnect {
             reason_code: D::SessionTakenOver,
-            properties: Some(DisconnectProperties {
-                session_expiry_interval: None,
-                reason_string: Some("other client\u{1b}[31m".into()),
-                user_properties: vec![],
-                server_reference: None,
-            }),
+            reason_string: Some("other client\u{1b}[31m\nx".into()),
+        });
+        let Polled::Err(r) = classify_v5(e) else {
+            panic!("a server disconnect is a plain error, so the loop reconnects")
         };
-        let r = v5_disconnect_reason(&d);
-        assert!(r.contains("SessionTakenOver"), "{r}");
+        assert!(
+            r.starts_with("server disconnected: SessionTakenOver ("),
+            "{r}"
+        );
         assert!(r.contains("other client"), "{r}");
-        assert!(!r.contains('\u{1b}'), "sanitized");
-        let bare = Disconnect {
+        assert!(!r.contains('\u{1b}') && !r.contains('\n'), "sanitized");
+        let long = v5::ConnectionError::MqttState(v5::StateError::ServerDisconnect {
             reason_code: D::ServerShuttingDown,
-            properties: None,
+            reason_string: Some("y".repeat(5000)),
+        });
+        let Polled::Err(r) = classify_v5(long) else {
+            panic!()
         };
-        assert_eq!(v5_disconnect_reason(&bare), "ServerShuttingDown");
+        assert!(r.chars().count() < 260 && r.contains('…'), "{}", r.len());
+        let bare = v5::ConnectionError::MqttState(v5::StateError::ServerDisconnect {
+            reason_code: D::ServerShuttingDown,
+            reason_string: None,
+        });
+        let Polled::Err(r) = classify_v5(bare) else {
+            panic!()
+        };
+        assert_eq!(r, "server disconnected: ServerShuttingDown");
+    }
+
+    #[test]
+    fn clip_text_caps_and_flattens() {
+        assert_eq!(clip_text("a\nb\u{7}"), "a b\u{fffd}");
+        let c = clip_text(&"z".repeat(300));
+        assert_eq!(c.chars().count(), 201);
+        assert!(c.ends_with('…'));
     }
 
     #[test]
