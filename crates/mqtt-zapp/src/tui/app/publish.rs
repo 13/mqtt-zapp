@@ -96,8 +96,28 @@ impl App {
             .selected
             .map(|id| self.tree.full_topic(id))
             .unwrap_or_default();
-        self.publish = Some(PublishForm::new(&topic));
+        let mut note = None;
+        let mut form = PublishForm::new(&topic);
+        if self.focus == Focus::History
+            && let (Some(id), Some(i)) = (self.selected, self.history_sel)
+            && let Some(m) = self.tree.node(id).history.get(i)
+        {
+            if m.truncated_from.is_some() {
+                note = Some("can't re-send: payload was truncated");
+            } else if let Ok(text) = std::str::from_utf8(&m.payload) {
+                form = PublishForm::prefilled(&topic, text, m.qos, m.retain);
+                if m.sparkplug {
+                    note = Some("re-sending Sparkplug as JSON");
+                }
+            } else {
+                note = Some("can't re-send: binary payload");
+            }
+        }
+        self.publish = Some(form);
         self.sent_walk = None;
         self.mode = Mode::Publish;
+        if let Some(n) = note {
+            self.set_note(Note::info(n), Instant::now());
+        }
     }
 }

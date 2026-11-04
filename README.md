@@ -249,7 +249,7 @@ To select text with the mouse in kitty and other terminals, press `f` first; liv
 
 In the publish form, `ctrl-e` opens the payload in `$VISUAL`/`$EDITOR` (or
 `vi`), and `ctrl-p`/`ctrl-n` recall payloads sent to that topic in this
-session.
+session. In the history pane, `p` opens the form with that message filled in.
 
 ## ⚙️ Configuration
 

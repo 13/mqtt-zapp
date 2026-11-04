@@ -75,6 +75,17 @@ impl PublishForm {
         form
     }
 
+    /// A form with the payload, QoS and retain of a message to re-send.
+    pub fn prefilled(topic: &str, payload: &str, qos: u8, retain: bool) -> PublishForm {
+        let mut form = PublishForm::new(topic);
+        form.set_payload(payload);
+        form.qos = qos.min(2);
+        form.retain = retain;
+        form.field = Field::Topic;
+        form.sync_focus();
+        form
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) -> FormOutcome {
         self.error = None;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);

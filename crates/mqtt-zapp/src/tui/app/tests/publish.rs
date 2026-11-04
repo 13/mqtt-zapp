@@ -106,3 +106,70 @@ fn p_without_selection_opens_empty_form() {
     assert_eq!(a.mode, Mode::Publish);
     assert_eq!(a.publish.as_ref().unwrap().topic.lines(), [""]);
 }
+
+/// A history app whose oldest entry (index 0) is the message `tweak` builds.
+fn resend_app(tweak: impl FnOnce(&mut Message)) -> App {
+    let mut a = history_app(10, &[]);
+    let CoreEvent::Message { topic, mut msg } = msg("t", "old") else {
+        unreachable!()
+    };
+    tweak(&mut msg);
+    a.apply_core_event(CoreEvent::Message { topic, msg });
+    a.apply_core_event(self::msg("t", "new"));
+    a.selected = a.tree.find("t");
+    a.focus = Focus::History;
+    a.history_sel = Some(0);
+    a
+}
+
+#[test]
+fn resend_prefills_from_history() {
+    let mut a = resend_app(|m| {
+        m.qos = 2;
+        m.retain = true;
+    });
+    a.handle_action(Action::Publish);
+    let f = a.publish.as_ref().unwrap();
+    assert_eq!(f.topic.lines().join(""), "t");
+    assert_eq!(f.payload_text(), "old");
+    assert_eq!((f.qos, f.retain), (2, true));
+}
+
+#[test]
+fn resend_needs_history_focus() {
+    let mut a = resend_app(|_| {});
+    a.focus = Focus::Tree;
+    a.handle_action(Action::Publish);
+    assert_eq!(payload_of(&a), "");
+    // History focus but the live entry (nothing selected): as today.
+    let mut a = resend_app(|_| {});
+    a.history_sel = None;
+    a.handle_action(Action::Publish);
+    assert_eq!(payload_of(&a), "");
+}
+
+#[test]
+fn resend_refuses_truncated_and_binary() {
+    let mut a = resend_app(|m| m.truncated_from = Some(100));
+    a.handle_action(Action::Publish);
+    assert_eq!(payload_of(&a), "");
+    assert_eq!(a.publish.as_ref().unwrap().topic.lines().join(""), "t");
+    assert_eq!(note_text(&a), "can't re-send: payload was truncated");
+
+    let mut a = resend_app(|m| m.payload = Bytes::from_static(&[0xff, 0xfe, 0x00]));
+    a.handle_action(Action::Publish);
+    assert_eq!(payload_of(&a), "");
+    assert_eq!(note_text(&a), "can't re-send: binary payload");
+}
+
+#[test]
+fn resend_sparkplug_notes_json() {
+    let mut a = resend_app(|m| {
+        m.sparkplug = true;
+        m.wire_len = Some(12);
+        m.payload = Bytes::from_static(b"{\"metrics\":[]}");
+    });
+    a.handle_action(Action::Publish);
+    assert_eq!(payload_of(&a), "{\"metrics\":[]}");
+    assert_eq!(note_text(&a), "re-sending Sparkplug as JSON");
+}
