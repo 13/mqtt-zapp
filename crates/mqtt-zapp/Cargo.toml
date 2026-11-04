@@ -15,7 +15,7 @@ rpassword = "7"
 unicode-width = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 futures = { version = "0.3", default-features = false, features = ["std"] }
-ratatui = "0.29"
+ratatui = "0.30"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 tui-textarea = "0.7"
