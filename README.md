@@ -275,8 +275,9 @@ to place it separately.
 
 ```toml
 history_depth = 200      # messages kept per topic (default 100)
-max_history_mb = 256     # payload bytes kept across all topics' history; each
-                         # topic always keeps its latest message (default 256)
+max_history_mb = 256     # memory for all stored messages (payload, properties and
+                         # ~160 B bookkeeping each); past it the oldest topics
+                         # keep only a 256-byte stub of their latest (default 256)
 max_payload_kb = 16384   # longer payloads are cut and marked truncated; 0: no cap
                          # (default 16384)
 max_topics = 200000      # topic levels kept; messages on new topics past it are

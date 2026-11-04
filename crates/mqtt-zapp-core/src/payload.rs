@@ -124,10 +124,17 @@ impl Props {
     }
 }
 
+/// Bytes charged per stored message on top of its payload and props: the
+/// `Message` struct, the queue slots and allocator slack.
+pub const ENTRY_OVERHEAD: usize = 160;
+/// Payload bytes a stubbed latest message keeps.
+pub const STUB_KEEP: usize = 256;
+
 impl Message {
-    /// Bytes this message adds to the history budget: payload plus props.
+    /// Bytes this message adds to the history budget: payload, props and
+    /// `ENTRY_OVERHEAD`.
     pub fn size(&self) -> usize {
-        self.payload.len() + self.props.as_ref().map_or(0, |p| p.heap_len())
+        self.payload.len() + ENTRY_OVERHEAD + self.props.as_ref().map_or(0, |p| p.heap_len())
     }
 
     /// Keep at most `max` payload bytes, recording the original length.

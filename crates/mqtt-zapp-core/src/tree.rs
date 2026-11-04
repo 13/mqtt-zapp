@@ -1,4 +1,7 @@
-use crate::Message;
+#[cfg(test)]
+use crate::payload::ENTRY_OVERHEAD;
+use crate::payload::STUB_KEEP;
+use crate::{Bytes, Message};
 use serde::Serialize;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, VecDeque};
@@ -24,6 +27,10 @@ pub struct TopicNode {
     /// the next insert puts it back at the front of the queue.
     #[serde(skip)]
     parked: bool,
+    /// `next_seq` at this node's latest insert; its `recent` slot is live iff
+    /// it carries this stamp.
+    #[serde(skip)]
+    stamp: u64,
     /// Messages received in this subtree.
     pub msg_count: u64,
     /// Descendants that have received at least one message.
@@ -52,6 +59,7 @@ impl TopicNode {
             history: VecDeque::new(),
             history_seq: VecDeque::new(),
             parked: false,
+            stamp: 0,
             msg_count: 0,
             topic_count: 0,
             retained: false,
@@ -73,6 +81,10 @@ pub struct TopicTree {
     /// dropped by the per-topic depth are stale and skipped.
     #[serde(skip)]
     order: VecDeque<(NodeId, u64)>,
+    /// One slot per insert, as (node, stamp), oldest update first. Stubbing
+    /// walks it to find the least recently updated topics.
+    #[serde(skip)]
+    recent: VecDeque<(NodeId, u64)>,
     next_seq: u64,
     /// History entries currently held (live slots in `order`).
     entries: usize,
@@ -106,6 +118,7 @@ impl TopicTree {
             max_bytes,
             bytes: 0,
             order: VecDeque::new(),
+            recent: VecDeque::new(),
             next_seq: 0,
             entries: 0,
             max_topics,
@@ -126,7 +139,8 @@ impl TopicTree {
         self.dropped_topics
     }
 
-    /// Payload bytes held in all histories.
+    /// Accounted bytes of all stored messages (payload, props and
+    /// `ENTRY_OVERHEAD` each).
     pub fn history_bytes(&self) -> usize {
         self.bytes
     }
@@ -156,6 +170,37 @@ impl TopicTree {
                 self.entries -= 1;
             }
         }
+        self.stub_least_recent();
+    }
+
+    /// Still over the cap with only latest entries left: cut the latest
+    /// payload of the least recently updated topics to `STUB_KEEP` bytes
+    /// until under it. Each iteration consumes a `recent` slot, so this is
+    /// amortized O(1) per insert.
+    fn stub_least_recent(&mut self) {
+        while self.bytes > self.max_bytes {
+            let Some((id, stamp)) = self.recent.pop_front() else {
+                break;
+            };
+            let node = &mut self.nodes[id];
+            if node.removed || node.stamp != stamp {
+                continue; // removed, or updated since
+            }
+            let (Some(latest), Some(last)) = (node.latest.as_mut(), node.history.back_mut()) else {
+                continue;
+            };
+            let keep = utf8_prefix_len(&latest.payload, STUB_KEEP);
+            if keep == latest.payload.len() {
+                continue;
+            }
+            // Replace both copies, so the big buffer is freed.
+            let mut stub = latest.clone();
+            stub.truncated_from = stub.truncated_from.or(Some(stub.payload.len()));
+            stub.payload = Bytes::copy_from_slice(&stub.payload[..keep]);
+            self.bytes = self.bytes - last.size() + stub.size();
+            *last = stub.clone();
+            *latest = stub;
+        }
     }
 
     /// Drop the stale slots that depth eviction leaves in `order`, once they
@@ -169,6 +214,16 @@ impl TopicTree {
         // the node's oldest remaining entry.
         self.order
             .retain(|(id, seq)| nodes[*id].history_seq.front().is_some_and(|f| seq >= f));
+    }
+
+    /// Same for `recent`, whose live slots are at most one per node.
+    fn compact_recent(&mut self) {
+        if self.recent.len() <= 2 * self.nodes.len() + COMPACT_SLACK {
+            return;
+        }
+        let nodes = &self.nodes;
+        self.recent
+            .retain(|(id, stamp)| !nodes[*id].removed && nodes[*id].stamp == *stamp);
     }
 
     /// Store `msg` under `topic`, creating levels as needed. Empty levels are kept as nodes.
@@ -225,6 +280,8 @@ impl TopicTree {
             }
         }
         node.last_update = Some(now);
+        node.stamp = self.next_seq - 1;
+        self.recent.push_back((cur, node.stamp));
         let mut id = Some(cur);
         while let Some(i) = id {
             let n = &mut self.nodes[i];
@@ -237,6 +294,7 @@ impl TopicTree {
         }
         self.enforce_cap();
         self.compact_order();
+        self.compact_recent();
         Some(cur)
     }
 
@@ -361,6 +419,18 @@ enum KeyPart {
     Num { value: Box<str>, width: usize },
     /// Lowercased text.
     Text(Box<str>),
+}
+
+/// How many leading bytes of `b` to keep, at most `max`: when `b` is UTF-8
+/// the cut does not split a character.
+fn utf8_prefix_len(b: &[u8], max: usize) -> usize {
+    if b.len() <= max {
+        return b.len();
+    }
+    match std::str::from_utf8(&b[..max]) {
+        Err(e) if e.error_len().is_none() => e.valid_up_to(),
+        _ => max,
+    }
 }
 
 /// Precomputed sort key: ordering two keys equals `natural_cmp` before its
@@ -527,7 +597,7 @@ mod tests {
             ..Default::default()
         }));
         t.insert("a", m);
-        assert_eq!(t.history_bytes(), 3 + 10 + 3);
+        assert_eq!(t.history_bytes(), 3 + 10 + 3 + ENTRY_OVERHEAD);
         let a = t.find("a").unwrap();
         t.remove(a);
         assert_eq!(t.history_bytes(), 0);
@@ -562,7 +632,7 @@ mod tests {
         assert_eq!(t.remove(b), 2, "c and d had messages");
         assert_eq!(t.find("a/b"), None);
         assert_eq!(t.find("a/b/c/d"), None);
-        assert_eq!(t.history_bytes(), bytes - 5);
+        assert_eq!(t.history_bytes(), bytes - (5 + 2 * ENTRY_OVERHEAD));
         let a = t.find("a").unwrap();
         assert_eq!(t.node(a).topic_count, 1);
         assert_eq!(t.node(a).msg_count, 1);
@@ -602,7 +672,8 @@ mod tests {
 
     #[test]
     fn removed_topic_can_come_back_and_cap_still_works() {
-        let mut t = TopicTree::with_limits(10, 10, usize::MAX);
+        let cap = 10 + 2 * ENTRY_OVERHEAD;
+        let mut t = TopicTree::with_limits(10, cap, usize::MAX);
         for p in ["aaaa", "bbbb"] {
             t.insert("gone", msg(p));
         }
@@ -612,7 +683,7 @@ mod tests {
         for p in ["1111", "2222", "3333", "4444"] {
             t.insert("kept", msg(p));
         }
-        assert!(t.history_bytes() <= 10, "{}", t.history_bytes());
+        assert!(t.history_bytes() <= cap, "{}", t.history_bytes());
         let id = t.insert("gone", msg("new")).unwrap();
         assert_eq!(t.find("gone"), Some(id));
         assert_eq!(t.node(id).history.len(), 1);
@@ -701,6 +772,83 @@ mod tests {
     }
 
     #[test]
+    fn cap_counts_entry_overhead() {
+        let mut t = TopicTree::new(20_000);
+        for _ in 0..10_000 {
+            t.insert("x", m("a"));
+        }
+        assert!(t.history_bytes() >= 10_000 * 160, "{}", t.history_bytes());
+    }
+
+    #[test]
+    fn cap_evicts_latest_payloads() {
+        let cap = 1 << 20;
+        let mut t = TopicTree::with_limits(1, cap, usize::MAX);
+        let big = "x".repeat(100 * 1024);
+        for i in 0..100 {
+            t.insert(&format!("t{i}"), m(&big));
+        }
+        assert!(
+            t.history_bytes() <= cap + 100 * (STUB_KEEP + ENTRY_OVERHEAD),
+            "{}",
+            t.history_bytes()
+        );
+        for i in 0..100 {
+            assert!(t.find(&format!("t{i}")).is_some());
+        }
+        let n = t.node(t.find("t0").unwrap());
+        let l = n.latest.as_ref().unwrap();
+        assert_eq!(l.truncated_from, Some(100 * 1024));
+        assert_eq!(l.payload.len(), STUB_KEEP);
+        assert_eq!(n.history.back().unwrap().payload.len(), STUB_KEEP);
+        assert_eq!(n.history.back().unwrap().truncated_from, Some(100 * 1024));
+    }
+
+    #[test]
+    fn stub_keeps_newest_topics_whole() {
+        let cap = 1 << 20;
+        let mut t = TopicTree::with_limits(1, cap, usize::MAX);
+        let big = "x".repeat(100 * 1024);
+        let whole = |t: &TopicTree, n: &str| {
+            t.node(t.find(n).unwrap())
+                .latest
+                .as_ref()
+                .unwrap()
+                .truncated_from
+                .is_none()
+        };
+        for i in 0..100 {
+            t.insert(&format!("t{i}"), m(&big));
+        }
+        for i in 95..100 {
+            assert!(whole(&t, &format!("t{i}")), "t{i}");
+        }
+        assert!(!whole(&t, "t1"));
+        // Updating an old topic makes it the newest, so it stays whole.
+        t.insert("t0", m(&big));
+        assert!(whole(&t, "t0"));
+        assert!(whole(&t, "t99"));
+        assert!(!whole(&t, "t1"));
+    }
+
+    #[test]
+    fn stub_cuts_on_a_char_boundary_and_keeps_flags() {
+        let mut t = TopicTree::with_limits(1, 0, usize::MAX);
+        // 'é' is two bytes: a cut at 256 would split the 128th character
+        // only if the prefix were odd, so shift by one ASCII byte.
+        let text = format!("a{}", "é".repeat(500));
+        let mut msg = m(&text);
+        msg.sparkplug = true;
+        let id = t.insert("a", msg).unwrap();
+        let l = t.node(id).latest.as_ref().unwrap();
+        assert!(std::str::from_utf8(&l.payload).is_ok());
+        assert_eq!(l.payload.len(), STUB_KEEP - 1);
+        assert_eq!(l.truncated_from, Some(text.len()));
+        assert!(l.sparkplug);
+        assert_eq!(t.history_bytes(), STUB_KEEP - 1 + ENTRY_OVERHEAD);
+    }
+
+    #[test]
     fn order_queue_stays_bounded_below_the_cap() {
         let mut t = TopicTree::with_limits(1, usize::MAX, usize::MAX);
         for i in 0..10_000 {
@@ -725,18 +873,18 @@ mod tests {
             ["q"],
             "the parked entry is evicted first"
         );
-        assert_eq!(t.history_bytes(), 2000);
+        assert_eq!(t.history_bytes(), 2000 * (1 + ENTRY_OVERHEAD));
     }
 
     #[test]
     fn memory_cap_evicts_oldest_globally() {
-        let mut t = TopicTree::with_limits(100, 10, usize::MAX);
+        let mut t = TopicTree::with_limits(100, 10 + 2 * ENTRY_OVERHEAD, usize::MAX);
         t.insert("a", m("aaaa"));
         t.insert("b", m("bbbb"));
         t.insert("a", m("cccc"));
         assert_eq!(payloads(&t, "a"), ["cccc"]);
         assert_eq!(payloads(&t, "b"), ["bbbb"]);
-        assert_eq!(t.history_bytes(), 8);
+        assert_eq!(t.history_bytes(), 8 + 2 * ENTRY_OVERHEAD);
     }
 
     #[test]
@@ -744,15 +892,19 @@ mod tests {
         let mut t = TopicTree::with_limits(100, 5, usize::MAX);
         t.insert("a", m("aaaa"));
         t.insert("b", m("bbbb"));
-        assert_eq!(t.history_bytes(), 8, "each node keeps its latest");
+        assert_eq!(
+            t.history_bytes(),
+            8 + 2 * ENTRY_OVERHEAD,
+            "each node keeps its latest"
+        );
         t.insert("a", m("cc"));
         assert_eq!(payloads(&t, "a"), ["cc"]);
         assert_eq!(payloads(&t, "b"), ["bbbb"]);
-        assert_eq!(t.history_bytes(), 6);
+        assert_eq!(t.history_bytes(), 6 + 2 * ENTRY_OVERHEAD);
         // Later entries still evict once older ones are gone.
         t.insert("b", m("d"));
         assert_eq!(payloads(&t, "b"), ["d"]);
-        assert_eq!(t.history_bytes(), 3);
+        assert_eq!(t.history_bytes(), 3 + 2 * ENTRY_OVERHEAD);
     }
 
     #[test]
@@ -762,14 +914,14 @@ mod tests {
             t.insert("x", m(p));
         }
         assert_eq!(payloads(&t, "x"), ["22", "333"]);
-        assert_eq!(t.history_bytes(), 5);
+        assert_eq!(t.history_bytes(), 5 + 2 * ENTRY_OVERHEAD);
         // A depth-evicted entry's queue slot is stale and skipped later.
         let mut t = TopicTree::with_limits(1, 4, usize::MAX);
         t.insert("x", m("111"));
         t.insert("x", m("22"));
         t.insert("y", m("33"));
         assert_eq!(payloads(&t, "x"), ["22"]);
-        assert_eq!(t.history_bytes(), 4);
+        assert_eq!(t.history_bytes(), 4 + 2 * ENTRY_OVERHEAD);
     }
     #[test]
     fn latest_shares_history_buffer() {
