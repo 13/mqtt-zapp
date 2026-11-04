@@ -2,7 +2,7 @@
 //! Passwords are never stored here: `PasswordSource` only names where to get one.
 
 use anyhow::{Context, Result};
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
