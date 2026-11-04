@@ -147,19 +147,19 @@ impl App {
             self.picker.last_used.insert(p.name.clone(), now);
         }
         self.connected = self.picker.profiles.contains(&p).then(|| p.name.clone());
-        // Payloads sent on another broker are not this one's history.
+        // Payloads sent on another broker are not this one's history, and a
+        // form left open was for it; reconnecting to the same one keeps both.
         if self
             .session_profile
             .as_ref()
-            .is_some_and(|s| s.name != p.name)
+            .is_none_or(|s| s.name != p.name)
         {
             self.sent.clear();
             self.sent_walk = None;
+            self.publish = None;
+            self.publish_draft = None;
         }
         self.session_profile = Some(p.clone());
-        // A form left open was for the old broker.
-        self.publish = None;
-        self.publish_draft = None;
         self.conn_state = ConnState::Connecting;
         self.server = Some(ServerInfo {
             name: p.name.clone(),

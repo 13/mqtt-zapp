@@ -641,3 +641,29 @@ fn a_key_press_answer_replaces_a_fresh_error() {
     a.handle_action(Action::ToggleWrap);
     assert_eq!(note_text(&a), "wrap on");
 }
+
+#[test]
+fn reconnecting_to_the_same_profile_keeps_the_form() {
+    let mut a = picker_app(vec![
+        profile("a", PasswordSource::None),
+        profile("b", PasswordSource::None),
+    ]);
+    a.handle_key(key(KeyCode::Enter));
+    a.handle_action(Action::Publish);
+    a.handle_key(key(KeyCode::Tab));
+    a.handle_key(key(KeyCode::Char('x')));
+    a.handle_key(ctrl_key('o'));
+    // The connection fails; picking the profile again reconnects.
+    a.apply_core_event(CoreEvent::State(ConnState::Failed { reason: "x".into() }));
+    a.handle_action(Action::Brokers);
+    assert!(matches!(
+        a.handle_key(key(KeyCode::Enter)),
+        Effect::Connect(..)
+    ));
+    let form = a.publish.as_ref().expect("same broker keeps the form");
+    assert_eq!(form.payload_text(), "x");
+    a.handle_action(Action::Brokers);
+    a.handle_key(key(KeyCode::Char('j')));
+    a.handle_key(key(KeyCode::Enter));
+    assert!(a.publish.is_none(), "another broker");
+}
