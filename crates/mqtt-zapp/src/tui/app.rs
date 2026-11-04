@@ -26,8 +26,10 @@ use std::fmt;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+mod actions;
 mod chart;
 mod front;
+mod keys;
 mod mouse;
 mod publish;
 mod retained;
@@ -680,159 +682,6 @@ impl App {
         .into();
         *self.rows_cache.borrow_mut() = Some((key, Rc::clone(&rows)));
         rows
-    }
-
-    pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
-        if key.kind == KeyEventKind::Release {
-            return Effect::None;
-        }
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            return Effect::Quit;
-        }
-        match self.mode {
-            Mode::Browse => match self.keymap.lookup(key) {
-                Some(action) => self.handle_action(action),
-                None => Effect::None,
-            },
-            Mode::Picker => match self.keymap.lookup(key) {
-                Some(action) => self.on_picker_action(action),
-                None => Effect::None,
-            },
-            Mode::Password => self.on_password_key(key),
-            Mode::SearchInput => {
-                self.on_search_key(key);
-                Effect::None
-            }
-            Mode::Publish => self.on_publish_key(key),
-            Mode::Help => {
-                self.on_help_key(key);
-                Effect::None
-            }
-            Mode::Stats => {
-                self.mode = Mode::Browse;
-                self.dirty = true;
-                Effect::None
-            }
-            Mode::Confirm => self.on_confirm_key(key),
-            Mode::ProfileForm => self.on_profile_form_key(key),
-        }
-    }
-
-    /// The help overlay types into its own query and never reaches the
-    /// keymap, so bound keys like `f` or `q` are just letters here.
-    fn on_help_key(&mut self, key: KeyEvent) {
-        self.dirty = true;
-        match key.code {
-            KeyCode::Enter => self.mode = Mode::Browse,
-            KeyCode::Esc if self.help_query.is_empty() => self.mode = Mode::Browse,
-            KeyCode::Esc => self.help_query.clear(),
-            KeyCode::Backspace => {
-                self.help_query.pop();
-            }
-            KeyCode::Char('?') if self.help_query.is_empty() => self.mode = Mode::Browse,
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                self.help_query.push(c);
-            }
-            _ => {}
-        }
-    }
-
-    /// Browse-mode actions.
-    pub fn handle_action(&mut self, action: Action) -> Effect {
-        self.dirty = true;
-        match action {
-            Action::Quit => return Effect::Quit,
-            // The list is newest first: down the screen is older.
-            Action::Up if self.focus == Focus::History => self.history_newer(),
-            Action::Down if self.focus == Focus::History => self.history_older(),
-            Action::Up if self.focus == Focus::Payload => self.scroll_payload_by(-1),
-            Action::Down if self.focus == Focus::Payload => self.scroll_payload_by(1),
-            Action::Top if self.focus == Focus::Payload => self.payload_scroll = 0,
-            Action::Bottom if self.focus == Focus::Payload => self.scroll_payload_by(isize::MAX),
-            // Tree-only keys do nothing while the payload has focus.
-            Action::Collapse | Action::Expand | Action::ToggleExpand | Action::Select
-                if self.focus == Focus::Payload => {}
-            Action::Up => self.move_selection(|i, _| i.saturating_sub(1)),
-            Action::Down => self.move_selection(|i, n| (i + 1).min(n - 1)),
-            Action::FocusNext => {
-                self.focus = match self.focus {
-                    Focus::Tree => Focus::Payload,
-                    Focus::Payload if self.history_shown.get() => Focus::History,
-                    Focus::Payload | Focus::History => Focus::Tree,
-                }
-            }
-            Action::ToggleDiff => {
-                self.show_diff = !self.show_diff;
-                self.payload_scroll = 0;
-            }
-            Action::MarkDiffBase => self.mark_diff_base(),
-            Action::Brokers => self.open_brokers(),
-            Action::DeleteTopic => self.ask_delete_topic(),
-            Action::ScrollDown => self.scroll_payload(true),
-            Action::ScrollUp => self.scroll_payload(false),
-            Action::Top => self.move_selection(|_, _| 0),
-            Action::Bottom => self.move_selection(|_, n| n - 1),
-            Action::Expand => {
-                if let Some(row) = self.selected_row().filter(|r| r.has_children) {
-                    self.expanded.insert(row.id);
-                }
-            }
-            Action::ToggleExpand | Action::Select => {
-                if let Some(row) = self.selected_row().filter(|r| r.has_children)
-                    && !self.expanded.remove(&row.id)
-                {
-                    self.expanded.insert(row.id);
-                }
-            }
-            Action::Collapse => self.collapse(),
-            Action::Search => self.mode = Mode::SearchInput,
-            Action::Cancel => {
-                if !self.close_chart() {
-                    self.clear_search();
-                }
-            }
-            Action::Publish => self.open_publish(),
-            Action::Help => {
-                self.help_query.clear();
-                self.mode = Mode::Help;
-            }
-            Action::CycleSort => {
-                self.sort = self.sort.next();
-                self.set_note(
-                    Note::info(format!("sort: {}", self.sort.name())),
-                    Instant::now(),
-                );
-            }
-            Action::Chart => self.cycle_chart(),
-            Action::ChartPin => self.pin_chart(),
-            Action::Stats => self.mode = Mode::Stats,
-            Action::Freeze => {
-                self.toggle_freeze();
-                let note = if self.frozen {
-                    "display frozen – f to resume"
-                } else {
-                    "display live"
-                };
-                self.set_note(Note::info(note), Instant::now());
-            }
-            // Picker-only.
-            Action::AddProfile
-            | Action::EditProfile
-            | Action::DeleteProfile
-            | Action::MoveUp
-            | Action::MoveDown => {}
-            Action::ExpandAll => self.expand_subtree(true),
-            Action::CollapseAll => self.expand_subtree(false),
-            Action::DeleteRetained => self.ask_clear_retained(false),
-            Action::ClearRetained => self.ask_clear_retained(true),
-            Action::CopyTopic => return self.copy(true),
-            Action::CopyPayload => return self.copy(false),
-        }
-        Effect::None
     }
 
     /// Expand (or collapse) the selected node and every node below it.
