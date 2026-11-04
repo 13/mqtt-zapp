@@ -122,6 +122,7 @@ fn header_shows_topics_refused_badge() {
                 received_at: SystemTime::now(),
                 truncated_from: None,
                 sparkplug: false,
+                wire_len: None,
                 props: None,
             },
         });

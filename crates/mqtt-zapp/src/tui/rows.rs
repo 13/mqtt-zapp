@@ -86,6 +86,7 @@ mod tests {
             received_at: SystemTime::now(),
             truncated_from: None,
             sparkplug: false,
+            wire_len: None,
             props: None,
         }
     }

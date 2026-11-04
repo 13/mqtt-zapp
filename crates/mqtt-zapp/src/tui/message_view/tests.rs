@@ -35,6 +35,7 @@ fn send(a: &mut App, topic: &str, payload: &[u8], retain: bool) {
             received_at: SystemTime::now(),
             truncated_from: None,
             sparkplug: false,
+            wire_len: None,
             props: None,
         },
     });
@@ -1214,6 +1215,7 @@ fn app_with_props(props: Props) -> App {
             received_at: SystemTime::now(),
             truncated_from: None,
             sparkplug: false,
+            wire_len: None,
             props: Some(std::sync::Arc::new(props)),
         },
     });
@@ -1452,6 +1454,39 @@ fn overlay_highlights_all_charted_lines() {
     assert!(!highlighted(&b, row_with(&b, "\"c\": 4")));
 }
 
+fn sparkplug_app(truncated_from: Option<usize>) -> App {
+    let mut a = app_depth(100);
+    let json = format!(r#"{{"metrics":{{"T":1}},"pad":"{}"}}"#, "x".repeat(560));
+    a.apply_core_event(CoreEvent::Message {
+        topic: T.into(),
+        msg: Message {
+            payload: Bytes::from(json.into_bytes()),
+            qos: 0,
+            retain: false,
+            received_at: SystemTime::now(),
+            truncated_from,
+            props: None,
+            sparkplug: true,
+            wire_len: Some(120),
+        },
+    });
+    a.selected = a.tree.find(T);
+    a
+}
+
+#[test]
+fn sparkplug_badge_shows_wire_size() {
+    let t = text(&draw(&sparkplug_app(None)));
+    assert!(t.contains(" 120 B "), "{t}");
+    assert!(!t.contains(" 600 B "), "{t}");
+}
+
+#[test]
+fn cut_sparkplug_keeps_badge() {
+    let t = text(&draw(&sparkplug_app(Some(5000))));
+    assert!(t.contains(" SPARKPLUG "), "{t}");
+}
+
 #[test]
 fn sparkplug_badge_and_chart_path() {
     let mut a = app_depth(100);
@@ -1465,6 +1500,7 @@ fn sparkplug_badge_and_chart_path() {
             truncated_from: None,
             props: None,
             sparkplug: true,
+            wire_len: None,
         },
     });
     a.selected = a.tree.find(T);

@@ -217,6 +217,7 @@ fn tree_click_uses_drawn_rows() {
             received_at: SystemTime::now(),
             truncated_from: None,
             sparkplug: false,
+            wire_len: None,
             props: None,
         },
     });
@@ -242,6 +243,7 @@ fn tree_click_after_reset_tree_does_not_panic() {
             received_at: SystemTime::now(),
             truncated_from: None,
             sparkplug: false,
+            wire_len: None,
             props: None,
         },
     });

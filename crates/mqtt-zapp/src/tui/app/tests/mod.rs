@@ -26,6 +26,7 @@ fn msg(topic: &str, p: &str) -> CoreEvent {
             received_at: SystemTime::now(),
             truncated_from: None,
             sparkplug: false,
+            wire_len: None,
             props: None,
         },
     }

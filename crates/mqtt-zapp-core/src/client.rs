@@ -173,6 +173,7 @@ fn incoming(
         .then(|| sparkplug::decode(payload))
         .flatten()
         .and_then(|v| serde_json::to_vec(&v).ok());
+    let decoded_len = decoded.is_some().then_some(payload.len());
     Message {
         sparkplug: decoded.is_some(),
         payload: decoded.map_or_else(
@@ -184,6 +185,7 @@ fn incoming(
         received_at: SystemTime::now(),
         truncated_from: None,
         props,
+        wire_len: decoded_len,
     }
 }
 
@@ -702,6 +704,15 @@ mod tests {
         let m = incoming("spBv1.0/g/NDATA/n", b"not protobuf {", 0, false, None);
         assert!(!m.sparkplug);
         assert_eq!(&m.payload[..], b"not protobuf {");
+    }
+
+    #[test]
+    fn incoming_records_wire_len() {
+        let p = [0x08, 0xe8, 0x07, 0x18, 0x03];
+        let m = incoming("spBv1.0/g/NDATA/n", &p, 0, false, None);
+        assert_eq!(m.wire_len, Some(p.len()));
+        let m = incoming("t", b"raw", 0, false, None);
+        assert_eq!(m.wire_len, None);
     }
 
     #[test]

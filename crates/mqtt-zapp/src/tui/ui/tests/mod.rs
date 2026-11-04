@@ -30,6 +30,7 @@ fn app_with(items: &[(&str, &[u8])]) -> App {
                 received_at: SystemTime::now(),
                 truncated_from: None,
                 sparkplug: false,
+                wire_len: None,
                 props: None,
             },
         });
@@ -186,6 +187,7 @@ fn retained(a: &mut App, topic: &str, payload: &[u8]) {
             received_at: SystemTime::now(),
             truncated_from: None,
             sparkplug: false,
+            wire_len: None,
             props: None,
         },
     });

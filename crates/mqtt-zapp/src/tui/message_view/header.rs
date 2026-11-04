@@ -120,7 +120,13 @@ pub(super) fn badges(s: &Shown, kind: &str) -> Vec<Span<'static>> {
             Style::new().fg(Color::Black).bg(theme::ACCENT),
         ),
         Span::raw(" "),
-        Span::styled(format!(" {} ", human_bytes(s.msg.payload.len())), chip),
+        Span::styled(
+            format!(
+                " {} ",
+                human_bytes(s.msg.wire_len.unwrap_or(s.msg.payload.len()))
+            ),
+            chip,
+        ),
         Span::raw(" "),
         Span::styled(format!(" QoS {} ", s.msg.qos), chip),
     ];

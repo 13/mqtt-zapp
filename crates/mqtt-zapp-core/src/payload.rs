@@ -17,6 +17,9 @@ pub struct Message {
     pub props: Option<Arc<Props>>,
     /// The payload is the JSON form of a decoded Sparkplug B message.
     pub sparkplug: bool,
+    /// The received length when ingest replaced the payload (Sparkplug
+    /// decoding); `None` when the payload is as received.
+    pub wire_len: Option<usize>,
 }
 
 /// The MQTT 5 publish properties the header shows.
@@ -499,6 +502,7 @@ mod tests {
             received_at: std::time::SystemTime::now(),
             truncated_from: None,
             sparkplug: false,
+            wire_len: None,
             props: None,
         };
         m.truncate_to(10);

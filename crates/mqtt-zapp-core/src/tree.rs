@@ -512,6 +512,7 @@ mod tests {
             received_at: std::time::SystemTime::now(),
             truncated_from: None,
             sparkplug: false,
+            wire_len: None,
             props: None,
         }
     }
@@ -642,6 +643,7 @@ mod tests {
             received_at: std::time::SystemTime::now(),
             truncated_from: None,
             sparkplug: false,
+            wire_len: None,
             props: None,
         };
         let mut t = TopicTree::new(5);
@@ -685,6 +687,7 @@ mod tests {
             received_at: SystemTime::now(),
             truncated_from: None,
             sparkplug: false,
+            wire_len: None,
             props: None,
         }
     }
