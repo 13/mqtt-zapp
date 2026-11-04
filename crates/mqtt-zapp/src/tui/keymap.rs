@@ -46,6 +46,8 @@ pub enum Action {
     Brokers,
     DeleteTopic,
     Freeze,
+    ToggleStar,
+    StarredOnly,
 }
 
 impl Action {
@@ -89,6 +91,8 @@ impl Action {
         (Action::Brokers, "brokers", &["b"]),
         (Action::DeleteTopic, "delete_topic", &["delete"]),
         (Action::Freeze, "freeze", &["f"]),
+        (Action::ToggleStar, "star", &["*"]),
+        (Action::StarredOnly, "starred_only", &["'"]),
     ];
 
     /// The snake_case name used in `[keys]`.

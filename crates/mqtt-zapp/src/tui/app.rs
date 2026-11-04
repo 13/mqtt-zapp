@@ -22,7 +22,7 @@ use mqtt_zapp_core::secrets::load_password;
 use mqtt_zapp_core::state::AppState;
 use mqtt_zapp_core::{NodeId, TopicTree};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -35,6 +35,7 @@ mod mouse;
 mod publish;
 mod retained;
 mod search;
+mod star;
 pub use mouse::HitAreas;
 
 /// How long a node stays highlighted after it (or its subtree) got a message.
@@ -384,6 +385,12 @@ pub struct App {
     created: Instant,
     /// The last `rows()` result and what it was built from.
     rows_cache: RefCell<Option<(RowsKey, Rc<[Row]>)>>,
+    /// Starred topics per profile name; persisted in `state.toml`.
+    favorites: BTreeMap<String, BTreeSet<String>>,
+    /// Show only starred topics (and their ancestors).
+    pub starred_only: bool,
+    /// Bumped when `favorites` changes, for the rows cache.
+    star_gen: u64,
 }
 
 /// Everything `visible_rows` depends on, cheaply comparable.
@@ -392,6 +399,8 @@ struct RowsKey {
     shape: u64,
     expanded: u64,
     filter: u64,
+    /// `Some(star_gen)` while the starred-only view is on.
+    star: Option<u64>,
     sort: SortOrder,
     /// `None` for Name sort; else whole seconds since `App::created`, so
     /// count and recency orders refresh at most once a second.
@@ -484,6 +493,9 @@ impl App {
             await_reply: None,
             created: Instant::now(),
             rows_cache: RefCell::new(None),
+            favorites: BTreeMap::new(),
+            starred_only: false,
+            star_gen: 0,
         })
     }
 
@@ -689,6 +701,7 @@ impl App {
             shape: self.tree.shape_gen(),
             expanded: self.expanded.generation(),
             filter: self.filter_gen,
+            star: self.starred_only.then_some(self.star_gen),
             sort: self.sort,
             order_second: match self.sort {
                 SortOrder::Name => None,
@@ -700,10 +713,12 @@ impl App {
         {
             return Rc::clone(rows);
         }
+        let only = self.starred_only.then(|| self.starred_visible());
         let rows: Rc<[Row]> = visible_rows(
             &self.tree,
             self.expanded.as_set(),
             self.filter.as_ref(),
+            only.as_ref(),
             self.sort,
         )
         .into();

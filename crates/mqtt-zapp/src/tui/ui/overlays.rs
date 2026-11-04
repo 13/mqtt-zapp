@@ -168,6 +168,8 @@ pub(super) const HELP_GROUPS: &[(&str, usize, &[Action])] = &[
             Action::CopyPayload,
             Action::Brokers,
             Action::Freeze,
+            Action::ToggleStar,
+            Action::StarredOnly,
             Action::Help,
             Action::Cancel,
             Action::Quit,

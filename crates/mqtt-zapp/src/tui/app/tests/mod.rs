@@ -15,6 +15,7 @@ mod picker;
 mod publish;
 mod retained;
 mod search;
+mod star;
 
 fn msg(topic: &str, p: &str) -> CoreEvent {
     CoreEvent::Message {

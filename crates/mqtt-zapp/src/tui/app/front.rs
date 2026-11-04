@@ -199,6 +199,8 @@ impl App {
         self.picker.sort = state.picker_sort;
         self.picker.last_used = state.last_used;
         self.picker.sel = 0;
+        self.favorites = state.favorites;
+        self.star_gen += 1;
     }
 
     /// What `state.toml` should hold now.
@@ -206,6 +208,7 @@ impl App {
         AppState {
             picker_sort: self.picker.sort,
             last_used: self.picker.last_used.clone(),
+            favorites: self.favorites.clone(),
         }
     }
 
@@ -221,6 +224,10 @@ impl App {
     pub fn profile_renamed(&mut self, old: &str, new: &str) {
         if let Some(t) = self.picker.last_used.remove(old) {
             self.picker.last_used.insert(new.to_owned(), t);
+        }
+        if let Some(f) = self.favorites.remove(old) {
+            self.favorites.insert(new.to_owned(), f);
+            self.star_gen += 1;
         }
         if self.connected.as_deref() == Some(old) {
             self.connected = Some(new.to_owned());

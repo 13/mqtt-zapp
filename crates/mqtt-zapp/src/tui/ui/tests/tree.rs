@@ -369,3 +369,22 @@ fn offline_marker_clears_on_online() {
         assert_eq!(s.contains(" offline"), p == b"Offline", "{s}");
     }
 }
+
+#[test]
+fn star_marker_rendered() {
+    let mut a = app_with(&[("a/x", b"1"), ("a/y", b"2")]);
+    let id = a.tree.find("a").unwrap();
+    a.select(id);
+    a.handle_action(Action::Expand);
+    a.handle_action(Action::Down);
+    a.handle_action(Action::Down);
+    // Effect::SaveState is dropped: nothing touches the disk.
+    a.handle_action(Action::ToggleStar);
+    a.handle_action(Action::Up);
+    let b = draw(&mut a, 80, 24);
+    let (x, y) = find_at(&b, "★");
+    let line = text(&b).lines().nth(y as usize).unwrap().to_owned();
+    assert!(line.contains("★y"), "{line}");
+    assert_eq!(b[(x, y)].fg, crate::tui::theme::ACCENT);
+    assert_eq!(text(&b).matches('★').count(), 1, "{}", text(&b));
+}

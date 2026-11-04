@@ -6,7 +6,7 @@
 use crate::config::{config_dir, create_private_dir, write_private};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 /// How the connection picker orders profiles.
@@ -46,6 +46,8 @@ pub struct AppState {
     pub picker_sort: PickerSort,
     /// Profile name → unix seconds of the last connect.
     pub last_used: BTreeMap<String, i64>,
+    /// Profile name → full topics starred in that profile's sessions.
+    pub favorites: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// `MQTT_ZAPP_STATE_DIR`, else `MQTT_ZAPP_CONFIG_DIR` (keeps a relocated
@@ -149,5 +151,20 @@ mod tests {
         assert_eq!(s.last_used, BTreeMap::from([("b".to_string(), 1)]));
         s.forget("b");
         assert!(s.last_used.is_empty());
+    }
+
+    #[test]
+    fn old_state_without_favorites_loads() {
+        let (_g, _d) = in_temp_dir();
+        std::fs::create_dir_all(state_dir()).unwrap();
+        std::fs::write(
+            state_dir().join("state.toml"),
+            "picker_sort = \"name\"\n\n[last_used]\na = 5\n",
+        )
+        .unwrap();
+        let s = AppState::load();
+        assert_eq!(s.picker_sort, PickerSort::Name);
+        assert_eq!(s.last_used["a"], 5);
+        assert!(s.favorites.is_empty());
     }
 }

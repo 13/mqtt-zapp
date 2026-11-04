@@ -84,6 +84,8 @@ impl App {
                 };
                 self.set_note(Note::info(note), Instant::now());
             }
+            Action::ToggleStar => return self.toggle_star(),
+            Action::StarredOnly => self.toggle_starred_only(),
             // Picker-only.
             Action::AddProfile
             | Action::EditProfile

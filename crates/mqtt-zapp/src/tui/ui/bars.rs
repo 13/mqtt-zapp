@@ -163,6 +163,14 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
             );
         }
     }
+    if app.starred_only && !front {
+        let chip = format!(" ★ starred ({}) ", app.starred_count());
+        spans.push(Span::styled(
+            ellipsize(&chip, width),
+            Style::new().fg(Color::Black).bg(theme::ACCENT),
+        ));
+        spans.push(Span::raw(" "));
+    }
     if let Some(note) = app.note_at(Instant::now()) {
         let room = width
             .saturating_sub(spans_width(&spans))

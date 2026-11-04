@@ -25,7 +25,7 @@ the feature set of MQTT Explorer.
 
 ## ✨ Features
 
-- 🌳 **Live topic tree:** message and topic counts per level, retained markers, a red `offline` chip on devices whose `LWT`/`status` says so, and natural, count or recent sorting.
+- 🌳 **Live topic tree:** message and topic counts per level, retained markers, a red `offline` chip on devices whose `LWT`/`status` says so, and natural, count or recent sorting. `*` stars topics (a `★` before the name, kept per profile in `state.toml`) and `'` narrows the tree to the starred ones.
 - 🔍 **Pretty payloads:** JSON is pretty-printed, and the diff shows what changed since the previous message, or since one you mark.
 - 🏭 **Sparkplug B:** `spBv1.0/…` payloads are decoded to JSON, so you can search, diff and chart their metrics; metric names from BIRTH replace aliases.
 - 📈 **Charts:** plot any numeric field from a topic's history. `c` cycles through the fields, or click a number to chart it.
@@ -204,6 +204,8 @@ any other key, `enter` included, cancels.
 | `K` | `move_up` | In the picker: move the selected profile up (custom order) |
 | `J` | `move_down` | In the picker: move the selected profile down (custom order) |
 | `f` | `freeze` | Freeze the display: only your own keys, clicks and resizes redraw (again: live) |
+| `*` | `star` | Star or unstar the selected topic for the connected profile (saved at once) |
+| `'` | `starred_only` | Show only starred topics and their ancestors (again: everything) |
 
 </details>
 

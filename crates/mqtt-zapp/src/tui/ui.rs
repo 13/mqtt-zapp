@@ -186,7 +186,16 @@ fn render_tree(f: &mut Frame, app: &mut App, area: Rect) {
         .take(height)
         .map(|(i, row)| {
             let flash = app.is_flashing(row.id, now);
-            let line = Line::from(row_spans(&app.tree, row, query, width, flash, stale_before));
+            let starred = app.starred_count() > 0 && app.is_starred(&app.tree.full_topic(row.id));
+            let line = Line::from(row_spans(
+                &app.tree,
+                row,
+                query,
+                width,
+                flash,
+                stale_before,
+                starred,
+            ));
             if Some(i) == selected {
                 theme::select(line, focused)
             } else {
@@ -248,6 +257,7 @@ fn row_spans<'a>(
     width: usize,
     flash: bool,
     stale_before: Option<SystemTime>,
+    starred: bool,
 ) -> Vec<Span<'a>> {
     let node = tree.node(row.id);
     let marker = match (row.has_children, row.expanded) {
@@ -270,6 +280,9 @@ fn row_spans<'a>(
     }
     if flash {
         name_style = name_style.fg(FLASH_FG).add_modifier(FLASH_MODIFIER);
+    }
+    if starred {
+        spans.push(Span::styled("★", Style::new().fg(theme::ACCENT)));
     }
     highlight(&mut spans, name, query, name_style);
     if node.retained {

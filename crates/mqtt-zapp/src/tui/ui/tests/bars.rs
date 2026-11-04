@@ -461,3 +461,13 @@ fn filter_hint_hidden_while_chart_open() {
     let last = last_line(&draw(&mut a, 100, 24));
     assert!(last.contains("esc clear"), "chart off: {last}");
 }
+
+#[test]
+fn starred_chip_in_footer() {
+    let mut a = app_with(&[("a", b"1")]);
+    a.handle_action(Action::Down);
+    a.handle_action(Action::ToggleStar);
+    a.handle_action(Action::StarredOnly);
+    let last = last_line(&draw(&mut a, 100, 24));
+    assert!(last.contains(" ★ starred (1) "), "{last}");
+}

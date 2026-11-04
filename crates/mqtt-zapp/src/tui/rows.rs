@@ -15,14 +15,18 @@ pub struct Row {
 }
 
 /// Depth-first walk in name order, skipping ROOT. Children of collapsed nodes
-/// are hidden. With a filter only `filter.visible` nodes are shown, all expanded.
+/// are hidden. With a filter only `filter.visible` nodes are shown, all
+/// expanded; `only` (the starred view) narrows that further.
 pub fn visible_rows(
     tree: &TopicTree,
     expanded: &HashSet<NodeId>,
     filter: Option<&Filter>,
+    only: Option<&HashSet<NodeId>>,
     sort: SortOrder,
 ) -> Vec<Row> {
-    let shown = |id: &NodeId| filter.is_none_or(|f| f.visible.contains(id));
+    let shown = |id: &NodeId| {
+        filter.is_none_or(|f| f.visible.contains(id)) && only.is_none_or(|o| o.contains(id))
+    };
     let order = |a: &NodeId, b: &NodeId| {
         let (x, y) = (tree.node(*a), tree.node(*b));
         let by_name = || {
@@ -55,7 +59,7 @@ pub fn visible_rows(
     push_children(&mut stack, TopicTree::ROOT, 0);
     while let Some((id, depth)) = stack.pop() {
         let has_children = tree.node(id).children.values().any(shown);
-        let expanded = filter.is_some() || expanded.contains(&id);
+        let expanded = filter.is_some() || only.is_some() || expanded.contains(&id);
         rows.push(Row {
             id,
             depth,
@@ -98,7 +102,7 @@ mod tests {
             t.insert(topic, m("x"));
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        let rows = |t: &TopicTree, o| names(t, &visible_rows(t, &HashSet::new(), None, o));
+        let rows = |t: &TopicTree, o| names(t, &visible_rows(t, &HashSet::new(), None, None, o));
         assert_eq!(rows(&t, SortOrder::Name), vec!["n2", "n9", "n10"]);
         assert_eq!(rows(&t, SortOrder::Count), vec!["n9", "n2", "n10"]);
         assert_eq!(rows(&t, SortOrder::Recent), vec!["n2", "n9", "n10"]);
@@ -116,11 +120,11 @@ mod tests {
         t.insert("a/b", m("1"));
         t.insert("a/c", m("2"));
         let a = t.find("a").unwrap();
-        let rows = visible_rows(&t, &HashSet::new(), None, SortOrder::Name);
+        let rows = visible_rows(&t, &HashSet::new(), None, None, SortOrder::Name);
         assert_eq!(names(&t, &rows), ["a"]);
         assert!(!rows[0].expanded);
         assert!(rows[0].has_children);
-        let rows = visible_rows(&t, &HashSet::from([a]), None, SortOrder::Name);
+        let rows = visible_rows(&t, &HashSet::from([a]), None, None, SortOrder::Name);
         assert_eq!(names(&t, &rows), ["a", "b", "c"]);
         assert_eq!(rows.iter().map(|r| r.depth).collect::<Vec<_>>(), [0, 1, 1]);
         assert!(rows[0].expanded);
@@ -135,7 +139,7 @@ mod tests {
         let f = search::filter(&t, "wzr", search::QueryMode::Plain)
             .unwrap()
             .unwrap();
-        let rows = visible_rows(&t, &HashSet::new(), Some(&f), SortOrder::Name);
+        let rows = visible_rows(&t, &HashSet::new(), Some(&f), None, SortOrder::Name);
         assert_eq!(names(&t, &rows), ["a", "wzr"]);
         assert!(rows[0].expanded);
     }
@@ -147,7 +151,7 @@ mod tests {
             t.insert(s, m("v"));
         }
         let all: HashSet<_> = (1..t.len()).collect();
-        let rows = visible_rows(&t, &all, None, SortOrder::Name);
+        let rows = visible_rows(&t, &all, None, None, SortOrder::Name);
         assert_eq!(names(&t, &rows), ["a", "x", "z", "1", "b", "y"]);
     }
 }
