@@ -288,6 +288,9 @@ mod tests {
             tls: TlsConfig::default(),
             subscriptions: vec![],
             retained: true,
+            keepalive_s: None,
+            clean_session: None,
+            session_expiry_s: None,
         };
         assert_eq!(super::server_url(&p), "mqtts://alice@broker.lan:8883");
         p.protocol = Protocol::Wss;
@@ -318,6 +321,9 @@ mod tests {
             tls: TlsConfig::default(),
             subscriptions: vec![],
             retained: true,
+            keepalive_s: None,
+            clean_session: None,
+            session_expiry_s: None,
         }
     }
 

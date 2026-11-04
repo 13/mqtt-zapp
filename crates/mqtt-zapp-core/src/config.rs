@@ -107,6 +107,16 @@ pub struct Profile {
     /// (the `$SYS` filters are exempt). Ignored on 3.1.1.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub retained: bool,
+    /// Keep-alive in seconds; the rumqttc default (5 s) when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keepalive_s: Option<u16>,
+    /// `Some(false)` asks the broker to keep the session (MQTT 5: clean
+    /// start off); unset means the default, a clean session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clean_session: Option<bool>,
+    /// MQTT 5 only: session expiry interval in seconds. Ignored on 3.1.1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_expiry_s: Option<u32>,
 }
 
 fn default_true() -> bool {
@@ -118,6 +128,24 @@ fn is_true(b: &bool) -> bool {
 }
 
 impl Profile {
+    /// Why the session options cannot be used. rumqttc asserts a v5
+    /// keep-alive of at least 5 s, so that is refused here rather than
+    /// left to panic at connect time. (0 turns keep-alive off on 3.1.1.)
+    pub fn session_error(&self) -> Option<String> {
+        match (self.mqtt_version, self.keepalive_s) {
+            (MqttVersion::V5, Some(k)) if k < 5 => {
+                Some("keepalive: MQTT 5 needs at least 5 s".into())
+            }
+            _ => None,
+        }
+    }
+
+    /// A note, not an error: the option is set but has no effect.
+    pub fn session_warning(&self) -> Option<&'static str> {
+        (self.mqtt_version == MqttVersion::V311 && self.session_expiry_s.is_some())
+            .then_some("session expiry needs MQTT 5")
+    }
+
     /// The configured client id, or a fresh `mqtt-zapp-xxxxxx` on every call.
     /// Callers should keep the result for the whole session.
     pub fn effective_client_id(&self) -> String {
@@ -457,7 +485,47 @@ mod tests {
             tls: TlsConfig::default(),
             subscriptions: vec!["#".into(), "$SYS/#".into()],
             retained: true,
+            keepalive_s: None,
+            clean_session: None,
+            session_expiry_s: None,
         }
+    }
+
+    #[test]
+    fn old_profiles_load_without_session_fields() {
+        let p: Profile =
+            toml::from_str("name=\"home\"\nhost=\"h\"\nport=1883\nprotocol=\"mqtt\"").unwrap();
+        assert_eq!(p.keepalive_s, None);
+        assert_eq!(p.clean_session, None);
+        assert_eq!(p.session_expiry_s, None);
+        let out = toml::to_string(&p).unwrap();
+        assert!(!out.contains("keepalive") && !out.contains("clean") && !out.contains("expiry"));
+        let mut p = p;
+        p.keepalive_s = Some(30);
+        p.clean_session = Some(false);
+        p.session_expiry_s = Some(60);
+        let out = toml::to_string(&p).unwrap();
+        let back: Profile = toml::from_str(&out).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn session_checks() {
+        let mut p = sample("x");
+        p.keepalive_s = Some(30);
+        assert_eq!(p.session_error(), None);
+        p.keepalive_s = Some(0); // v4: disables keep-alive
+        assert_eq!(p.session_error(), None);
+        p.mqtt_version = MqttVersion::V5;
+        assert!(p.session_error().unwrap().starts_with("keepalive"));
+        p.keepalive_s = Some(4);
+        assert!(p.session_error().unwrap().starts_with("keepalive"));
+        p.keepalive_s = Some(5);
+        assert_eq!(p.session_error(), None);
+        assert_eq!(p.session_warning(), None);
+        p.mqtt_version = MqttVersion::V311;
+        p.session_expiry_s = Some(10);
+        assert_eq!(p.session_warning(), Some("session expiry needs MQTT 5"));
     }
 
     #[test]

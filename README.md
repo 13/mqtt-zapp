@@ -168,6 +168,12 @@ connection asks the broker not to send stored retained messages on subscribe;
 live messages still arrive, and the `$SYS` filters are unaffected. On 3.1.1 it
 has no effect.
 
+Session options, each a profile field, a form row and a flag (`profile add`
+saves them; with `--profile` or `--host` they apply to that run only):
+`--keepalive SECS` (default 60; MQTT 5 needs at least 5), `--no-clean` (keep the
+broker-side session: clean session off, or clean start off on MQTT 5) and
+`--session-expiry SECS` (MQTT 5 only; the form notes that it is ignored on 3.1.1).
+
 ## ⌨️ Keys
 
 `?` shows the keys in effect, including your remaps. Type while it is open to

@@ -89,6 +89,27 @@ pub struct ConnArgs {
     /// Skip TLS certificate verification
     #[arg(long)]
     pub insecure: bool,
+    /// Keep-alive interval in seconds [default: 60]. MQTT 5 needs at least 5.
+    #[arg(long, value_name = "SECS")]
+    pub keepalive: Option<u16>,
+    /// Ask the broker to keep the session (clean session off / clean start off)
+    #[arg(long)]
+    pub no_clean: bool,
+    /// MQTT 5 only: session expiry interval in seconds
+    #[arg(long, value_name = "SECS")]
+    pub session_expiry: Option<u32>,
+}
+
+impl ConnArgs {
+    /// Session flags override the saved profile's for this run only.
+    fn apply_session(&self, mut p: Profile) -> Profile {
+        p.keepalive_s = self.keepalive.or(p.keepalive_s);
+        if self.no_clean {
+            p.clean_session = Some(false);
+        }
+        p.session_expiry_s = self.session_expiry.or(p.session_expiry_s);
+        p
+    }
 }
 
 /// Subscription override, shared by every command that connects (`tui` now,
@@ -182,6 +203,9 @@ fn build_profile(name: &str, conn: &ConnArgs, host: &str, password: PasswordSour
         },
         subscriptions: default_subscriptions(),
         retained: true,
+        keepalive_s: conn.keepalive,
+        clean_session: conn.no_clean.then_some(false),
+        session_expiry_s: conn.session_expiry,
     }
 }
 
@@ -215,7 +239,9 @@ pub fn resolve_launch(args: &Args, store: &ProfileStore) -> Result<Launch> {
     }
     match &args.profile {
         Some(name) => match store.get(name) {
-            Some(p) => Ok(Launch::Connect(args.subs.apply(p.clone()))),
+            Some(p) => Ok(Launch::Connect(
+                args.subs.apply(args.conn.apply_session(p.clone())),
+            )),
             None => bail!("unknown profile '{name}'"),
         },
         None => Ok(Launch::Picker),
@@ -239,7 +265,11 @@ fn profile_for_add(name: &str, mode: Option<PasswordMode>, conn: &ConnArgs) -> R
         None if conn.user.is_some() || conn.ask_password => PasswordSource::Prompt,
         None => PasswordSource::None,
     };
-    Ok(build_profile(name, conn, host, password))
+    let profile = build_profile(name, conn, host, password);
+    if let Some(e) = profile.session_error() {
+        bail!(e);
+    }
+    Ok(profile)
 }
 
 pub fn format_list(store: &ProfileStore) -> String {
@@ -312,12 +342,66 @@ mod tests {
             tls: TlsConfig::default(),
             subscriptions: default_subscriptions(),
             retained: true,
+            keepalive_s: None,
+            clean_session: None,
+            session_expiry_s: None,
         });
         s
     }
 
     fn launch(a: &[&str]) -> Result<Launch> {
         resolve_launch(&Args::parse_from(a), &store())
+    }
+
+    #[test]
+    fn session_flags_apply_and_save() {
+        let Ok(Launch::Connect(p)) = launch(&[
+            "mqtt-zapp",
+            "--profile",
+            "home",
+            "--keepalive",
+            "30",
+            "--no-clean",
+            "--session-expiry",
+            "60",
+        ]) else {
+            panic!()
+        };
+        assert_eq!(
+            (p.keepalive_s, p.clean_session, p.session_expiry_s),
+            (Some(30), Some(false), Some(60))
+        );
+        let Ok(Launch::Connect(p)) = launch(&["mqtt-zapp", "--profile", "home"]) else {
+            panic!()
+        };
+        assert_eq!(
+            (p.keepalive_s, p.clean_session, p.session_expiry_s),
+            (None, None, None)
+        );
+        let a = Args::parse_from(["mqtt-zapp", "--host", "h", "--keepalive", "9", "--no-clean"]);
+        let Ok(Launch::Connect(p)) = resolve_launch(&a, &store()) else {
+            panic!()
+        };
+        assert_eq!((p.keepalive_s, p.clean_session), (Some(9), Some(false)));
+        assert!(Args::try_parse_from(["mqtt-zapp", "--keepalive", "70000"]).is_err());
+        let add = Args::parse_from([
+            "mqtt-zapp",
+            "profile",
+            "add",
+            "--name",
+            "n",
+            "--host",
+            "h",
+            "--mqtt-version",
+            "5",
+            "--keepalive",
+            "2",
+        ]);
+        let Some(Cmd::Profile(ProfileCmd::Add { conn, .. })) = add.cmd else {
+            panic!()
+        };
+        let e = profile_for_add("n", None, &conn).unwrap_err();
+        assert!(e.to_string().starts_with("keepalive"), "{e}");
     }
 
     #[test]

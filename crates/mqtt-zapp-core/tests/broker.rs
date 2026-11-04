@@ -22,6 +22,9 @@ fn profile(host: &str, port: u16, protocol: Protocol) -> Profile {
         tls: TlsConfig::default(),
         subscriptions: vec!["zapp/#".into()],
         retained: true,
+        keepalive_s: None,
+        clean_session: None,
+        session_expiry_s: None,
     }
 }
 

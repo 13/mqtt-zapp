@@ -46,6 +46,9 @@ fn sample(name: &str, pw: PasswordSource) -> Profile {
         },
         subscriptions: vec!["#".into()],
         retained: true,
+        keepalive_s: None,
+        clean_session: None,
+        session_expiry_s: None,
     }
 }
 
@@ -110,7 +113,10 @@ fn new_form_defaults() {
             PasswordSource,
             ClientId,
             Subscriptions,
-            Retained
+            Retained,
+            Keepalive,
+            CleanSession,
+            SessionExpiry
         ]
     );
     assert_eq!(f.input(Port).unwrap().text(), "1883");
@@ -297,7 +303,7 @@ fn esc_cancels_and_enter_moves_on() {
     f.on_key(key(KeyCode::BackTab));
     assert_eq!(f.field, PField::Name);
     f.on_key(key(KeyCode::BackTab));
-    assert_eq!(f.field, PField::Retained, "wraps");
+    assert_eq!(f.field, PField::SessionExpiry, "wraps");
     assert!(matches!(
         f.on_key(key(KeyCode::Esc)),
         ProfileOutcome::Cancel
@@ -455,4 +461,66 @@ fn debug_hides_password() {
     assert!(!format!("{f:?}").contains("s3cret"));
     let e = save(&mut f).unwrap();
     assert!(!format!("{e:?}").contains("s3cret"));
+}
+
+#[test]
+fn form_session_rows_round_trip() {
+    let mut p = sample("s", PasswordSource::None);
+    p.mqtt_version = MqttVersion::V5;
+    p.keepalive_s = Some(30);
+    p.clean_session = Some(false);
+    p.session_expiry_s = Some(3600);
+    let mut f = ProfileForm::new(Some(&p), vec![]);
+    let e = save(&mut f).unwrap().profile;
+    assert_eq!(
+        (e.keepalive_s, e.clean_session, e.session_expiry_s),
+        (Some(30), Some(false), Some(3600))
+    );
+    // Defaults stay unset; emptied rows clear; the toggle flips back.
+    let mut f = ProfileForm::new(Some(&p), vec![]);
+    goto(&mut f, PField::Keepalive);
+    for _ in 0..3 {
+        f.on_key(key(KeyCode::Backspace));
+    }
+    goto(&mut f, PField::CleanSession);
+    f.on_key(key(KeyCode::Char(' ')));
+    goto(&mut f, PField::SessionExpiry);
+    for _ in 0..5 {
+        f.on_key(key(KeyCode::Backspace));
+    }
+    let e = save(&mut f).unwrap().profile;
+    assert_eq!(
+        (e.keepalive_s, e.clean_session, e.session_expiry_s),
+        (None, None, None)
+    );
+}
+
+#[test]
+fn form_keepalive_range_and_expiry_warning() {
+    let mut f = filled();
+    goto(&mut f, PField::Keepalive);
+    type_str(&mut f, "70000");
+    assert!(save(&mut f).is_none());
+    assert_eq!(f.error.as_deref(), Some("keepalive: 0..=65535 s"));
+    let mut f = filled();
+    goto(&mut f, PField::Keepalive);
+    type_str(&mut f, "x");
+    assert!(save(&mut f).is_none());
+    let mut f = filled();
+    goto(&mut f, PField::SessionExpiry);
+    type_str(&mut f, "60");
+    // 3.1.1: a warning in the hint line, not an error.
+    assert!(
+        draw(&f, 80, 30)
+            .join("\n")
+            .contains("session expiry needs MQTT 5")
+    );
+    assert!(save(&mut f).is_some());
+    goto(&mut f, PField::Version);
+    f.on_key(key(KeyCode::Char(' ')));
+    assert!(
+        !draw(&f, 80, 30)
+            .join("\n")
+            .contains("session expiry needs MQTT 5")
+    );
 }

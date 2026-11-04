@@ -99,6 +99,12 @@ pub enum PField {
     Subscriptions,
     /// MQTT 5: ask the broker to send retained messages on subscribe.
     Retained,
+    /// Keep-alive in seconds; empty is the default.
+    Keepalive,
+    /// Unchecked asks the broker to keep the session.
+    CleanSession,
+    /// MQTT 5: session expiry in seconds; empty is the default.
+    SessionExpiry,
     CaFile,
     ClientCert,
     ClientKey,
@@ -106,7 +112,7 @@ pub enum PField {
 }
 
 impl PField {
-    pub const ALL: [PField; 16] = [
+    pub const ALL: [PField; 19] = [
         PField::Name,
         PField::Host,
         PField::Port,
@@ -119,6 +125,9 @@ impl PField {
         PField::ClientId,
         PField::Subscriptions,
         PField::Retained,
+        PField::Keepalive,
+        PField::CleanSession,
+        PField::SessionExpiry,
         PField::CaFile,
         PField::ClientCert,
         PField::ClientKey,
@@ -139,6 +148,9 @@ impl PField {
             PField::ClientId => "client id",
             PField::Subscriptions => "subscriptions",
             PField::Retained => "retained",
+            PField::Keepalive => "keepalive",
+            PField::CleanSession => "clean session",
+            PField::SessionExpiry => "session expiry",
             PField::CaFile => "ca file",
             PField::ClientCert => "client cert",
             PField::ClientKey => "client key",
@@ -189,6 +201,7 @@ pub struct ProfileForm {
     pub source: PasswordSource,
     pub insecure: bool,
     pub retained: bool,
+    pub clean_session: bool,
     name: LineInput,
     host: LineInput,
     port: LineInput,
@@ -196,6 +209,8 @@ pub struct ProfileForm {
     username: LineInput,
     password: LineInput,
     client_id: LineInput,
+    keepalive: LineInput,
+    session_expiry: LineInput,
     subscriptions: LineInput,
     ca_file: LineInput,
     client_cert: LineInput,
@@ -274,6 +289,9 @@ impl ProfileForm {
                     tls: TlsConfig::default(),
                     subscriptions: default_subscriptions(),
                     retained: true,
+                    keepalive_s: None,
+                    clean_session: None,
+                    session_expiry_s: None,
                 };
                 &fresh
             }
@@ -290,6 +308,13 @@ impl ProfileForm {
             source: p.password,
             insecure: p.tls.insecure,
             retained: p.retained,
+            clean_session: p.clean_session != Some(false),
+            keepalive: LineInput::new(&p.keepalive_s.map(|v| v.to_string()).unwrap_or_default()),
+            session_expiry: LineInput::new(
+                &p.session_expiry_s
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+            ),
             name: LineInput::new(&p.name),
             host: LineInput::new(&p.host),
             port: LineInput::new(&p.port.to_string()),
@@ -330,6 +355,8 @@ impl ProfileForm {
             PField::Password => &self.password,
             PField::ClientId => &self.client_id,
             PField::Subscriptions => &self.subscriptions,
+            PField::Keepalive => &self.keepalive,
+            PField::SessionExpiry => &self.session_expiry,
             PField::CaFile => &self.ca_file,
             PField::ClientCert => &self.client_cert,
             PField::ClientKey => &self.client_key,
@@ -337,6 +364,7 @@ impl ProfileForm {
             | PField::Version
             | PField::PasswordSource
             | PField::Insecure
+            | PField::CleanSession
             | PField::Retained => {
                 return None;
             }
@@ -353,6 +381,8 @@ impl ProfileForm {
             PField::Password => &mut self.password,
             PField::ClientId => &mut self.client_id,
             PField::Subscriptions => &mut self.subscriptions,
+            PField::Keepalive => &mut self.keepalive,
+            PField::SessionExpiry => &mut self.session_expiry,
             PField::CaFile => &mut self.ca_file,
             PField::ClientCert => &mut self.client_cert,
             PField::ClientKey => &mut self.client_key,
@@ -360,6 +390,7 @@ impl ProfileForm {
             | PField::Version
             | PField::PasswordSource
             | PField::Insecure
+            | PField::CleanSession
             | PField::Retained => {
                 return None;
             }
@@ -407,6 +438,7 @@ impl ProfileForm {
                     }
                     (PField::Insecure, Some(_)) => self.insecure = !self.insecure,
                     (PField::Retained, Some(_)) => self.retained = !self.retained,
+                    (PField::CleanSession, Some(_)) => self.clean_session = !self.clean_session,
                     (f, _) => {
                         if let Some(input) = self.input_mut(f) {
                             input.on_key(key);
@@ -460,37 +492,62 @@ impl ProfileForm {
         for s in &subscriptions {
             parse_sub(s)?;
         }
+        let keepalive_s = match optional(&self.keepalive) {
+            None => None,
+            Some(t) => Some(t.parse::<u16>().map_err(|_| "keepalive: 0..=65535 s")?),
+        };
+        let session_expiry_s = match optional(&self.session_expiry) {
+            None => None,
+            Some(t) => Some(
+                t.parse::<u32>()
+                    .map_err(|_| "session expiry: 0..=4294967295 s")?,
+            ),
+        };
         let tls = self.protocol.is_tls();
         let path = |l: &LineInput| optional(l).filter(|_| tls).map(PathBuf::from);
         let ws_path = self.ws_path.text.trim();
+        let profile = Profile {
+            name: name.to_owned(),
+            host: host.to_owned(),
+            port,
+            protocol: self.protocol,
+            mqtt_version: self.version,
+            ws_path: if ws_path.is_empty() {
+                default_ws_path()
+            } else {
+                ws_path.to_owned()
+            },
+            client_id: optional(&self.client_id),
+            username: optional(&self.username),
+            password: self.source,
+            tls: TlsConfig {
+                ca_file: path(&self.ca_file),
+                client_cert: path(&self.client_cert),
+                client_key: path(&self.client_key),
+                insecure: tls && self.insecure,
+            },
+            subscriptions,
+            retained: self.retained,
+            keepalive_s,
+            clean_session: (!self.clean_session).then_some(false),
+            session_expiry_s,
+        };
+        if let Some(e) = profile.session_error() {
+            return Err(e);
+        }
         Ok(ProfileEdit {
             original: self.original.clone(),
-            profile: Profile {
-                name: name.to_owned(),
-                host: host.to_owned(),
-                port,
-                protocol: self.protocol,
-                mqtt_version: self.version,
-                ws_path: if ws_path.is_empty() {
-                    default_ws_path()
-                } else {
-                    ws_path.to_owned()
-                },
-                client_id: optional(&self.client_id),
-                username: optional(&self.username),
-                password: self.source,
-                tls: TlsConfig {
-                    ca_file: path(&self.ca_file),
-                    client_cert: path(&self.client_cert),
-                    client_key: path(&self.client_key),
-                    insecure: tls && self.insecure,
-                },
-                subscriptions,
-                retained: self.retained,
-            },
+            profile,
             password: (keyring && !self.password.text.is_empty())
                 .then(|| self.password.text.clone()),
         })
+    }
+
+    /// A note shown instead of the key hint: set, but without effect.
+    pub fn warning(&self) -> Option<&'static str> {
+        let expiry = optional(&self.session_expiry)?;
+        (self.version == MqttVersion::V311 && expiry.parse::<u32>().is_ok())
+            .then_some("session expiry needs MQTT 5")
     }
 }
 

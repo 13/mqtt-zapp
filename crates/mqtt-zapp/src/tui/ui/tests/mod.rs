@@ -162,6 +162,9 @@ fn profile(
         tls: TlsConfig::default(),
         subscriptions: vec!["#".into()],
         retained: true,
+        keepalive_s: None,
+        clean_session: None,
+        session_expiry_s: None,
     }
 }
 

@@ -644,6 +644,15 @@ pub(crate) fn mqtt_options(profile: &Profile, password: Option<String>) -> Resul
     let (id, host, port) = endpoint(profile);
     let mut opts = MqttOptions::new(id, host, port);
     opts.set_max_packet_size(MAX_PACKET, MAX_PACKET);
+    if let Some(e) = profile.session_error() {
+        bail!(e);
+    }
+    if let Some(k) = profile.keepalive_s {
+        opts.set_keep_alive(Duration::from_secs(k.into()));
+    }
+    if let Some(clean) = profile.clean_session {
+        opts.set_clean_session(clean);
+    }
     if let Some(user) = &profile.username {
         opts.set_credentials(user, password.unwrap_or_default());
     }
@@ -656,6 +665,18 @@ fn mqtt_options_v5(profile: &Profile, password: Option<String>) -> Result<v5::Mq
     let mut opts = v5::MqttOptions::new(id, host, port);
     // Incoming limit, announced to the broker in CONNECT.
     opts.set_max_packet_size(Some(MAX_PACKET as u32));
+    if let Some(e) = profile.session_error() {
+        bail!(e);
+    }
+    if let Some(k) = profile.keepalive_s {
+        opts.set_keep_alive(Duration::from_secs(k.into()));
+    }
+    if let Some(clean) = profile.clean_session {
+        opts.set_clean_start(clean);
+    }
+    if profile.session_expiry_s.is_some() {
+        opts.set_session_expiry_interval(profile.session_expiry_s);
+    }
     if let Some(user) = &profile.username {
         opts.set_credentials(user, password.unwrap_or_default());
     }
@@ -993,11 +1014,58 @@ mod tests {
             tls: TlsConfig::default(),
             subscriptions: vec![],
             retained: true,
+            keepalive_s: None,
+            clean_session: None,
+            session_expiry_s: None,
         }
     }
 
     fn addr(p: &Profile) -> String {
         mqtt_options(p, None).unwrap().broker_address().0
+    }
+
+    #[test]
+    fn options_apply_keepalive_and_clean() {
+        let mut p = profile("h", Protocol::Mqtt, "/");
+        let o = mqtt_options(&p, None).unwrap();
+        assert_eq!(o.keep_alive(), Duration::from_secs(60)); // rumqttc default
+        assert!(o.clean_session());
+        p.keepalive_s = Some(42);
+        p.clean_session = Some(false);
+        let o = mqtt_options(&p, None).unwrap();
+        assert_eq!(o.keep_alive(), Duration::from_secs(42));
+        assert!(!o.clean_session());
+        p.mqtt_version = MqttVersion::V5;
+        let o = mqtt_options_v5(&p, None).unwrap();
+        assert_eq!(o.keep_alive(), Duration::from_secs(42));
+        assert!(!o.clean_start());
+    }
+
+    #[test]
+    fn keepalive_out_of_range_is_an_error_not_a_panic() {
+        let mut p = profile("h", Protocol::Mqtt, "/");
+        p.mqtt_version = MqttVersion::V5;
+        p.keepalive_s = Some(2);
+        let e = mqtt_options_v5(&p, None).unwrap_err();
+        assert!(format!("{e:#}").contains("keepalive"), "{e:#}");
+        p.mqtt_version = MqttVersion::V311;
+        p.keepalive_s = Some(0);
+        assert_eq!(mqtt_options(&p, None).unwrap().keep_alive(), Duration::ZERO);
+    }
+
+    #[test]
+    fn v5_session_expiry_in_connect_props() {
+        let mut p = profile("h", Protocol::Mqtt, "/");
+        p.mqtt_version = MqttVersion::V5;
+        assert_eq!(
+            mqtt_options_v5(&p, None).unwrap().session_expiry_interval(),
+            None
+        );
+        p.session_expiry_s = Some(3600);
+        assert_eq!(
+            mqtt_options_v5(&p, None).unwrap().session_expiry_interval(),
+            Some(3600)
+        );
     }
 
     #[test]

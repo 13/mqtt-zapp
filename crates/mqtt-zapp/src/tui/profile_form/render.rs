@@ -59,6 +59,11 @@ pub(super) fn value_spans(form: &ProfileForm, field: PField, width: usize) -> Ve
         } else {
             "[ ] send on subscribe (MQTT 5 only)"
         })],
+        PField::CleanSession => vec![Span::raw(if form.clean_session {
+            "[x] start fresh (untick to keep the session)"
+        } else {
+            "[ ] start fresh (untick to keep the session)"
+        })],
         PField::Password => {
             let input = &form.password;
             if input.text().is_empty() && form.had_keyring {
@@ -128,8 +133,9 @@ pub fn render(f: &mut Frame, area: Rect, form: &ProfileForm) {
         })
         .collect();
     f.render_widget(Paragraph::new(lines), rows);
-    f.render_widget(
-        Paragraph::new(format!(" {HINT}")).style(Style::new().fg(theme::MUTED)),
-        hint,
-    );
+    let (text, color) = match form.warning() {
+        Some(w) => (format!(" note: {w}; ignored on 3.1.1"), theme::WARN),
+        None => (format!(" {HINT}"), theme::MUTED),
+    };
+    f.render_widget(Paragraph::new(text).style(Style::new().fg(color)), hint);
 }
