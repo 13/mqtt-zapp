@@ -167,18 +167,22 @@ impl Client {
 /// `@` has no `/` or `#`, so `user@host/#` stays a plain filter; then it must
 /// be a QoS digit 0-2.
 pub fn parse_sub(s: &str) -> Result<(String, QoS), String> {
-    if let Some((filter, q)) = s.rsplit_once('@')
-        && !q.contains(['/', '#'])
-    {
-        let qos = match q {
-            "0" => QoS::AtMostOnce,
-            "1" => QoS::AtLeastOnce,
-            "2" => QoS::ExactlyOnce,
-            _ => return Err(format!("bad QoS in \"{s}\"")),
-        };
-        return Ok((filter.to_owned(), qos));
+    let (filter, qos) = match s.rsplit_once('@') {
+        Some((filter, q)) if !q.contains(['/', '#']) => {
+            let qos = match q {
+                "0" => QoS::AtMostOnce,
+                "1" => QoS::AtLeastOnce,
+                "2" => QoS::ExactlyOnce,
+                _ => return Err(format!("bad QoS in \"{s}\"")),
+            };
+            (filter, qos)
+        }
+        _ => (s, QoS::AtMostOnce),
+    };
+    if filter.trim().is_empty() {
+        return Err(format!("empty filter in \"{s}\""));
     }
-    Ok((s.to_owned(), QoS::AtMostOnce))
+    Ok((filter.to_owned(), qos))
 }
 
 /// An entry that does not parse (a hand-edited profile) goes out as a plain
@@ -812,6 +816,13 @@ mod tests {
             parse_sub("user@host/#@1"),
             Ok(("user@host/#".into(), QoS::AtLeastOnce))
         );
+        for bad in ["", "@1", "  ", " @1"] {
+            assert_eq!(
+                parse_sub(bad),
+                Err(format!("empty filter in \"{bad}\"")),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]
