@@ -55,14 +55,26 @@ pub fn text_line(topic: &str, body: &[u8]) -> String {
 }
 
 /// The password a headless run can use. Prompting is impossible without a
-/// terminal conversation, so only the keyring is read.
-fn password(p: &Profile) -> Result<Option<String>> {
-    match p.password {
+/// terminal conversation, so the keyring, an env var or a command is read.
+/// Blocking, so it runs on a blocking thread.
+async fn password(p: &Profile) -> Result<Option<String>> {
+    match &p.password {
         PasswordSource::None => Ok(None),
-        PasswordSource::Keyring => {
-            secrets::load_password(&p.name).context("reading the password from the keyring")
+        PasswordSource::Prompt => {
+            bail!("password prompt is not available in sub/pub; use keyring, env or command")
         }
-        PasswordSource::Prompt => bail!("password prompt is not available in sub/pub; use keyring"),
+        source => {
+            let keyring = *source == PasswordSource::Keyring;
+            let p = p.clone();
+            let r = tokio::task::spawn_blocking(move || secrets::resolve_password(&p))
+                .await
+                .map_err(|_| anyhow!("password lookup failed"))?;
+            if keyring {
+                r.context("reading the password from the keyring")
+            } else {
+                r
+            }
+        }
     }
 }
 
@@ -77,7 +89,7 @@ async fn open(
     if !listen {
         profile.subscriptions.clear();
     }
-    let pw = password(&profile)?;
+    let pw = password(&profile).await?;
     let (conn, mut rx) = Connection::connect(&profile, pw)?;
     loop {
         match rx.recv().await {

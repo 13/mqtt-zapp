@@ -86,9 +86,24 @@ pub struct ConnArgs {
     /// Extra CA certificate (PEM) to trust
     #[arg(long)]
     pub ca_file: Option<PathBuf>,
+    /// Client certificate (PEM) for TLS client authentication; needs --key
+    #[arg(long, value_name = "FILE", requires = "key")]
+    pub cert: Option<PathBuf>,
+    /// Private key (PEM) for --cert
+    #[arg(long, value_name = "FILE", requires = "cert")]
+    pub key: Option<PathBuf>,
+    /// TLS ALPN protocol to offer; repeatable
+    #[arg(long, value_name = "PROTO")]
+    pub alpn: Vec<String>,
     /// Skip TLS certificate verification
     #[arg(long)]
     pub insecure: bool,
+    /// Read the password from this environment variable
+    #[arg(long, value_name = "VAR", conflicts_with_all = ["password_command", "ask_password"])]
+    pub password_env: Option<String>,
+    /// Get the password from this shell command (first line of its output)
+    #[arg(long, value_name = "CMD", conflicts_with_all = ["password_env", "ask_password"])]
+    pub password_command: Option<String>,
     /// Keep-alive interval in seconds [default: 60]. MQTT 5 needs at least 5.
     #[arg(long, value_name = "SECS")]
     pub keepalive: Option<u16>,
@@ -104,6 +119,14 @@ pub struct ConnArgs {
 }
 
 impl ConnArgs {
+    /// The source named by `--password-env` or `--password-command`.
+    fn password_flag(&self) -> Option<PasswordSource> {
+        self.password_env
+            .clone()
+            .map(PasswordSource::Env)
+            .or_else(|| self.password_command.clone().map(PasswordSource::Command))
+    }
+
     /// Session flags override the saved profile's for this run only.
     fn apply_session(&self, mut p: Profile) -> Profile {
         if self.client_id.is_some() {
@@ -228,6 +251,7 @@ pub struct PubCmd {
     pub retain: bool,
 }
 
+#[allow(clippy::large_enum_variant)] // short-lived, parsed once per run
 #[derive(Subcommand)]
 pub enum ProfileCmd {
     /// Save a profile
@@ -266,8 +290,10 @@ fn build_profile(name: &str, conn: &ConnArgs, host: &str, password: PasswordSour
         password,
         tls: TlsConfig {
             ca_file: conn.ca_file.clone(),
+            client_cert: conn.cert.clone(),
+            client_key: conn.key.clone(),
             insecure: conn.insecure,
-            ..TlsConfig::default()
+            alpn: conn.alpn.clone(),
         },
         subscriptions: default_subscriptions(),
         retained: true,
@@ -297,11 +323,13 @@ pub fn store_or_empty(
 
 pub fn resolve_launch(args: &Args, store: &ProfileStore) -> Result<Launch> {
     if let Some(host) = &args.conn.host {
-        let pw = if args.conn.user.is_some() || args.conn.ask_password {
-            PasswordSource::Prompt
-        } else {
-            PasswordSource::None
-        };
+        let pw = args.conn.password_flag().unwrap_or_else(|| {
+            if args.conn.user.is_some() || args.conn.ask_password {
+                PasswordSource::Prompt
+            } else {
+                PasswordSource::None
+            }
+        });
         let p = build_profile("adhoc", &args.conn, host, pw);
         return Ok(Launch::Connect(args.subs.apply(p)));
     }
@@ -353,6 +381,7 @@ fn profile_for_add(name: &str, mode: Option<PasswordMode>, conn: &ConnArgs) -> R
     };
     let password = match mode {
         Some(m) => m.into(),
+        None if conn.password_flag().is_some() => conn.password_flag().unwrap_or_default(),
         None if conn.user.is_some() || conn.ask_password => PasswordSource::Prompt,
         None => PasswordSource::None,
     };
@@ -719,6 +748,47 @@ mod tests {
         .unwrap();
         assert!(matches!(p.password, PasswordSource::Keyring));
         assert!(add(&["--name", "t"]).is_err());
+    }
+
+    #[test]
+    fn cli_cert_key_flags() {
+        let Launch::Connect(p) = launch(&[
+            "mqtt-zapp",
+            "--host",
+            "b",
+            "--protocol",
+            "mqtts",
+            "--cert",
+            "/c.pem",
+            "--key",
+            "/k.pem",
+            "--alpn",
+            "mqtt",
+            "--alpn",
+            "x",
+            "--password-env",
+            "PW_VAR",
+        ])
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(p.tls.client_cert, Some(PathBuf::from("/c.pem")));
+        assert_eq!(p.tls.client_key, Some(PathBuf::from("/k.pem")));
+        assert_eq!(p.tls.alpn, vec!["mqtt", "x"]);
+        assert_eq!(p.password, PasswordSource::Env("PW_VAR".into()));
+        // One without the other is a usage error.
+        assert!(Args::try_parse_from(["mqtt-zapp", "--host", "b", "--cert", "/c"]).is_err());
+        assert!(Args::try_parse_from(["mqtt-zapp", "--host", "b", "--key", "/k"]).is_err());
+        let p = add(&[
+            "--name",
+            "t",
+            "--host",
+            "h",
+            "--password-command",
+            "pass show x",
+        ])
+        .unwrap();
+        assert_eq!(p.password, PasswordSource::Command("pass show x".into()));
     }
 
     #[test]

@@ -19,7 +19,7 @@ use mqtt_zapp_core::config::{
 };
 use mqtt_zapp_core::payload::Props;
 use mqtt_zapp_core::search::Filter;
-use mqtt_zapp_core::secrets::load_password;
+use mqtt_zapp_core::secrets::resolve_password;
 use mqtt_zapp_core::state::AppState;
 use mqtt_zapp_core::{NodeId, TopicTree};
 use std::cell::{Cell, RefCell};
@@ -77,10 +77,10 @@ pub enum Focus {
 /// terminal write; terminals and multiplexers choke on big ones).
 pub const COPY_MAX: usize = 100 * 1024;
 
-/// Looks a password up by profile name. It may block (Secret Service), so
+/// Looks a profile's password up (keyring, env or command). It may block, so
 /// it only ever runs on a blocking thread; injected so tests never touch
 /// the real keyring.
-pub type PasswordLoader = Arc<dyn Fn(&str) -> Result<Option<String>> + Send + Sync>;
+pub type PasswordLoader = Arc<dyn Fn(&Profile) -> Result<Option<String>> + Send + Sync>;
 
 #[allow(clippy::large_enum_variant)] // short-lived, consumed right away
 pub enum Effect {
@@ -535,7 +535,7 @@ impl App {
             password: None,
             connect_gen: 0,
             pending_password: None,
-            password_loader: Arc::new(load_password),
+            password_loader: Arc::new(resolve_password),
             server: None,
             connected: None,
             session_profile: None,

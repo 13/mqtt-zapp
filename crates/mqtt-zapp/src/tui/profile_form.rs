@@ -94,6 +94,8 @@ pub enum PField {
     WsPath,
     Username,
     PasswordSource,
+    /// The variable name (env) or shell command (command).
+    SourceValue,
     Password,
     ClientId,
     Subscriptions,
@@ -112,7 +114,7 @@ pub enum PField {
 }
 
 impl PField {
-    pub const ALL: [PField; 19] = [
+    pub const ALL: [PField; 20] = [
         PField::Name,
         PField::Host,
         PField::Port,
@@ -121,6 +123,7 @@ impl PField {
         PField::WsPath,
         PField::Username,
         PField::PasswordSource,
+        PField::SourceValue,
         PField::Password,
         PField::ClientId,
         PField::Subscriptions,
@@ -144,6 +147,7 @@ impl PField {
             PField::WsPath => "ws path",
             PField::Username => "username",
             PField::PasswordSource => "password",
+            PField::SourceValue => "source",
             PField::Password => "secret",
             PField::ClientId => "client id",
             PField::Subscriptions => "subscriptions",
@@ -198,7 +202,11 @@ pub struct ProfileForm {
     taken: Vec<String>,
     pub protocol: Protocol,
     pub version: MqttVersion,
+    /// Which kind of source; the `Env` and `Command` payloads are unused
+    /// here, their text is `source_value`.
     pub source: PasswordSource,
+    /// ALPN names are not edited here; they pass through unchanged.
+    alpn: Vec<String>,
     pub insecure: bool,
     pub retained: bool,
     pub clean_session: bool,
@@ -207,6 +215,7 @@ pub struct ProfileForm {
     port: LineInput,
     ws_path: LineInput,
     username: LineInput,
+    source_value: LineInput,
     password: LineInput,
     client_id: LineInput,
     keepalive: LineInput,
@@ -256,6 +265,23 @@ fn cycle<T: Copy + PartialEq>(all: &[T], cur: T, forward: bool) -> T {
     }]
 }
 
+/// The next (or previous) kind of password source; the payloads are
+/// ignored when matching.
+fn cycle_source(cur: &PasswordSource, forward: bool) -> PasswordSource {
+    let kind = std::mem::discriminant(cur);
+    let i = SOURCES
+        .iter()
+        .position(|s| std::mem::discriminant(s) == kind)
+        .unwrap_or(0);
+    let n = SOURCES.len();
+    SOURCES[if forward {
+        (i + 1) % n
+    } else {
+        (i + n - 1) % n
+    }]
+    .clone()
+}
+
 const VERSIONS: [MqttVersion; 2] = [MqttVersion::V311, MqttVersion::V5];
 const PROTOCOLS: [Protocol; 4] = [Protocol::Mqtt, Protocol::Mqtts, Protocol::Ws, Protocol::Wss];
 #[cfg(feature = "keyring")]
@@ -263,10 +289,17 @@ const SOURCES: &[PasswordSource] = &[
     PasswordSource::None,
     PasswordSource::Keyring,
     PasswordSource::Prompt,
+    PasswordSource::Env(String::new()),
+    PasswordSource::Command(String::new()),
 ];
 /// Without keyring support only an existing keyring profile shows it.
 #[cfg(not(feature = "keyring"))]
-const SOURCES: &[PasswordSource] = &[PasswordSource::None, PasswordSource::Prompt];
+const SOURCES: &[PasswordSource] = &[
+    PasswordSource::None,
+    PasswordSource::Prompt,
+    PasswordSource::Env(String::new()),
+    PasswordSource::Command(String::new()),
+];
 
 impl ProfileForm {
     /// A form for `existing`, or for a new profile. `taken` lists the names
@@ -305,7 +338,12 @@ impl ProfileForm {
             taken,
             protocol: p.protocol,
             version: p.mqtt_version,
-            source: p.password,
+            source: p.password.clone(),
+            source_value: LineInput::new(match &p.password {
+                PasswordSource::Env(v) | PasswordSource::Command(v) => v,
+                _ => "",
+            }),
+            alpn: p.tls.alpn.clone(),
             insecure: p.tls.insecure,
             retained: p.retained,
             clean_session: p.clean_session != Some(false),
@@ -336,6 +374,10 @@ impl ProfileForm {
             .filter(|f| match f {
                 PField::WsPath => matches!(self.protocol, Protocol::Ws | Protocol::Wss),
                 PField::Password => self.source == PasswordSource::Keyring,
+                PField::SourceValue => matches!(
+                    self.source,
+                    PasswordSource::Env(_) | PasswordSource::Command(_)
+                ),
                 PField::CaFile | PField::ClientCert | PField::ClientKey | PField::Insecure => {
                     self.protocol.is_tls()
                 }
@@ -352,6 +394,7 @@ impl ProfileForm {
             PField::Port => &self.port,
             PField::WsPath => &self.ws_path,
             PField::Username => &self.username,
+            PField::SourceValue => &self.source_value,
             PField::Password => &self.password,
             PField::ClientId => &self.client_id,
             PField::Subscriptions => &self.subscriptions,
@@ -378,6 +421,7 @@ impl ProfileForm {
             PField::Port => &mut self.port,
             PField::WsPath => &mut self.ws_path,
             PField::Username => &mut self.username,
+            PField::SourceValue => &mut self.source_value,
             PField::Password => &mut self.password,
             PField::ClientId => &mut self.client_id,
             PField::Subscriptions => &mut self.subscriptions,
@@ -434,7 +478,7 @@ impl ProfileForm {
                         self.version = cycle(&VERSIONS, self.version, fwd)
                     }
                     (PField::PasswordSource, Some(fwd)) => {
-                        self.source = cycle(SOURCES, self.source, fwd)
+                        self.source = cycle_source(&self.source, fwd)
                     }
                     (PField::Insecure, Some(_)) => self.insecure = !self.insecure,
                     (PField::Retained, Some(_)) => self.retained = !self.retained,
@@ -480,6 +524,17 @@ impl ProfileForm {
         if keyring && self.password.text.is_empty() && !self.had_keyring {
             return Err("type a password, or use prompt".into());
         }
+        let source = match &self.source {
+            PasswordSource::Env(_) => match optional(&self.source_value) {
+                Some(v) if !v.contains(char::is_whitespace) => PasswordSource::Env(v),
+                _ => return Err("env: type a variable name".into()),
+            },
+            PasswordSource::Command(_) => match optional(&self.source_value) {
+                Some(v) => PasswordSource::Command(v),
+                None => return Err("command: type a shell command".into()),
+            },
+            other => other.clone(),
+        };
         let subscriptions: Vec<String> = self
             .subscriptions
             .text
@@ -519,12 +574,13 @@ impl ProfileForm {
             },
             client_id: optional(&self.client_id),
             username: optional(&self.username),
-            password: self.source,
+            password: source,
             tls: TlsConfig {
                 ca_file: path(&self.ca_file),
                 client_cert: path(&self.client_cert),
                 client_key: path(&self.client_key),
                 insecure: tls && self.insecure,
+                alpn: if tls { self.alpn.clone() } else { Vec::new() },
             },
             subscriptions,
             retained: self.retained,

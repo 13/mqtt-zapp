@@ -942,7 +942,7 @@ fn tls_config(tls: &TlsConfig) -> Result<Arc<rustls::ClientConfig>> {
     } else {
         builder.with_root_certificates(root_store(tls)?)
     };
-    let config = match (&tls.client_cert, &tls.client_key) {
+    let mut config = match (&tls.client_cert, &tls.client_key) {
         (None, None) => builder.with_no_client_auth(),
         (Some(cert), Some(key)) => {
             let certs = read_pem(cert, |b| {
@@ -960,6 +960,7 @@ fn tls_config(tls: &TlsConfig) -> Result<Arc<rustls::ClientConfig>> {
         }
         _ => bail!("TLS client auth needs both client_cert and client_key"),
     };
+    config.alpn_protocols = tls.alpn.iter().map(|p| p.as_bytes().to_vec()).collect();
     Ok(Arc::new(config))
 }
 
@@ -1513,9 +1514,25 @@ mod tests {
             client_cert: Some(cert),
             client_key: Some(key),
             insecure: false,
+            ..Default::default()
         };
         let config = tls_config(&tls).unwrap();
         assert!(config.client_auth_cert_resolver.has_certs());
+    }
+
+    #[test]
+    fn alpn_applied() {
+        let none = tls_config(&TlsConfig::default()).unwrap();
+        assert!(none.alpn_protocols.is_empty());
+        let tls = TlsConfig {
+            alpn: vec!["mqtt".into(), "x-custom".into()],
+            ..Default::default()
+        };
+        let config = tls_config(&tls).unwrap();
+        assert_eq!(
+            config.alpn_protocols,
+            vec![b"mqtt".to_vec(), b"x-custom".to_vec()]
+        );
     }
 
     #[test]

@@ -12,8 +12,9 @@ impl App {
         self.cancel_lookup();
         let password = match p.password {
             PasswordSource::None => None,
-            // The lookup can block behind an unlock prompt: off-thread.
-            PasswordSource::Keyring => {
+            // The lookup can block behind an unlock prompt, or a command
+            // can run for seconds: off-thread.
+            PasswordSource::Keyring | PasswordSource::Env(_) | PasswordSource::Command(_) => {
                 let generation = self.connect_gen;
                 self.pending_password = Some((generation, p.clone()));
                 self.picker.waiting_keyring = true;
@@ -59,6 +60,18 @@ impl App {
         match self.pending_password.take() {
             Some((_, p)) => match result {
                 Ok(Some(pw)) => self.connect_effect(p, Some(pw)),
+                // A broken env or command source is a configuration error:
+                // say so rather than asking for a password nobody expects.
+                Err(e)
+                    if matches!(
+                        p.password,
+                        PasswordSource::Env(_) | PasswordSource::Command(_)
+                    ) =>
+                {
+                    let text = mqtt_zapp_core::payload::sanitize(&e).replace('\n', " ");
+                    self.set_note(Note::error(text), Instant::now());
+                    Effect::None
+                }
                 Ok(None) | Err(_) => self.ask_password(p),
             },
             None => Effect::None,

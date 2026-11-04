@@ -146,6 +146,29 @@ mqtt-zapp profile add --name a --host h --user me --password-mode prompt
 mqtt-zapp profile add --name b --host h --user me --password-mode keyring
 ```
 
+Other password sources, set with a flag on `profile add` or in the form (the
+form's source row: none, keyring, prompt, env, command):
+
+```sh
+# read an environment variable / run a command (first line of its output;
+# stdin closed, killed after 10 s)
+mqtt-zapp profile add --name c --host h --user me --password-env MQTT_PW
+mqtt-zapp profile add --name d --host h --user me --password-command 'pass show mqtt'
+```
+
+In `profiles.toml` the source is one string: `password = "env:MQTT_PW"` or
+`password = "command:pass show mqtt"` (`"none"`, `"keyring"` and `"prompt"` as
+before). The password itself is never written.
+
+For TLS client authentication and ALPN (for brokers that share port 443):
+
+```sh
+mqtt-zapp --host broker.lan --protocol mqtts --cert me.pem --key me.key --alpn mqtt
+```
+
+`--cert` and `--key` go together. In `profiles.toml` they are `client_cert`,
+`client_key` and `alpn = ["mqtt"]` under `[profiles.tls]`.
+
 The websocket path defaults to `/`. Set a different one in the picker's form,
 or edit `ws_path` in `profiles.toml`, for example `ws_path = "/mqtt"`.
 
@@ -182,8 +205,9 @@ without one) and
 the same connection flags and `--profile`/`--host` as the TUI, and `sub` takes
 `--sub` too (default: the profile's list, or `#` with `--host`). Exit code 0
 means success, 2 a connect, auth or publish failure (the reason is on stderr).
-The keyring is the only password source they can use: `--user` with a prompt
-password is refused, so save the profile with `--password-mode keyring`.
+They can read the password from the keyring, an environment variable or a
+command: a prompt is refused, so save the profile with `--password-mode keyring`
+or use `--password-env` / `--password-command`.
 
 ```sh
 # watch a topic; text lines are `<topic> <payload>`, newlines escaped as \n,

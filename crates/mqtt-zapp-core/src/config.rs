@@ -39,15 +39,67 @@ pub struct TlsConfig {
     pub client_cert: Option<PathBuf>,
     pub client_key: Option<PathBuf>,
     pub insecure: bool,
+    /// ALPN protocol names offered in the TLS handshake (e.g. `mqtt` for
+    /// brokers that share port 443).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub alpn: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+/// Where a profile's password comes from. In `profiles.toml` it is one
+/// string, so files written before `Env` and `Command` existed still load:
+/// `"none"`, `"keyring"`, `"prompt"`, `"env:NAME"` or `"command:CMD"`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum PasswordSource {
     #[default]
     None,
     Keyring,
     Prompt,
+    /// Read this environment variable.
+    Env(String),
+    /// Run this shell command; the first line of its output is the password.
+    Command(String),
+}
+
+impl PasswordSource {
+    /// Parse the `profiles.toml` string.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "none" => Ok(Self::None),
+            "keyring" => Ok(Self::Keyring),
+            "prompt" => Ok(Self::Prompt),
+            _ => match s.split_once(':') {
+                Some(("env", v)) if !v.is_empty() => Ok(Self::Env(v.into())),
+                Some(("command", v)) if !v.trim().is_empty() => Ok(Self::Command(v.into())),
+                _ => Err(format!(
+                    "unknown password source '{s}' (none, keyring, prompt, env:NAME, command:CMD)"
+                )),
+            },
+        }
+    }
+
+    /// The string form; `parse` reads it back.
+    pub fn as_config(&self) -> String {
+        match self {
+            Self::None => "none".into(),
+            Self::Keyring => "keyring".into(),
+            Self::Prompt => "prompt".into(),
+            Self::Env(v) => format!("env:{v}"),
+            Self::Command(v) => format!("command:{v}"),
+        }
+    }
+}
+
+impl Serialize for PasswordSource {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.as_config())
+    }
+}
+
+impl<'de> Deserialize<'de> for PasswordSource {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Self::parse(&s).map_err(serde::de::Error::custom)
+    }
 }
 
 pub fn default_ws_path() -> String {
@@ -549,6 +601,42 @@ mod tests {
         assert_eq!(p.effective_client_id(), "me");
         p.clean_session = Some(false);
         assert_eq!(p.session_error(), None);
+    }
+
+    #[test]
+    fn old_password_source_values_load() {
+        for (v, want) in [
+            ("none", PasswordSource::None),
+            ("keyring", PasswordSource::Keyring),
+            ("prompt", PasswordSource::Prompt),
+            ("env:MQTT_PW", PasswordSource::Env("MQTT_PW".into())),
+            (
+                "command:pass show x:y",
+                PasswordSource::Command("pass show x:y".into()),
+            ),
+        ] {
+            let text =
+                format!("name=\"h\"\nhost=\"x\"\nport=1883\nprotocol=\"mqtt\"\npassword=\"{v}\"");
+            let p: Profile = toml::from_str(&text).unwrap();
+            assert_eq!(p.password, want, "{v}");
+            let back: Profile = toml::from_str(&toml::to_string(&p).unwrap()).unwrap();
+            assert_eq!(back.password, want, "round trip {v}");
+        }
+        assert!(
+            toml::from_str::<Profile>(
+                "name=\"h\"\nhost=\"x\"\nport=1883\nprotocol=\"mqtt\"\npassword=\"env:\""
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn alpn_is_skipped_when_empty_and_round_trips() {
+        let mut t = TlsConfig::default();
+        assert!(!toml::to_string(&t).unwrap().contains("alpn"));
+        t.alpn = vec!["mqtt".into(), "x".into()];
+        let back: TlsConfig = toml::from_str(&toml::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back.alpn, t.alpn);
     }
 
     #[test]

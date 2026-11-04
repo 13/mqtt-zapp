@@ -614,3 +614,23 @@ fn security_warning_cleartext_password() {
     let p = warn_profile(Protocol::Mqtts, false, true, PasswordSource::Prompt);
     assert_eq!(w(&p), None, "verified tls is fine");
 }
+
+#[test]
+fn env_and_command_sources_load_off_thread_and_report_errors() {
+    for pw in [
+        PasswordSource::Env("PW".into()),
+        PasswordSource::Command("pass show x".into()),
+    ] {
+        let mut a = picker_app(vec![profile("e", pw.clone())]);
+        let e = a.begin_connect(profile("e", pw));
+        let Effect::LoadPassword { generation, .. } = e else {
+            panic!("expected LoadPassword, got {e:?}");
+        };
+        assert!(a.picker.waiting_keyring);
+        // A failure is shown, not turned into a password prompt.
+        let e = a.password_loaded(generation, Err("password env var PW not set".into()));
+        assert!(matches!(e, Effect::None));
+        assert_eq!(a.mode, Mode::Picker);
+        assert_eq!(note_text(&a), "password env var PW not set");
+    }
+}

@@ -43,6 +43,7 @@ fn sample(name: &str, pw: PasswordSource) -> Profile {
             client_cert: None,
             client_key: None,
             insecure: true,
+            alpn: vec![],
         },
         subscriptions: vec!["#".into()],
         retained: true,
@@ -523,4 +524,53 @@ fn form_keepalive_range_and_expiry_warning() {
             .join("\n")
             .contains("session expiry needs MQTT 5")
     );
+}
+
+#[test]
+fn env_and_command_sources_take_a_value() {
+    let mut f = filled();
+    goto(&mut f, PField::PasswordSource);
+    assert!(!f.visible_fields().contains(&PField::SourceValue));
+    // none -> (keyring ->) prompt -> env
+    for _ in 0..4 {
+        if matches!(f.source, PasswordSource::Env(_)) {
+            break;
+        }
+        f.on_key(key(KeyCode::Char(' ')));
+    }
+    assert!(matches!(f.source, PasswordSource::Env(_)));
+    assert!(f.visible_fields().contains(&PField::SourceValue));
+    assert!(!f.visible_fields().contains(&PField::Password));
+    assert!(save(&mut f).is_none(), "an empty variable name is refused");
+    assert_eq!(f.error.as_deref(), Some("env: type a variable name"));
+    goto(&mut f, PField::SourceValue);
+    type_str(&mut f, "MQTT_PW");
+    assert_eq!(
+        save(&mut f).unwrap().profile.password,
+        PasswordSource::Env("MQTT_PW".into())
+    );
+    goto(&mut f, PField::PasswordSource);
+    f.on_key(key(KeyCode::Char(' ')));
+    assert!(matches!(f.source, PasswordSource::Command(_)));
+    goto(&mut f, PField::SourceValue);
+    f.on_key(key(KeyCode::Home));
+    for _ in 0.."MQTT_PW".len() {
+        f.on_key(key(KeyCode::Delete));
+    }
+    assert!(save(&mut f).is_none());
+    type_str(&mut f, "pass show mqtt");
+    let e = save(&mut f).unwrap();
+    assert_eq!(
+        e.profile.password,
+        PasswordSource::Command("pass show mqtt".into())
+    );
+    assert_eq!(e.password, None, "nothing for the keyring");
+    // Editing keeps the value and the ALPN list.
+    let mut p = e.profile;
+    p.protocol = Protocol::Mqtts;
+    p.tls.alpn = vec!["mqtt".into()];
+    let mut f = ProfileForm::new(Some(&p), vec![]);
+    let again = save(&mut f).unwrap().profile;
+    assert_eq!(again.password, p.password);
+    assert_eq!(again.tls.alpn, vec!["mqtt".to_owned()]);
 }

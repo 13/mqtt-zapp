@@ -431,12 +431,12 @@ fn pending_lookup_shows_persistently() {
     let mut a = picker_app(vec![profile("home", K)]);
     a.begin_connect(profile("home", K));
     let s = text(&draw(&mut a, 90, 24));
-    assert!(s.contains("connecting… (waiting for keyring)"), "{s}");
+    assert!(s.contains("connecting… (waiting for password)"), "{s}");
     // Long past the note TTL: still drawn, from state.
     assert!(
         a.note_at(std::time::Instant::now() + 2 * crate::tui::app::NOTE_TTL)
             .is_none()
     );
     let s = text(&draw(&mut a, 90, 24));
-    assert!(s.contains("connecting… (waiting for keyring)"), "{s}");
+    assert!(s.contains("connecting… (waiting for password)"), "{s}");
 }

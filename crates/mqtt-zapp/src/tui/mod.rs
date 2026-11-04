@@ -153,13 +153,12 @@ impl Session {
                 // Secret Service can wait on an unlock prompt: never on the
                 // UI thread. The result re-enters through `password_loaded`.
                 let tx = self.password_tx.clone();
-                let name = profile.name;
                 tokio::spawn(async move {
                     // A panic in the lookup must still answer, or the
                     // picker would wait forever.
-                    let r = match tokio::task::spawn_blocking(move || load(&name)).await {
+                    let r = match tokio::task::spawn_blocking(move || load(&profile)).await {
                         Ok(r) => r.map_err(|e| format!("{e:#}")),
-                        Err(_) => Err("keyring lookup failed".to_owned()),
+                        Err(_) => Err("password lookup failed".to_owned()),
                     };
                     let _ = tx.send((generation, r));
                 });

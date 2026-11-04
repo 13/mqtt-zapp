@@ -48,7 +48,13 @@ pub(super) fn value_spans(form: &ProfileForm, field: PField, width: usize) -> Ve
     match field {
         PField::Protocol => choice(&format!("{:?}", form.protocol).to_lowercase()),
         PField::Version => choice(form.version.label()),
-        PField::PasswordSource => choice(&format!("{:?}", form.source).to_lowercase()),
+        PField::PasswordSource => choice(match form.source {
+            PasswordSource::None => "none",
+            PasswordSource::Keyring => "keyring",
+            PasswordSource::Prompt => "prompt",
+            PasswordSource::Env(_) => "env",
+            PasswordSource::Command(_) => "command",
+        }),
         PField::Insecure => vec![Span::raw(if form.insecure {
             "[x] skip certificate checks"
         } else {

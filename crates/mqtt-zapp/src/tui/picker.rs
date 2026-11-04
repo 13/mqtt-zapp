@@ -25,7 +25,7 @@ pub struct PickerState {
     pub sort: PickerSort,
     /// Profile name → unix seconds of the last connect.
     pub last_used: BTreeMap<String, i64>,
-    /// A keyring lookup is in flight; drawn as a line under the list.
+    /// A password lookup (keyring, env or command) is in flight; drawn as a line under the list.
     pub waiting_keyring: bool,
 }
 
@@ -234,7 +234,7 @@ pub fn render_picker(
     };
     let mut lines = lines;
     if st.waiting_keyring {
-        lines.push(Line::styled(" connecting… (waiting for keyring)", muted));
+        lines.push(Line::styled(" connecting… (waiting for password)", muted));
     }
     let card = theme::centered(area, 72, lines.len() as u16 + 3);
     let mut title = format!("mqtt-zapp · pick a broker · {}", st.sort.name());
