@@ -402,6 +402,17 @@ fn paste_goes_into_the_focused_field() {
 }
 
 #[test]
+fn paste_with_cr_line_breaks_keeps_the_lines() {
+    // VTE terminals and xterm send pasted line breaks as a lone CR.
+    let mut a = browse(&["t"]);
+    a.selected = a.tree.find("t");
+    a.handle_action(Action::Publish);
+    a.handle_key(key(KeyCode::Tab));
+    a.handle_paste("{\r  \"a\": 1\r}");
+    assert_eq!(payload_of(&a), "{\n  \"a\": 1\n}");
+}
+
+#[test]
 fn resend_keeps_the_open_form_as_draft() {
     let mut a = resend_app(|_| {});
     a.focus = Focus::Tree;
@@ -486,7 +497,9 @@ fn qos1_publish_note_waits_for_the_ack() {
         pkid: 7,
         failure: None,
     });
-    assert_eq!(note_text(&a), "published t · acked");
+    // The ack names no topic: packet ids cannot be tied to a send reliably
+    // (clear-retained shares the client, sends race in their own tasks).
+    assert_eq!(note_text(&a), "published · acked by the broker");
     // Refused (MQTT 5): an error that names the topic.
     a.publish_started("t", 2);
     a.apply_core_event(CoreEvent::PublishSent { pkid: 8 });
@@ -496,7 +509,7 @@ fn qos1_publish_note_waits_for_the_ack() {
     });
     let n = a.note_at(Instant::now()).unwrap();
     assert!(
-        n.error && n.text == "publish to t refused: not authorized",
+        n.error && n.text == "publish refused: not authorized",
         "{n:?}"
     );
 }

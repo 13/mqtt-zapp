@@ -19,11 +19,13 @@ use unicode_width::UnicodeWidthStr;
 
 const INVALID_TOPIC: &str = "invalid topic";
 
-/// Text for a text area: CRLF becomes LF, and every other control or
+/// Text for a text area: CRLF and a lone CR (how VTE terminals and xterm
+/// paste line breaks) become LF, and every other control or
 /// invisible char becomes U+FFFD, so nothing reaches the terminal raw (the
 /// text areas draw their chars as they are).
 pub(crate) fn input_safe(s: &str) -> String {
     s.replace("\r\n", "\n")
+        .replace('\r', "\n")
         .chars()
         .map(|c| if is_unsafe_char(c) { '\u{fffd}' } else { c })
         .collect()

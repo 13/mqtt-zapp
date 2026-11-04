@@ -176,7 +176,7 @@ impl App {
                     self.reveal_selected();
                 }
                 let note = format!("reply on {}", mqtt_zapp_core::payload::sanitize(topic));
-                self.set_note(Note::info(note), Instant::now());
+                self.set_background_note(Note::info(note), Instant::now());
             }
         }
     }

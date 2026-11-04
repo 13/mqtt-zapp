@@ -777,18 +777,20 @@ impl App {
                 return;
             }
             CoreEvent::PublishAcked { pkid, failure } => {
-                let Some(topic) = self.ack_inflight.remove(&pkid) else {
+                // No topic in the note: a packet id cannot be tied to a send
+                // reliably (clear-retained shares the client, and each send
+                // races in its own task), so the entry only marks it as ours.
+                if self.ack_inflight.remove(&pkid).is_none() {
                     return;
-                };
-                let topic = mqtt_zapp_core::payload::sanitize(&topic);
+                }
                 let note = match failure {
-                    None => Note::info(format!("published {topic} · acked")),
+                    None => Note::info("published · acked by the broker"),
                     Some(f) => Note::error(format!(
-                        "publish to {topic} refused: {}",
+                        "publish refused: {}",
                         mqtt_zapp_core::payload::sanitize(&f)
                     )),
                 };
-                self.set_note(note, Instant::now());
+                self.set_background_note(note, Instant::now());
             }
         }
         self.dirty = true;
@@ -817,7 +819,7 @@ impl App {
         {
             let topic = mqtt_zapp_core::payload::sanitize(&topic);
             let secs = REPLY_WINDOW.as_secs();
-            self.set_note(
+            self.set_background_note(
                 Note::info(format!("no reply on {topic} within {secs}s")),
                 now,
             );
@@ -906,9 +908,15 @@ impl App {
         self.dirty = true;
     }
 
-    /// A note from a background task (publish or clear result): stored like
-    /// `set_note`, but a frozen display shows it at the next input-driven draw.
+    /// A note from a background task or the broker (publish, clear and ack
+    /// results, replies): stored like `set_note`, but a fresh error stays
+    /// until it expires or another error replaces it (an info note right
+    /// after it would hide it unread), and a frozen display shows it at the
+    /// next input-driven draw.
     pub fn set_background_note(&mut self, note: Note, now: Instant) {
+        if !note.error && self.note_at(now).is_some_and(|n| n.error) {
+            return;
+        }
         let dirty = self.dirty;
         self.set_note(note, now);
         if self.frozen {
@@ -940,12 +948,10 @@ impl App {
         }
     }
 
-    /// Show `note`. A fresh error stays until it expires or another error
-    /// replaces it: an info note right after it would hide it unread.
+    /// Show `note`: the answer to what the user just did, so it always
+    /// replaces the current one. Notes nobody asked for at that moment go
+    /// through `set_background_note`.
     pub fn set_note(&mut self, note: Note, now: Instant) {
-        if !note.error && self.note_at(now).is_some_and(|n| n.error) {
-            return;
-        }
         self.status_note = Some((note, now));
         self.dirty = true;
     }

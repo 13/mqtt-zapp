@@ -614,13 +614,13 @@ fn info_note_does_not_hide_a_fresh_error() {
     let mut a = browse(&["t"]);
     let now = Instant::now();
     a.set_note(Note::error("publish failed: boom"), now);
-    a.set_note(Note::info("copied topic"), now + Duration::from_millis(500));
+    a.set_background_note(Note::info("reply on x"), now + Duration::from_millis(500));
     assert_eq!(note_text(&a), "publish failed: boom");
     // Another error replaces it; so does anything once it has expired.
-    a.set_note(Note::error("second"), now + Duration::from_secs(1));
+    a.set_background_note(Note::error("second"), now + Duration::from_secs(1));
     assert_eq!(note_text(&a), "second");
     let later = now + Duration::from_secs(1) + NOTE_TTL;
-    a.set_note(Note::info("later"), later);
+    a.set_background_note(Note::info("later"), later);
     assert_eq!(a.note_at(later).map(|n| n.text.as_str()), Some("later"));
 }
 
@@ -632,4 +632,12 @@ fn expand_all_in_the_starred_view_says_why_nothing_moves() {
     a.handle_action(Action::StarredOnly);
     a.handle_action(Action::ExpandAll);
     assert_eq!(note_text(&a), "the starred view is always expanded");
+}
+
+#[test]
+fn a_key_press_answer_replaces_a_fresh_error() {
+    let mut a = browse(&["t"]);
+    a.set_note(Note::error("publish failed: boom"), Instant::now());
+    a.handle_action(Action::ToggleWrap);
+    assert_eq!(note_text(&a), "wrap on");
 }
