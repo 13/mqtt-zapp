@@ -107,16 +107,55 @@ fn float32(f: f32) -> Value {
 
 /// Most alias -> name entries kept across all nodes and devices.
 const MAX_ALIASES: usize = 100_000;
+/// Longest metric name or topic segment worth remembering.
+const MAX_ALIAS_NAME: usize = 256;
+/// Most bytes of names and key strings kept across all nodes and devices.
+const MAX_ALIAS_BYTES: usize = 16 * 1024 * 1024;
 
-/// `(group, edge node, device)`.
-type NodeKey = (String, String, Option<String>);
+type AliasMap = HashMap<u64, String>;
+
+/// One edge node's map and those of its devices.
+#[derive(Default)]
+struct NodeAliases {
+    node: AliasMap,
+    devices: HashMap<String, AliasMap>,
+}
+
+fn names_bytes(m: &AliasMap) -> usize {
+    m.values().map(String::len).sum()
+}
+
+impl NodeAliases {
+    /// `(entries, bytes)` held, with the group and edge key strings; zero
+    /// when empty (an empty node is not kept).
+    fn usage(&self, key_bytes: usize) -> (usize, usize) {
+        let mut entries = self.node.len();
+        let mut bytes = names_bytes(&self.node);
+        for (d, m) in &self.devices {
+            entries += m.len();
+            bytes += d.len() + names_bytes(m);
+        }
+        if entries == 0 {
+            (0, 0)
+        } else {
+            (entries, bytes + key_bytes)
+        }
+    }
+}
 
 /// Metric names learned from BIRTH messages, so a later DATA or CMD metric
 /// that only carries an alias is shown under its name.
+///
+/// Bounded by `MAX_ALIASES` entries and `MAX_ALIAS_BYTES` bytes. A BIRTH
+/// that would go past either records nothing and keeps the previous names;
+/// this is silent. Names and topic segments over `MAX_ALIAS_NAME` bytes are
+/// not recorded.
 #[derive(Default)]
 pub struct Aliases {
-    maps: HashMap<NodeKey, HashMap<u64, String>>,
+    /// group -> edge node -> names.
+    maps: HashMap<String, HashMap<String, NodeAliases>>,
     total: usize,
+    bytes: usize,
 }
 
 impl Aliases {
@@ -141,41 +180,97 @@ impl Aliases {
             return decode_inner(payload, None).map(|d| d.0);
         };
         let device = it.next();
-        let key: NodeKey = (group.into(), edge.into(), device.map(Into::into));
-        if matches!(kind, "NBIRTH" | "DBIRTH") {
+        let extra = it.next().is_some();
+        let birth = match (kind, device) {
+            ("NBIRTH", None) | ("DBIRTH", Some(_)) => !extra,
+            _ => false,
+        };
+        if birth {
             let (value, pairs) = decode_inner(payload, None)?;
-            self.learn(kind == "NBIRTH", key, pairs);
+            self.learn(group, edge, device, pairs);
             Some(value)
+        } else if matches!(kind, "NBIRTH" | "DBIRTH") {
+            decode_inner(payload, None).map(|d| d.0)
         } else {
-            decode_inner(payload, self.maps.get(&key)).map(|d| d.0)
+            let names = self
+                .maps
+                .get(group)
+                .and_then(|g| g.get(edge))
+                .and_then(|n| match device {
+                    None => Some(&n.node),
+                    Some(d) => n.devices.get(d),
+                });
+            decode_inner(payload, names).map(|d| d.0)
         }
     }
 
-    fn learn(&mut self, node: bool, key: NodeKey, pairs: Vec<(String, u64)>) {
-        if node {
-            let (g, e) = (key.0.clone(), key.1.clone());
-            let mut freed = 0;
-            self.maps.retain(|k, m| {
-                let hit = k.0 == g && k.1 == e;
-                if hit {
-                    freed += m.len();
+    fn learn(&mut self, group: &str, edge: &str, device: Option<&str>, pairs: Vec<(String, u64)>) {
+        if [Some(group), Some(edge), device]
+            .into_iter()
+            .flatten()
+            .any(|s| s.len() > MAX_ALIAS_NAME)
+        {
+            return;
+        }
+        let new: AliasMap = pairs
+            .into_iter()
+            .filter(|(n, _)| n.len() <= MAX_ALIAS_NAME)
+            .map(|(n, a)| (a, n))
+            .collect();
+        let key_bytes = group.len() + edge.len();
+        let mut entry = self
+            .maps
+            .get_mut(group)
+            .and_then(|g| g.remove(edge))
+            .unwrap_or_default();
+        let (e0, b0) = entry.usage(key_bytes);
+        // Swap the new names in, keeping what they replace for a rollback.
+        let old_node;
+        let mut old_devices = HashMap::new();
+        let mut old_device = None;
+        match device {
+            None => {
+                old_node = Some(std::mem::replace(&mut entry.node, new));
+                old_devices = std::mem::take(&mut entry.devices);
+            }
+            Some(d) => {
+                old_node = None;
+                old_device = Some(if new.is_empty() {
+                    entry.devices.remove(d)
+                } else {
+                    entry.devices.insert(d.to_owned(), new)
+                });
+            }
+        }
+        let (e1, b1) = entry.usage(key_bytes);
+        let (total, bytes) = (self.total - e0 + e1, self.bytes - b0 + b1);
+        if total > MAX_ALIASES || bytes > MAX_ALIAS_BYTES {
+            match (old_node, old_device) {
+                (Some(n), _) => {
+                    entry.node = n;
+                    entry.devices = old_devices;
                 }
-                !hit
-            });
-            self.total -= freed;
-        } else if let Some(old) = self.maps.remove(&key) {
-            self.total -= old.len();
+                (None, Some(prev)) => {
+                    let d = device.unwrap_or_default();
+                    match prev {
+                        Some(p) => entry.devices.insert(d.to_owned(), p),
+                        None => entry.devices.remove(d),
+                    };
+                }
+                (None, None) => {}
+            }
+        } else {
+            self.total = total;
+            self.bytes = bytes;
         }
-        let map: HashMap<u64, String> = pairs.into_iter().map(|(n, a)| (a, n)).collect();
-        if map.is_empty() {
-            return;
+        if entry.usage(key_bytes).0 > 0 {
+            self.maps
+                .entry(group.to_owned())
+                .or_default()
+                .insert(edge.to_owned(), entry);
+        } else if self.maps.get(group).is_some_and(HashMap::is_empty) {
+            self.maps.remove(group);
         }
-        if self.total + map.len() > MAX_ALIASES {
-            // Over the cap: record nothing new (the decode itself is fine).
-            return;
-        }
-        self.total += map.len();
-        self.maps.insert(key, map);
     }
 }
 
@@ -604,6 +699,65 @@ mod tests {
             assert!(a.len() <= MAX_ALIASES);
         }
         assert_eq!(a.len(), 80_000);
+    }
+
+    #[test]
+    fn alias_memory_is_bounded_in_bytes() {
+        let mut a = Aliases::default();
+        let long = vec![b'x'; MAX_ALIAS_NAME + 1];
+        a.decode("spBv1.0/g/NBIRTH/n", &data(named(&long, 1)))
+            .unwrap();
+        assert!(a.is_empty());
+        let long_seg = "s".repeat(MAX_ALIAS_NAME + 1);
+        a.decode(
+            &format!("spBv1.0/{long_seg}/NBIRTH/n"),
+            &data(named(b"A", 1)),
+        )
+        .unwrap();
+        assert!(a.is_empty());
+        for d in 0..3 {
+            let p = data(
+                (0..30_000u64)
+                    .map(|i| named(format!("{i:0>256}").as_bytes(), i))
+                    .collect::<Vec<_>>()
+                    .concat(),
+            );
+            assert!(a.decode(&format!("spBv1.0/g/DBIRTH/n/d{d}"), &p).is_some());
+            assert!(a.bytes <= MAX_ALIAS_BYTES);
+        }
+        assert_eq!(a.len(), 60_000);
+    }
+
+    #[test]
+    fn over_cap_rebirth_keeps_old_names() {
+        let mut a = Aliases::default();
+        a.decode("spBv1.0/g/NBIRTH/n1", &data(named(b"Old", 1)))
+            .unwrap();
+        let p = data(
+            (0..99_998u64)
+                .map(|i| named(format!("m{i}").as_bytes(), i))
+                .collect::<Vec<_>>()
+                .concat(),
+        );
+        a.decode("spBv1.0/g/NBIRTH/n2", &p).unwrap();
+        assert_eq!(a.len(), 99_999);
+        let p = data([named(b"X", 1), named(b"Y", 2), named(b"Z", 3)].concat());
+        assert!(a.decode("spBv1.0/g/NBIRTH/n1", &p).is_some());
+        assert_eq!(a.len(), 99_999);
+        let v = a
+            .decode("spBv1.0/g/NDATA/n1", &data(by_alias(1, 1.0)))
+            .unwrap();
+        assert_eq!(v["metrics"]["Old"], json!(1.0));
+    }
+
+    #[test]
+    fn malformed_birth_topics_learn_nothing() {
+        let mut a = Aliases::default();
+        let p = data(named(b"A", 1));
+        assert!(a.decode("spBv1.0/g/DBIRTH/n", &p).is_some());
+        assert!(a.decode("spBv1.0/g/NBIRTH/n/d", &p).is_some());
+        assert!(a.decode("spBv1.0/g/NBIRTH/n/", &p).is_some());
+        assert!(a.is_empty());
     }
 
     #[test]
